@@ -1432,19 +1432,24 @@ struct ModelSettingsView: View {
         model.modelManager.models.filter { !$0.englishOnly }
     }
 
-    /// The model rows the card shows before anything is unfolded: the four the catalog answers
-    /// with, and nothing else.
+    /// The rows the card shows before anything is unfolded, and the rows it keeps folded.
     ///
-    /// A model that was downloaded earlier, or one that a new recording would use, is marked in
-    /// the list once the fold is open rather than pulled up above it, so the card opens the same
-    /// way on every Mac and the four rows keep meaning one thing.
-    private var listedModels: [WhisperModel] {
-        model.modelManager.models.filter { $0.isPrimary(inMemoryOf: physicalMemoryBytes) }
+    /// The rule belongs to the catalog: the rows it answers with, and with them the model a new
+    /// recording would use. A model picked from the unfolded list is a decision the card keeps
+    /// showing, because its row is where the file's state and its Delete button live; a choice
+    /// that could only be found by unfolding twenty-nine rows would read as though it had been
+    /// forgotten.
+    private var modelListing: (shown: [WhisperModel], folded: [WhisperModel]) {
+        WhisperModel.listing(
+            from: model.modelManager.models,
+            inMemoryOf: physicalMemoryBytes,
+            selectedID: model.settings.selectedWhisperModelID
+        )
     }
 
-    private var advancedModels: [WhisperModel] {
-        model.modelManager.models.filter { !$0.isPrimary(inMemoryOf: physicalMemoryBytes) }
-    }
+    private var listedModels: [WhisperModel] { modelListing.shown }
+
+    private var advancedModels: [WhisperModel] { modelListing.folded }
 
     private var englishOnlyModels: [WhisperModel] {
         model.modelManager.models.filter(\.englishOnly)

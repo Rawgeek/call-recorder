@@ -135,6 +135,47 @@ struct ModelCatalogTests {
         #expect(WhisperModel.catalog.allSatisfy { !$0.isPrimary(inMemoryOf: 0) || $0.englishWordErrorRate != nil })
     }
 
+    @Test func aModelChosenFromTheFoldedListIsShownWithTheOthers() {
+        // Given a Mac with room for everything, and a Mac that cannot hold Turbo.
+        let roomy: Int64 = 32_000_000_000
+        let tight: Int64 = 2_000_000_000
+
+        // When the chosen model is one the page would otherwise fold away.
+        let chosen = WhisperModel.listing(
+            from: WhisperModel.catalog,
+            inMemoryOf: roomy,
+            selectedID: "large-v3-q5_0"
+        )
+
+        // Then it is shown with the rows the catalog answers with, in catalog order, and it is not
+        // also behind the fold. A row is where the file's state and its Delete button live, so a
+        // choice that could only be found by unfolding the list reads as if it was forgotten.
+        #expect(chosen.shown.map(\.id) == ["tiny", "base", "small", "large-v3-turbo", "large-v3-q5_0"])
+        #expect(!chosen.folded.contains { $0.id == "large-v3-q5_0" })
+        #expect(!chosen.shown.contains { $0.id == "medium" })
+
+        // And the fold still holds everything else, counted once.
+        #expect(chosen.shown.count + chosen.folded.count == WhisperModel.catalog.count)
+        #expect(Set(chosen.shown.map(\.id)).isDisjoint(with: Set(chosen.folded.map(\.id))))
+
+        // The same rule on a Mac where Medium takes the fourth row: the chosen file is added to
+        // the four that are shown, and one of the four is not displaced by it.
+        let small = WhisperModel.listing(
+            from: WhisperModel.catalog,
+            inMemoryOf: tight,
+            selectedID: "large-v3-q5_0"
+        )
+        #expect(small.shown.map(\.id) == ["tiny", "base", "small", "medium", "large-v3-q5_0"])
+
+        // And a model that is already shown does not appear twice for being chosen.
+        let unchanged = WhisperModel.listing(
+            from: WhisperModel.catalog,
+            inMemoryOf: roomy,
+            selectedID: "small"
+        )
+        #expect(unchanged.shown.map(\.id) == WhisperModel.primaryIDs(inMemoryOf: roomy))
+    }
+
     @Test func sizeLabelsStateFileAndMemorySizesTheWayTheModelTableDoes() {
         #expect(ModelSizeLabel.file(bytes: 487_601_967) == "465 MiB")
         #expect(ModelSizeLabel.file(bytes: 3_095_033_483) == "2.9 GiB")
