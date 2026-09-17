@@ -665,6 +665,15 @@ struct RecentCallRow: View {
                         Text(whenLabel)
                             .font(CR.Font.caption)
                             .foregroundStyle(CR.Ink.readable)
+                        // How long the call ran. It sits after the time it happened, which is the
+                        // order the two are asked in, and monospaced digits keep a column of
+                        // lengths lined up down the list.
+                        if let length = call.lengthLabel {
+                            Text(length)
+                                .font(CR.Font.caption)
+                                .monospacedDigit()
+                                .foregroundStyle(CR.Ink.readable)
+                        }
                         if call.unresolvedSpeakerCount > 0 {
                             Text("\(call.unresolvedSpeakerCount) to review")
                                 .font(CR.Font.caption)

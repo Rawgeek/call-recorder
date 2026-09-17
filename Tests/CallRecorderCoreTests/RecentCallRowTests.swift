@@ -89,6 +89,48 @@ struct RecentCallRowTests {
         #expect(!needing.contains(calls[2].id))
     }
 
+    @Test("a row says how long its call ran, in the same shape every time")
+    func aRowCarriesTheLengthOfItsCall() {
+        let start = day(-1, hour: 9, minute: 30)
+        let length = call(first, at: start, people: ["Sam"])
+        let long = RecentCallSummary(
+            id: length.id,
+            startedAt: start,
+            endedAt: start.addingTimeInterval(6_742),
+            status: .ready,
+            participantNames: ["Sam"],
+            hasTranscript: true
+        )
+
+        // A ten-minute call and an hour and a bit of a call both carry all three fields, so the
+        // lengths down a list can be read against each other without counting columns.
+        #expect(length.lengthLabel == "0:10:00")
+        #expect(long.lengthLabel == "1:52:22")
+        #expect(CallLength.clock(0) == "0:00:00")
+        #expect(CallLength.clock(59) == "0:00:59")
+        #expect(CallLength.clock(3_661) == "1:01:01")
+        // A length that is not a whole number of seconds is rounded rather than cut, and a clock
+        // never goes backwards.
+        #expect(CallLength.clock(59.6) == "0:01:00")
+        #expect(CallLength.clock(-5) == "0:00:00")
+    }
+
+    @Test("a call that has not ended says nothing about its length")
+    func aCallStillRunningHasNoLength() {
+        let start = day(0, hour: 9, minute: 30)
+        let running = RecentCallSummary(
+            id: CallID(rawValue: UUID(uuidString: first)!),
+            startedAt: start,
+            endedAt: nil,
+            status: .recording,
+            participantNames: ["Sam"],
+            hasTranscript: false
+        )
+        // A row that claims a length for a recording that is still running would be guessing, and
+        // the summary is where the guess would come from.
+        #expect(running.lengthLabel == nil)
+    }
+
     @Test("the added time is readable and tells the two rows apart")
     func theTimeSeparatesTheRows() {
         // The label is what the reader sees, so it is checked as text and not only as a set.

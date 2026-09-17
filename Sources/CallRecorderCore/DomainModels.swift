@@ -345,6 +345,36 @@ public struct RecentCallSummary: Codable, Equatable, Identifiable, Sendable {
     }
 }
 
+/// A length of recorded audio as a clock.
+public enum CallLength {
+    /// The length as `h:mm:ss`.
+    ///
+    /// Every field is always drawn, including a zero hour. The popover's own timer drops the hour
+    /// until a recording has reached one, because it counts up while it is watched; a row in the
+    /// recent list is read beside its neighbours, and a fixed shape is what lets two lengths be
+    /// compared at a glance.
+    public static func clock(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return String(
+            format: "%d:%02d:%02d",
+            total / 3_600,
+            (total % 3_600) / 60,
+            total % 60
+        )
+    }
+}
+
+public extension RecentCallSummary {
+    /// How long the call lasted, or nil when it has not ended.
+    ///
+    /// A call still being recorded has no length yet, and neither has one whose end was never
+    /// written. Both say nothing rather than showing a length the recording does not have.
+    var lengthLabel: String? {
+        guard let endedAt, endedAt > startedAt else { return nil }
+        return CallLength.clock(endedAt.timeIntervalSince(startedAt))
+    }
+}
+
 public struct TranscriptRecord: Codable, Equatable, Sendable {
     public let callID: CallID
     public let language: String

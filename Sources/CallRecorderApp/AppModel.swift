@@ -3285,7 +3285,9 @@ final class AppModel {
             RecentCallSummary(
                 id: CallID(rawValue: UUID()),
                 startedAt: now.addingTimeInterval(-3_600 * 5),
-                endedAt: now.addingTimeInterval(-3_600 * 4),
+                // Lengths are part of what a row says, so the invented library carries three of
+                // them that read differently: an hour and change, minutes, and a long call.
+                endedAt: now.addingTimeInterval(-3_600 * 5 + 3_862),
                 status: .ready,
                 participantNames: ["Dana Holt", "Ilya Marsh"],
                 hasTranscript: true
@@ -3293,7 +3295,7 @@ final class AppModel {
             RecentCallSummary(
                 id: CallID(rawValue: UUID()),
                 startedAt: now.addingTimeInterval(-3_600 * 27),
-                endedAt: now.addingTimeInterval(-3_600 * 26),
+                endedAt: now.addingTimeInterval(-3_600 * 27 + 751),
                 status: .ready,
                 participantNames: ["Priya Raman"],
                 hasTranscript: true
@@ -3301,7 +3303,7 @@ final class AppModel {
             RecentCallSummary(
                 id: CallID(rawValue: UUID()),
                 startedAt: now.addingTimeInterval(-3_600 * 50),
-                endedAt: now.addingTimeInterval(-3_600 * 49),
+                endedAt: now.addingTimeInterval(-3_600 * 50 + 6_726),
                 status: .ready,
                 participantNames: ["Dana Holt", "Priya Raman", "Ilya Marsh"],
                 hasTranscript: true
