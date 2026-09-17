@@ -4,6 +4,23 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.11] - 2026-09-18
+
+The discarding question answers again. It was a system confirmation dialog, drawn as a window of
+its own over a popover that never takes the keyboard, so its buttons could not be pressed.
+
+### Fixed
+- Discarding a running recording is confirmed inside the popover. The question, the consequence,
+  and its two buttons sit in the row the popover already answers: Discard, in the destructive tone,
+  and Keep Recording. The timer keeps running while the question is on screen, and the recording is
+  untouched until one of the two is pressed.
+
+### Verified
+- 594 tests pass. No automated test pins the buttons: the state is reachable only by pressing a
+  button during a recording, so the evidence is the rendered state, read by eye, plus the fact that
+  the buttons are the same control every other button in the popover uses and the popover is the
+  surface that already answers clicks.
+
 ## [0.1.10] - 2026-09-18
 
 A correction to 0.1.9. The strip above the panel's content was still there, because the fit added

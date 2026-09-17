@@ -10,7 +10,13 @@ struct MenuBarView: View {
     @Bindable var model: AppModel
     @Environment(\.openWindow) private var openWindow
     @Environment(\.openSettings) private var openSettings
-    @State private var confirmingDiscard = false
+    /// Whether the popover is asking whether to throw a running recording away.
+    ///
+    /// A render can open in this state, because the question is only ever reached by pressing a
+    /// button during a recording, and a picture of it is how its wording is checked.
+    @State private var confirmingDiscard =
+        AppModel.isPreviewMode
+            && ProcessInfo.processInfo.environment["CALL_RECORDER_CONFIRM_DISCARD"] == "1"
 
     var body: some View {
         VStack(alignment: .leading, spacing: CR.Space.item) {
@@ -81,6 +87,32 @@ struct MenuBarView: View {
         .accessibilityElement(children: .combine)
     }
 
+    /// The question that stands between a running recording and losing it.
+    ///
+    /// It is drawn in the popover and not as a system confirmation dialog. A dialog is a window of
+    /// its own, attached to the popover, and the popover is a panel that never takes the keyboard:
+    /// the dialog's buttons were drawn and never answered a click, so an accidental recording could
+    /// not be thrown away while it was still running. These buttons belong to the surface the
+    /// popover already answers.
+    private var discardConfirmation: some View {
+        VStack(alignment: .leading, spacing: CR.Space.snug) {
+            Text("Discard this recording?")
+                .font(CR.Font.body)
+            Text("The audio is deleted and no transcript is written.")
+                .font(CR.Font.caption)
+                .foregroundStyle(CR.Ink.readable)
+            HStack(spacing: CR.Space.inner) {
+                CRButton(title: "Discard", icon: "trash", kind: .destructive, fullWidth: true) {
+                    confirmingDiscard = false
+                    model.discard()
+                }
+                CRButton(title: "Keep Recording", kind: .secondary) {
+                    confirmingDiscard = false
+                }
+            }
+        }
+    }
+
     @ViewBuilder
     private var transport: some View {
         switch model.recorderState.phase {
@@ -97,7 +129,10 @@ struct MenuBarView: View {
             let isRecording = model.recorderState.phase == .recording
             VStack(alignment: .leading, spacing: CR.Space.item) {
                 timer
-                HStack(spacing: CR.Space.inner) {
+                if confirmingDiscard {
+                    discardConfirmation
+                } else {
+                    HStack(spacing: CR.Space.inner) {
                     CRButton(
                         title: isRecording ? "Pause" : "Resume",
                         icon: isRecording ? "pause.fill" : "play.fill",
@@ -120,17 +155,8 @@ struct MenuBarView: View {
                     ) {
                         confirmingDiscard = true
                     }
+                    }
                 }
-            }
-            .confirmationDialog(
-                "Discard this recording?",
-                isPresented: $confirmingDiscard,
-                titleVisibility: .visible
-            ) {
-                Button("Discard Recording", role: .destructive, action: model.discard)
-                Button("Keep Recording", role: .cancel) {}
-            } message: {
-                Text("The audio is deleted and no transcript is written.")
             }
 
         case .awaitingParticipants:
