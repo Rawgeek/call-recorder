@@ -4,6 +4,40 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.8] - 2026-09-17
+
+A settings release. A version that is waiting installs when you ask for it, the check runs on a
+step you choose, and a model you picked from the folded list stays in sight.
+
+### Added
+- The Updates card installs a waiting version at a press. A downloaded and checked version used to
+  wait for the app to quit, which is the one moment the bundle is idle. Restart starts a small
+  shell that waits for this process to end and then opens the app, and quits: the swap runs in the
+  quit, as it always did, and the next launch is the new version. A restart during a call is
+  refused, because the audio of a call still being captured has not been finished into a file that
+  anything could put back. When that shell cannot be started at all, nothing quits and the row says
+  what to do instead.
+- Check for updates chooses how often the app looks for a release while it stays open: every 30
+  minutes, every hour, every 2, 6, or 12 hours, or once a day. The app shipped with one step, six
+  hours, and a settings file written before the choice existed lands on it. Changing the step ends
+  the wait that is already running, so choosing half an hour does not mean waiting out the twelve
+  hours the app was told before.
+- A model chosen from the folded list is shown with the rows above it. Its row is where the file's
+  state and its Delete control live, and a choice that can only be found by unfolding twenty-nine
+  rows reads as though it had been forgotten.
+
+### Changed
+- A check that finds a release already waiting no longer fetches it again. The check repeats every
+  few hours, and each one repeated the whole download, the unpack, and every check over the copy
+  that was already waiting.
+
+### Verified
+- 582 tests pass. Nine of them are new: the waiting shell and its log line, the restart that quits
+  and the one that must not, the six steps and what an unreadable step costs, and the model the
+  models page keeps showing.
+- The Updates card was rendered in the waiting state before it was published, which is what caught
+  a Restart button drawn as "Rest…" beside a wrapping sentence.
+
 ## [0.1.7] - 2026-09-17
 
 A quiet release. Automatic recording stops when the room goes silent, and a diarization failure
