@@ -42,37 +42,39 @@ struct Diarizer: Sendable {
             path: "diarizer-\(UUID().uuidString).stderr")
         FileManager.default.createFile(atPath: errorURL.path, contents: nil)
         let errorFile = try FileHandle(forWritingTo: errorURL)
+        // Both streams go to files rather than to pipes.
+        //
+        // The output used to arrive through a pipe read by a thread on the utility queue, and the
+        // parent waited five seconds for that reader to finish after the script had exited. On a
+        // busy machine the reader could still be waiting to be scheduled when the five seconds ran
+        // out, and a diarization that failed for a real reason was then reported as an empty
+        // output, which names the wrong fault and sends whoever reads the error to the wrong place.
+        // A file has no reader to wait for: what the script wrote is on disk when it exits.
+        let outputURL = FileManager.default.temporaryDirectory.appending(
+            path: "diarizer-\(UUID().uuidString).stdout")
+        FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+        let outputFile = try FileHandle(forWritingTo: outputURL)
         defer {
             try? errorFile.close()
+            try? outputFile.close()
             try? FileManager.default.removeItem(at: errorURL)
+            try? FileManager.default.removeItem(at: outputURL)
         }
         process.standardError = errorFile
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        let output = ProcessOutputCollector()
-        let outputFinished = DispatchSemaphore(value: 0)
-        DispatchQueue.global(qos: .utility).async {
-            output.capture(from: pipe.fileHandleForReading)
-            outputFinished.signal()
-        }
+        process.standardOutput = outputFile
         let terminated = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in terminated.signal() }
         do {
             try process.run()
         } catch {
-            pipe.fileHandleForWriting.closeFile()
-            _ = outputFinished.wait(timeout: .now() + 1)
             throw error
         }
-        pipe.fileHandleForWriting.closeFile()
         // Waited on in short steps rather than one long block, so a stopped analysis and a run
         // that has overstayed its timeout both end the script instead of waiting for it.
         let deadline = Date().addingTimeInterval(timeout)
         while terminated.wait(timeout: .now() + 0.2) == .timedOut {
             if cancellation?.isCancelled == true {
                 ProcessRunner.end(process)
-                pipe.fileHandleForReading.closeFile()
-                _ = outputFinished.wait(timeout: .now() + 1)
                 throw CancellationError()
             }
             if Date() >= deadline {
@@ -81,15 +83,10 @@ struct Diarizer: Sendable {
                     kill(process.processIdentifier, SIGKILL)
                     _ = terminated.wait(timeout: .now() + 2)
                 }
-                pipe.fileHandleForReading.closeFile()
-                _ = outputFinished.wait(timeout: .now() + 1)
                 throw DiarizerError.timedOut
             }
         }
-        guard outputFinished.wait(timeout: .now() + 5) == .success else {
-            throw DiarizerError.emptyOutput
-        }
-        let data = try output.value()
+        let data = (try? Data(contentsOf: outputURL)) ?? Data()
         if let raw = try? JSONDecoder().decode(DiarizerRawOutput.self, from: data), let error = raw.error {
             throw DiarizerError.scriptFailed(DiagnosticsReporter.redacted(error: error))
         }
@@ -243,20 +240,6 @@ enum DiarizerError: LocalizedError, Equatable {
         case .noSpeakersDetected:
             "Speech was transcribed, but no usable speakers were detected. Audio is retained. Retry speaker detection from Review."
         }
-    }
-}
-
-private final class ProcessOutputCollector: @unchecked Sendable {
-    private let lock = NSLock()
-    private var result: Result<Data, Error>?
-
-    func capture(from handle: FileHandle) {
-        let result = Result { try handle.readToEnd() ?? Data() }
-        lock.withLock { self.result = result }
-    }
-
-    func value() throws -> Data {
-        try lock.withLock { try result?.get() ?? { throw DiarizerError.emptyOutput }() }
     }
 }
 
