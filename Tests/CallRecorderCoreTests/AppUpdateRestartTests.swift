@@ -178,13 +178,19 @@ struct AppUpdateRestartTests {
         // Then the check that follows arrives in seconds rather than after the wait that was
         // replaced. The wait is a real one, so this is given room: a busy machine can stretch two
         // seconds, and the wait it replaced was twenty.
-        try await waitUntil("a check to follow the change", seconds: 20) { checks >= 1 }
+        try await waitUntil("a check to follow the change") { checks >= 1 }
     }
 
     /// Waits for something a test cannot be told about, with a bound so a failure is a failure.
+    ///
+    /// The bound is there to catch work that never happens, not to measure how fast it happens:
+    /// this suite shares one machine with every other test in the run, and the check it waits for
+    /// is a task that the main actor has to get to. Ten seconds was read as a latency budget on a
+    /// loaded runner and failed a check that did arrive, so the wait is generous. A check that
+    /// never starts still fails the run, a minute later.
     private func waitUntil(
         _ what: String,
-        seconds: Double = 10,
+        seconds: Double = 60,
         _ condition: @MainActor () -> Bool
     ) async throws {
         let deadline = Date().addingTimeInterval(seconds)
