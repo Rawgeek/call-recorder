@@ -4,6 +4,26 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.1] - 2026-09-17
+
+Security update for the MCP package. Recording, transcription, and speaker behavior is
+unchanged.
+
+### Security
+- Fixed all 18 open Dependabot alerts in `mcp/` by moving the affected transitive
+  dependencies to their patched releases: `hono` 4.13.8, `fast-uri` 3.1.8, `qs` 6.16.0,
+  `sharp` 0.35.4, and `adm-zip` 0.6.1.
+- Added dependency overrides in both the npm and pnpm sections, so a fresh install resolves
+  the patched versions even though the parent packages still declare older ranges.
+- Pinned the MCP dependencies to exact versions. `latest` allowed the lockfile, CI, and the
+  packaged app to drift apart.
+
+### Verified
+- `pnpm audit` reports no known vulnerabilities for the locked tree.
+- The indexer still runs against the cached embedding model: `sharp` 0.35.4 loads under
+  `@huggingface/transformers` 4.2.0 and produces 256-dimension query and document
+  embeddings offline.
+
 ## [0.1.0] - 2026-09-17
 
 First public release.

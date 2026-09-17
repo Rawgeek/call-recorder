@@ -79,12 +79,12 @@ cp "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/package
 ditto "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/dist" "$task_modules/onnxruntime-node/dist"
 ditto "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64" "$task_modules/onnxruntime-node/bin/napi-v6/darwin/arm64"
 ditto "$task_packages/onnxruntime-common@1.24.3/node_modules/onnxruntime-common" "$task_modules/onnxruntime-common"
-ditto "$task_packages/sharp@0.34.5/node_modules/sharp" "$task_modules/sharp"
+ditto "$task_packages/sharp@0.35.4/node_modules/sharp" "$task_modules/sharp"
 ditto "$task_packages/detect-libc@2.1.2/node_modules/detect-libc" "$task_modules/detect-libc"
 ditto "$task_packages/semver@7.8.5/node_modules/semver" "$task_modules/semver"
 ditto "$task_packages/@img+colour@1.1.0/node_modules/@img/colour" "$task_modules/@img/colour"
-ditto "$task_packages/@img+sharp-darwin-arm64@0.34.5/node_modules/@img/sharp-darwin-arm64" "$task_modules/@img/sharp-darwin-arm64"
-ditto "$task_packages/@img+sharp-libvips-darwin-arm64@1.2.4/node_modules/@img/sharp-libvips-darwin-arm64" "$task_modules/@img/sharp-libvips-darwin-arm64"
+ditto "$task_packages/@img+sharp-darwin-arm64@0.35.4/node_modules/@img/sharp-darwin-arm64" "$task_modules/@img/sharp-darwin-arm64"
+ditto "$task_packages/@img+sharp-libvips-darwin-arm64@1.3.3/node_modules/@img/sharp-libvips-darwin-arm64" "$task_modules/@img/sharp-libvips-darwin-arm64"
 
 task_required=(
     "$task_contents/MacOS/CallRecorder"

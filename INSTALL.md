@@ -1,4 +1,4 @@
-# Call Recorder 0.1.0 — install, features, and Codex MCP
+# Call Recorder 0.1.1 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -48,7 +48,7 @@ materials on macOS 15. No third-party design dependency is used.
 
 ## 2. Install the compiled app
 
-1. Unzip Call Recorder 0.1.0.zip.
+1. Unzip CallRecorder-0.1.1.zip.
 2. Move Call Recorder.app to /Applications.
 3. First launch only: right-click the app and choose Open. This build is signed locally,
    not notarized by Apple, so a double-click shows a warning. After the first open, a
@@ -216,7 +216,7 @@ Safety properties worth knowing:
 
 To produce a distributable app bundle:
 
-    scripts/package-app.sh "dist/releases/Call Recorder 0.1.0"
+    scripts/package-app.sh "dist/releases/Call Recorder 0.1.1"
 
 Packaging needs bun on PATH (or CALL_RECORDER_BUN) and a code-signing identity
 (CALL_RECORDER_SIGNING_IDENTITY, default "Call Recorder Local Development"). To package

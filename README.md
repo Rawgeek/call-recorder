@@ -79,7 +79,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `Call Recorder 0.1.0.zip` from the
+1. Download `CallRecorder-0.1.1.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -108,7 +108,7 @@ swift build -c release
 Run it directly with `swift run CallRecorder`, or build a distributable bundle:
 
 ```sh
-scripts/package-app.sh "dist/Call Recorder 0.1.0"
+scripts/package-app.sh "dist/Call Recorder 0.1.1"
 ```
 
 Packaging needs `bun` on `PATH` (or `CALL_RECORDER_BUN`) and a code-signing identity

@@ -8,7 +8,7 @@
 
 ## From a release
 
-1. Download `CallRecorder-0.1.0.zip` from the releases page and unzip it.
+1. Download `CallRecorder-0.1.1.zip` from the releases page and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
    notarized by Apple.
@@ -29,7 +29,7 @@ swift build -c release
 Create a distributable bundle with:
 
 ```sh
-scripts/package-app.sh "dist/Call Recorder 0.1.0"
+scripts/package-app.sh "dist/Call Recorder 0.1.1"
 ```
 
 ## Speaker identification (optional)
@@ -45,4 +45,3 @@ scripts/package-app.sh "dist/Call Recorder 0.1.0"
 
 Without this step the app still transcribes everything, with speakers shown as Speaker 1,
 Speaker 2, and so on.
-
