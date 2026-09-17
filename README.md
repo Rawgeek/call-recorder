@@ -18,6 +18,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
   of seconds after the call ends.
 - Manual Start, Pause, Resume, Stop, and Discard from the menu-bar panel. The next call can
   start while an earlier one is still being processed.
+- The microphone is chosen by name, or set to follow whichever input macOS is set to use. A call
+  that finishes gives its audio back, unless Settings > General says to keep it.
 - One-sided-call detection warns when the other side of the conversation was never captured.
 
 **Transcription**
@@ -92,9 +94,9 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
    - **Models**: download a Whisper model. `medium` is a good default; larger models are more
      accurate and slower. The silence filter, about 865 KB, downloads on its own. Everything
      runs locally.
-   - **General**: choose the microphone, the recordings folder (default
-     `~/Desktop/Call Recordings`), and whether recording starts when another app opens the
-     microphone.
+   - **General**: choose the microphone or follow the system's own choice, the recordings folder
+     (default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
+     microphone, and whether a finished call keeps its audio.
    - **Participants**: add the people you meet with, and mark which one is you.
 6. Leave **Start at login** on if you want it always available.
 
