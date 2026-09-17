@@ -79,6 +79,63 @@ public enum SpeakerReviewCandidates {
     public static func wasOnCall(_ participant: Participant, onCall: [Participant]) -> Bool {
         onCall.contains { $0.id == participant.id }
     }
+
+    /// The people a typed name could mean, best first.
+    ///
+    /// A library of a few hundred people cannot be read in a pop-up menu, so the picker is typed
+    /// into instead. Filtering alone is not enough: what makes the first row the person a user
+    /// meant is the order, so a name that starts with what was typed comes before one that merely
+    /// contains it, and a word of a name counts as a start. Ties keep the order the caller chose,
+    /// which is the people on the call first.
+    public static func matching(_ participants: [Participant], query: String) -> [Participant] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return participants }
+        let ranked = participants.enumerated().compactMap { index, participant in
+            rank(participant, needle: needle).map { ($0, index, participant) }
+        }
+        return ranked
+            .sorted { lhs, rhs in
+                lhs.0 == rhs.0 ? lhs.1 < rhs.1 : lhs.0 < rhs.0
+            }
+            .map(\.2)
+    }
+
+    /// Whether the typed name is already somebody, which is what decides between choosing and
+    /// adding.
+    public static func exactMatch(_ participants: [Participant], query: String) -> Participant? {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nil }
+        return participants.first { $0.name.compare(needle, options: .participantSearch) == .orderedSame }
+    }
+
+    /// How well one person answers the search, or nil when they do not.
+    private static func rank(_ participant: Participant, needle: String) -> Int? {
+        let options: String.CompareOptions = .participantSearch
+        if participant.name.range(of: needle, options: options)?.lowerBound
+            == participant.name.startIndex
+        {
+            return 0
+        }
+        let words = participant.name.split(whereSeparator: { $0 == " " || $0 == "-" })
+        if words.contains(where: { word in
+            word.range(of: needle, options: options)?.lowerBound == word.startIndex
+        }) {
+            return 1
+        }
+        if participant.name.range(of: needle, options: options) != nil { return 2 }
+        let otherFields = [participant.company, participant.email, participant.role]
+            .compactMap { $0 }
+        if otherFields.contains(where: { $0.range(of: needle, options: options) != nil }) {
+            return 3
+        }
+        return nil
+    }
+}
+
+extension String.CompareOptions {
+    /// How a typed name is compared with a stored one: case does not matter, and neither does an
+    /// accent, because nobody types the accent under time pressure.
+    static let participantSearch: String.CompareOptions = [.caseInsensitive, .diacriticInsensitive]
 }
 
 public struct PendingSpeakerCluster: Equatable, Sendable {

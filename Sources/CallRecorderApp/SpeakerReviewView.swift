@@ -404,52 +404,76 @@ struct SpeakerReviewView: View {
         moved: SpeakerLineOverride?
     ) -> some View {
         let busy = model.isMovingSpeakerExcerpt(excerpt)
-        Menu {
-            ForEach(candidateParticipants(for: review), id: \.id) { participant in
-                Button(participant.name) {
+        HStack(spacing: CR.Space.tight) {
+            ParticipantPicker(
+                participants: candidateParticipants(for: review),
+                onSelect: { participant in
                     model.assignSpeakerExcerpt(
                         review,
                         excerpt: excerpt,
                         participantID: participant.id
                     )
+                },
+                create: { name in
+                    await model.createParticipant(name: name, role: "", company: "", email: "")
+                },
+                note: { participant in
+                    notes(for: participant, on: review)
                 }
-                .disabled(moved?.participantID == participant.id)
+            ) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(CR.Ink.readable)
+                    .frame(width: CR.Icon.circle, height: CR.Icon.circle)
+                    .contentShape(Circle())
             }
+            .frame(width: CR.Icon.circle)
+            .disabled(busy)
+            .help(
+                moved == nil
+                    ? "Assign these lines to someone else"
+                    : "Change who these lines belong to"
+            )
+            .accessibilityLabel("Assign these lines to another participant")
             if moved != nil {
-                Divider()
-                Button("Follow the voice again") {
+                Button {
                     model.clearSpeakerExcerpt(review, excerpt: excerpt)
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(CR.Ink.readable)
+                        .frame(width: CR.Icon.circle, height: CR.Icon.circle)
+                        .contentShape(Circle())
                 }
+                .buttonStyle(.plain)
+                .disabled(busy)
+                .help("Follow the voice again")
+                .accessibilityLabel("Put these lines back with the voice")
             }
-        } label: {
-            Image(systemName: "arrow.turn.down.right")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(CR.Ink.readable)
-                .frame(width: CR.Icon.circle, height: CR.Icon.circle)
-                .contentShape(Circle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(width: CR.Icon.circle)
-        .disabled(busy)
-        .help(moved == nil ? "Assign these lines to someone else" : "Change who these lines belong to")
-        .accessibilityLabel("Assign these lines to another participant")
     }
 
     private func cardActions(_ review: SpeakerReviewItem, busy: Bool) -> some View {
         VStack(alignment: .leading, spacing: CR.Space.snug) {
             HStack(spacing: CR.Space.inner) {
-                Picker("Participant", selection: selection(for: review)) {
-                    Text("Choose participant…").tag(nil as ParticipantID?)
-                    ForEach(candidateParticipants(for: review), id: \.id) { participant in
-                        Text(pickerLabel(for: participant, in: review)).tag(Optional(participant.id))
+                // A search field rather than a menu: a library of a few hundred people turned the
+                // menu into a list to read through while the call is still running. This one is
+                // typed into, leads with the people on this call, and adds a new person from the
+                // same field, so both ways of naming a voice start with the same keystrokes.
+                ParticipantPicker(
+                    participants: candidateParticipants(for: review),
+                    onSelect: { participant in
+                        selections[review.clusterID] = participant.id
+                    },
+                    create: { name in
+                        await model.createParticipant(name: name, role: "", company: "", email: "")
+                    },
+                    note: { participant in
+                        notes(for: participant, on: review)
                     }
+                ) {
+                    participantPill(for: review)
                 }
-                .labelsHidden()
-                // The cap keeps a long list of participants from pushing Confirm off the row. The
-                // menu SwiftUI draws is narrower than the cap, so it is aligned to the trailing
-                // edge and Confirm keeps its place as the chosen name changes length.
-                .frame(maxWidth: 280, alignment: .trailing)
                 .accessibilityLabel("Participant for \(review.speakerLabel)")
 
                 CRButton(
@@ -677,15 +701,34 @@ struct SpeakerReviewView: View {
     /// Names the people already given a voice in this call, so a second voice is not handed to
     /// the same person. The name stays selectable, because two speakers can be one person on two
     /// devices.
-    private func pickerLabel(for participant: Participant, in review: SpeakerReviewItem) -> String {
-        let company = participant.company.map { " · " + $0 } ?? ""
+    /// What the picker says beside a name: who is on this call, and who has already been given to
+    /// another voice.
+    private func notes(for participant: Participant, on review: SpeakerReviewItem) -> String? {
         var notes: [String] = []
         if wasOnCall(participant, review: review) { notes.append("on this call") }
         if model.namedParticipants[review.callID]?.contains(participant.id) == true {
             notes.append("already named")
         }
-        guard !notes.isEmpty else { return participant.name + company }
-        return participant.name + company + "  (" + notes.joined(separator: ", ") + ")"
+        return notes.isEmpty ? nil : notes.joined(separator: ", ")
+    }
+
+    /// The picker's own control: the chosen name, or what it says when nothing is chosen yet.
+    private func participantPill(for review: SpeakerReviewItem) -> some View {
+        let chosen = participant(selection(for: review).wrappedValue)
+        return CRFieldBox {
+            HStack(spacing: CR.Space.snug) {
+                Text(chosen?.name ?? "Choose participant…")
+                    .font(CR.Font.body)
+                    .foregroundStyle(CR.Ink.readable)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(CR.Ink.mark)
+            }
+            .frame(width: 240, alignment: .leading)
+        }
     }
 
     /// The people who were on the call, before everyone else.

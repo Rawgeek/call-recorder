@@ -467,6 +467,8 @@ struct CRSearchField: View {
     @Binding var text: String
     /// Set by a surface that opens ready to type, so the field asks for focus itself.
     var focusOnAppear = false
+    /// Run when the return key is pressed, for a field whose first match is the answer.
+    var onSubmit: () -> Void = {}
 
     @FocusState private var focused: Bool
 
@@ -480,6 +482,7 @@ struct CRSearchField: View {
                     .textFieldStyle(.plain)
                     .font(CR.Font.body)
                     .focused($focused)
+                    .onSubmit(onSubmit)
                 if !text.isEmpty {
                     Button {
                         text = ""

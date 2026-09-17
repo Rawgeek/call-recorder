@@ -271,6 +271,28 @@ enum SnapshotRunner {
             name: "editor-participant-add",
             into: directory
         )
+        // What the participant picker opens onto. A popover does not draw off screen, so the list
+        // itself is rendered: it is the part that has to be read, and it is rendered with a name
+        // half typed so the picture shows both answers the field offers — the people who match,
+        // and the row that makes somebody new.
+        let onCall = Array(model.participants.prefix(3))
+        render(
+            ParticipantPickerList(
+                participants: SpeakerReviewCandidates.ordered(
+                    participants: model.participants,
+                    onCall: onCall
+                ),
+                query: .constant("na"),
+                onSelect: { _ in },
+                create: { _ in nil },
+                note: { participant in
+                    onCall.contains(participant) ? "on this call" : nil
+                }
+            ),
+            size: CGSize(width: 320, height: 300),
+            name: "participant-picker-list",
+            into: directory
+        )
         render(
             GlossaryTermEditor(
                 model: model,
