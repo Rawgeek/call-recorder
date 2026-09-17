@@ -3227,6 +3227,78 @@ final class AppModel {
         )
     }
 
+    /// Fills a render with a small invented library.
+    ///
+    /// A render against the real library is the useful one while developing, and its picture
+    /// cannot be published: it carries somebody's call history and their colleagues' names. The
+    /// release renderer points the model at a throwaway home and asks for this instead, so the
+    /// pictures in the README can show the panes without showing anyone.
+    func seedPreviewLibrary() {
+        participants = [
+            Participant(
+                id: ParticipantID(rawValue: UUID()),
+                name: "Dana Holt",
+                role: "Operations",
+                company: "Globex Freight",
+                email: "dana@globex.example"
+            ),
+            Participant(
+                id: ParticipantID(rawValue: UUID()),
+                name: "Ilya Marsh",
+                role: "Engineering",
+                company: "Globex Freight",
+                email: "ilya@globex.example"
+            ),
+            Participant(
+                id: ParticipantID(rawValue: UUID()),
+                name: "Priya Raman",
+                role: "Customer support",
+                company: "Initech",
+                email: "priya@initech.example"
+            ),
+        ]
+        glossary = [
+            GlossaryTerm(
+                id: GlossaryTermID(rawValue: UUID()),
+                preferred: "Globex",
+                aliases: ["Globexx", "Globe X", "Globe-X"]
+            ),
+            GlossaryTerm(
+                id: GlossaryTermID(rawValue: UUID()),
+                preferred: "Initech",
+                aliases: ["IniTech", "Initech Systems"]
+            ),
+        ]
+        glossaryUsage = ["globex": 6, "initech": 2]
+        let now = Date.now
+        recentCalls = [
+            RecentCallSummary(
+                id: CallID(rawValue: UUID()),
+                startedAt: now.addingTimeInterval(-3_600 * 5),
+                endedAt: now.addingTimeInterval(-3_600 * 4),
+                status: .ready,
+                participantNames: ["Dana Holt", "Ilya Marsh"],
+                hasTranscript: true
+            ),
+            RecentCallSummary(
+                id: CallID(rawValue: UUID()),
+                startedAt: now.addingTimeInterval(-3_600 * 27),
+                endedAt: now.addingTimeInterval(-3_600 * 26),
+                status: .ready,
+                participantNames: ["Priya Raman"],
+                hasTranscript: true
+            ),
+            RecentCallSummary(
+                id: CallID(rawValue: UUID()),
+                startedAt: now.addingTimeInterval(-3_600 * 50),
+                endedAt: now.addingTimeInterval(-3_600 * 49),
+                status: .ready,
+                participantNames: ["Dana Holt", "Priya Raman", "Ilya Marsh"],
+                hasTranscript: true
+            ),
+        ]
+    }
+
     private func refreshMetadataFromProcessor() async {
         guard let store else { return }
         do {

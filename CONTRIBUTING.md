@@ -29,8 +29,10 @@ Useful during development:
 
 - `swift run CallRecorder` runs the app from the build directory.
 - `scripts/preview.sh <dir>` renders every window to PNG files without packaging, signing, or
-  installing. Renders read the real library by default; set `CALL_RECORDER_PREVIEW_HOME` to
-  an empty directory to render against a throwaway library instead.
+  installing. Renders read the real library by default, which is what makes them useful while
+  developing and unfit to publish: set `CALL_RECORDER_PREVIEW_HOME` to a throwaway directory and
+  `CALL_RECORDER_PREVIEW_SEED=1` to draw from an invented library instead. `scripts/release.sh
+  --sync` does exactly that, so the pictures in the README carry nobody's history.
 - `scripts/package-app.sh <output>` builds the distributable bundle.
 
 ## Checks that run themselves

@@ -101,6 +101,11 @@ enum SnapshotRunner {
         // the load to finish before drawing anything, so a picture of a pane is a picture of
         // the real data. The wait is bounded: a render must never hang.
         waitForMetadata(model)
+        // A picture that leaves this machine is drawn from an invented library: the release
+        // renderer asks for one, so the README cannot carry anybody's call history.
+        if ProcessInfo.processInfo.environment["CALL_RECORDER_PREVIEW_SEED"] == "1" {
+            model.seedPreviewLibrary()
+        }
 
         // The popover is the surface the user opens most often, and it looks different in every
         // state. Rendering only the idle one left the recording, paused, and error layouts

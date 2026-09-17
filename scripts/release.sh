@@ -63,7 +63,11 @@ sync() {
     perl -pi -e "s/CallRecorder-[0-9][0-9.]*[.]zip/$archive/g" README.md
     sed -i '' "1s/^Call Recorder .*/Call Recorder $version/" DISTRIBUTION_README.txt
 
-    scripts/preview.sh >/dev/null
+    # The pictures are published, so they are drawn from an invented library in a throwaway home:
+    # a render of the real one carries somebody's call history and their colleagues' names.
+    preview_home=$(mktemp -d /tmp/call-recorder-preview.XXXXXX)
+    trap 'rm -rf -- "$preview_home"' EXIT
+    CALL_RECORDER_PREVIEW_HOME="$preview_home" CALL_RECORDER_PREVIEW_SEED=1 scripts/preview.sh >/dev/null
     local image
     for image in $images; do
         local rendered="dist/preview/${image:t}"
