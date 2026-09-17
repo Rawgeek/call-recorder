@@ -1,4 +1,4 @@
-Call Recorder 0.1.3
+Call Recorder 0.1.4
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
@@ -16,6 +16,13 @@ Setup
    install the app files your own voice under your macOS account name; change it there if
    you prefer another label.
 7. Keep Start Call Recorder at login enabled for automatic launch.
+
+Updates
+- From this version on, Call Recorder checks its own repository at launch and every six hours.
+- A newer release is downloaded and checked in the background, and installed when the app quits:
+  the next time you open it, it is the new version. Nothing happens while a call is running.
+- Settings > General > Updates shows the state, and keeps the version the update replaced so it
+  can be put back. The log is at ~/Library/Logs/CallRecorder/app-update.log.
 
 Queued calls process in the background, so the next recording can start immediately.
 Microphone and system audio are captured separately. Whisper transcribes each available

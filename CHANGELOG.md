@@ -4,6 +4,27 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.4] - 2026-09-17
+
+An updates release. Call Recorder keeps itself current with the releases of its own repository,
+and installs one when it quits.
+
+### Added
+- The app follows `Rawgeek/call-recorder` at launch and every six hours. A newer release is
+  downloaded, compared with the digest the release published, and unpacked beside the app, where
+  the bundle inside it is checked again: identifier, version, a valid signature, and the same
+  signer as the copy that is running. Nothing is swapped while the app is in use.
+- The swap happens as the app quits, which is the one moment the bundle is idle, so the next
+  launch is the new version and no call is interrupted. The version that was working is kept in
+  Application Support, and Settings > General > Updates can put it back the same way.
+- Settings > General > Updates shows the version, the automatic option, a check now, download
+  progress, and whatever is waiting. A version the user went back from is still offered, and is
+  never installed by itself again.
+- Every step is written to `~/Library/Logs/CallRecorder/app-update.log`, including the path of
+  the copy that was kept.
+- A swap interrupted between its two renames is repaired at the next launch, and a copy left
+  behind by an earlier run is removed rather than trusted.
+
 ## [0.1.3] - 2026-09-17
 
 A size release. The app bundle is 10 MB instead of 49 MB, and every Whisper model the model host
