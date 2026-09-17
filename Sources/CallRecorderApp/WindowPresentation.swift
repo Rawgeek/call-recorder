@@ -35,6 +35,51 @@ enum WindowPresentation {
         ) { _ in
             MainActor.assumeIsolated { refreshActivationPolicySoon() }
         }
+        // The menu bar panel is sized by SwiftUI, and it is sized once per surface: a window that
+        // has been tall never comes back shorter on its own. Every moment the panel comes on
+        // screen is a chance to give it the height of what it actually holds.
+        for name in [NSWindow.didChangeOcclusionStateNotification, NSWindow.didBecomeKeyNotification] {
+            center.addObserver(forName: name, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { fitMenuBarPanels() }
+            }
+        }
+    }
+
+    /// Gives every borderless window of the app, which is the menu bar panel and nothing else,
+    /// the height of what it holds.
+    static func fitMenuBarPanels() {
+        for window in NSApplication.shared.windows where !window.styleMask.contains(.titled) {
+            fitMenuBarPanel(window)
+        }
+    }
+
+    /// Puts the menu bar panel under the menu bar, and no taller than what it holds.
+    ///
+    /// The panel is the app's only borderless window. SwiftUI sizes it from the height of the
+    /// surface inside it, and that height only ever grows: a list that loses rows, or a card that
+    /// is sent away, leaves the window at the tallest height the surface has had. Nothing is drawn
+    /// in the leftover strip at the top, and the window is clear there, so the desktop shows
+    /// through it and the panel reads as though it had a transparent header. The strip is removed
+    /// by giving the window the height its content asks for, and its top edge is put against the
+    /// menu bar for the same reason: a panel that hangs lower than the bar reads the same way.
+    ///
+    /// The measurement is only ever used to make the window shorter. A window drawn by the system
+    /// is the authority on how tall it should be, and a number larger than the window would be a
+    /// measurement of something else.
+    static func fitMenuBarPanel(_ window: NSWindow) {
+        guard !window.styleMask.contains(.titled) else { return }
+        // The screen it is on, or the main one: a window that has not been placed yet reports no
+        // screen of its own, and the menu bar of the main screen is the same answer.
+        guard let content = window.contentView, let screen = window.screen ?? NSScreen.main else { return }
+        var frame = window.frame
+        let fitting = content.fittingSize.height
+        if fitting > 0, fitting < frame.height - 0.5 { frame.size.height = fitting }
+        frame.origin.y = screen.visibleFrame.maxY - frame.height
+        guard
+            abs(frame.height - window.frame.height) > 0.5
+                || abs(frame.origin.y - window.frame.origin.y) > 0.5
+        else { return }
+        window.setFrame(frame, display: true)
     }
 
     static func present(
