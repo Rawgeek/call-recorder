@@ -126,6 +126,18 @@ is zero and its frames are unreadable. Every stage downstream -- mixing, diariza
 **Rule:** nothing reads a segment until its writer has closed it. Finalisation is a stage with its
 own state, and a call that reached it is never left looking as though the audio never arrived.
 
+### A child's output read through a pipe is a race with a clock on it
+
+Diarization read its script's standard output through a pipe, on a thread the parent then waited
+five seconds for after the script had exited. On a busy machine that thread could still be waiting
+to be scheduled when the five seconds ran out, and a run that had failed for a real reason --
+"No Hugging Face token found" -- was reported as an empty output instead. The error sent a reader
+to the wrong place, and the fault the script had described was thrown away.
+
+**Rule:** send a child's streams to files and read them after it exits. There is nothing to wait
+for, and a file cannot be truncated by the reader being late. Every command this app runs does
+this; the diarizer was the one that did not.
+
 ### An empty microphone track is not an empty call
 
 The two sources are captured separately, and one of them can be silent for a whole recording: a

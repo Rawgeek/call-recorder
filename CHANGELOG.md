@@ -4,6 +4,35 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.7] - 2026-09-17
+
+A quiet release. Automatic recording stops when the room goes silent, and a diarization failure
+reports the fault it actually met.
+
+### Added
+- Automatic recording stops after ten minutes without speech. A meeting that ends can leave its
+  app holding the microphone, and the recorder then holds an empty room until the ceiling, hours
+  later. The capture measures both sources, and speech is counted at -50 dBFS: the room tone of
+  the recordings in the library sits at -66 to -53 dBFS and speech reaches -42 and above. The rail
+  has the same switch as the other three, it applies only to a recording the app started by itself,
+  and it fails open. A meter that has read nothing, or a buffer whose format it does not
+  understand, is not evidence of silence: the rail does nothing rather than stop a call it cannot
+  hear.
+
+### Fixed
+- A diarization run that failed for a real reason could be reported as an empty output. The
+  script's standard output arrived through a pipe read by a thread on the utility queue, and the
+  parent waited five seconds after the script had exited for that reader to finish; on a busy
+  machine the reader could still be waiting to be scheduled, and the error it was carrying was
+  replaced by one that names the wrong fault. Both streams now go to files, as they do for every
+  other command the app runs.
+
+### Verified
+- 573 tests pass. Seven of the new ones cover the level measure and the meter, including the two
+  cases where the meter must refuse to answer.
+- The threshold was measured before it was chosen: every 20 ms window of the microphone and system
+  track of the four recordings still on this Mac, reported as a peak level.
+
 ## [0.1.6] - 2026-09-17
 
 An accuracy release. A transcript holds each sentence once, and automatic recording stays inside

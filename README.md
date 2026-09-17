@@ -19,6 +19,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 - Automatic recording stays inside limits: an app that is not a call never starts one, a
   recording shorter than the floor is set aside, and one that reaches the ceiling is stopped.
   Recording you start and stop by hand is kept whatever it holds.
+- A meeting that ends can leave its app holding the microphone. When both sources stay quieter
+  than speech for ten minutes, the recording stops.
 - Manual Start, Pause, Resume, Stop, and Discard from the menu-bar panel. The next call can
   start while an earlier one is still being processed.
 - The microphone is chosen by name, or set to follow whichever input macOS is set to use. A call
@@ -85,9 +87,9 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 | | |
 | --- | --- |
-| ![The menu-bar panel while recording](docs/images/menu-bar-recording.png) | ![Recent calls in the menu-bar panel](docs/images/menu-bar-recent.png) |
+| ![The menu-bar panel while recording](docs/images/menu-bar-recording.png) | ![Recent calls in the menu-bar panel](docs/images/menu-bar-idle.png) |
 | ![Participants settings](docs/images/settings-people.png) | ![Vocabulary settings](docs/images/settings-vocabulary.png) |
-| ![Models settings](docs/images/settings-models.png) | ![The vocabulary editor](docs/images/glossary-editor.png) |
+| ![Models settings](docs/images/settings-models.png) | ![The vocabulary editor](docs/images/editor-term.png) |
 
 ## Requirements
 
@@ -100,7 +102,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.6.zip` from the
+1. Download `CallRecorder-0.1.7.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
