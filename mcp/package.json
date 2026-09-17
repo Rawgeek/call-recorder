@@ -1,0 +1,23 @@
+{
+  "name": "call-recorder-mcp",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "biome check src test",
+    "format": "biome check --write src test",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "latest",
+    "@libsql/client": "latest",
+    "@modelcontextprotocol/sdk": "latest",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest",
+    "bun-types": "latest",
+    "typescript": "latest"
+  }
+}

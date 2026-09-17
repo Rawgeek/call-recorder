@@ -1,0 +1,50 @@
+name: Bug report
+description: Something did not work as described.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Settings -> Recovery** and the copy button on any error
+        surface give the most useful details. Remove names and transcript text before posting;
+        they are not needed to reproduce a bug.
+  - type: input
+    id: version
+    attributes:
+      label: Version and build
+      description: From Settings -> General, or the release name.
+      placeholder: 0.1.0 (build 90)
+    validations:
+      required: true
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac model
+      placeholder: macOS 15.6, MacBook Pro (M3)
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How it was installed
+      options:
+        - Release build
+        - Built from source
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected instead, and the steps that led to it.
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Error details or diagnostics
+      description: Paste Copy Error Details output, or attach a diagnostics bundle.
+      render: text
+    validations:
+      required: false

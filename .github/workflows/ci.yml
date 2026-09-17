@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  swift:
+    name: Swift build and tests
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: swift --version
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test
+
+  mcp:
+    name: MCP server tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: mcp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install
+        run: bun install
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        run: bun test

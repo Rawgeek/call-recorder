@@ -1,0 +1,26 @@
+# Build and package output
+.build/
+dist/
+.venv/
+
+# Node dependencies for the MCP server and indexer
+node_modules/
+
+# Local runtime data: databases, journals, and diagnostics
+*.db
+*.db-shm
+*.db-wal
+.diagnostics/
+.debug-journal.md
+
+# Local design and audit material, kept out of the public tree
+docs/audit/
+docs/concepts/
+docs/superpowers/
+docs/screenshots/
+docs/ui-redesign-2026-09-16.md
+docs/ui-ux-audit-2026-09-16.md
+docs/voice-recognition-review-2026-09-09.md
+
+# macOS
+.DS_Store
