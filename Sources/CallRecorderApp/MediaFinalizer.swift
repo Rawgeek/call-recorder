@@ -104,7 +104,15 @@ struct MediaFinalizer: Sendable {
                     && $0.firstPresentationSeconds.isFinite
             })
         {
-            try renderTimeline(sources, origin: timelineOrigin, to: partialURL)
+            // One segment needs no timeline work, so nothing here has to be decoded. Copying gives
+            // the same audio without a second lossy pass, and it turns an encode that runs for as
+            // long as the call did into a remux that finishes at once. Every call without a pause
+            // arrives here.
+            if sources.count == 1, try canBeCopiedIntoM4A(sources[0].fileURL) {
+                try copyTrack(sources[0].fileURL, to: partialURL)
+            } else {
+                try renderTimeline(sources, origin: timelineOrigin, to: partialURL)
+            }
         } else {
             let waveURLs = sources.indices.map {
                 destination.appending(path: ".finalizing-\(stem)-\(token)-\($0).wav")
@@ -191,14 +199,7 @@ struct MediaFinalizer: Sendable {
     }
 
     private func renderWave(from source: URL, to destination: URL) throws {
-        let probe = try run(
-            ffprobe,
-            [
-                "-v", "error", "-select_streams", "a",
-                "-show_entries", "stream=index", "-of", "csv=p=0", source.path,
-            ]
-        )
-        let trackCount = probe.standardOutput.split(whereSeparator: \Character.isNewline).count
+        let trackCount = try audioTrackCount(of: source)
         guard trackCount > 0 else { throw MediaFinalizerError.noAudio(source) }
 
         var arguments = ["-v", "error", "-y", "-i", source.path]
@@ -219,6 +220,12 @@ struct MediaFinalizer: Sendable {
     }
 
     private func join(_ sources: [URL], at destination: URL) throws {
+        // One source is already the finished audio, so it is copied rather than decoded and encoded
+        // a second time.
+        if sources.count == 1, let source = sources.first, try canBeCopiedIntoM4A(source) {
+            try copyTrack(source, to: destination)
+            return
+        }
         var arguments = ["-v", "error", "-y"]
         for source in sources {
             arguments.append(contentsOf: ["-i", source.path])
@@ -247,6 +254,48 @@ struct MediaFinalizer: Sendable {
             ]
         )
         return Double(result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+    }
+
+    /// Remuxes one finished recording into its final file without re-encoding it.
+    private func copyTrack(_ source: URL, to destination: URL) throws {
+        _ = try run(
+            ffmpeg,
+            [
+                "-v", "error", "-y", "-i", source.path,
+                "-map", "0:a:0", "-vn", "-c:a", "copy",
+                "-movflags", "+faststart", destination.path,
+            ]
+        )
+    }
+
+    /// How many audio tracks a file holds.
+    private func audioTrackCount(of url: URL) throws -> Int {
+        let probe = try run(
+            ffprobe,
+            [
+                "-v", "error", "-select_streams", "a",
+                "-show_entries", "stream=index", "-of", "csv=p=0", url.path,
+            ]
+        )
+        return probe.standardOutput.split(whereSeparator: \Character.isNewline).count
+    }
+
+    /// Whether a file can be dropped into an audio-only MP4 as it is.
+    ///
+    /// Only a track that is already AAC, and only when there is exactly one of them. The
+    /// intermediate files this class writes while scoring a timeline are PCM inside a wave, and a
+    /// wave copied into an m4a fails at the muxer: the container cannot name that codec.
+    private func canBeCopiedIntoM4A(_ url: URL) throws -> Bool {
+        guard try audioTrackCount(of: url) == 1 else { return false }
+        let probe = try run(
+            ffprobe,
+            [
+                "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=codec_name",
+                "-of", "default=noprint_wrappers=1:nokey=1", url.path,
+            ]
+        )
+        return probe.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines) == "aac"
     }
 
     private func run(_ executable: URL, _ arguments: [String]) throws -> ProcessResult {

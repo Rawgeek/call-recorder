@@ -1,12 +1,12 @@
 import AVFoundation
 import CoreMedia
 import Foundation
+import OSLog
 
 enum AudioSampleWriterError: LocalizedError {
     case invalidAudioFormat
     case outputExists(URL)
     case writerFailed(String)
-    case backPressure
 
     var errorDescription: String? {
         switch self {
@@ -16,8 +16,6 @@ enum AudioSampleWriterError: LocalizedError {
             "The audio output already exists: \(url.lastPathComponent)"
         case let .writerFailed(message):
             "The audio writer failed: \(message)"
-        case .backPressure:
-            "The audio writer could not accept captured samples."
         }
     }
 }
@@ -37,6 +35,18 @@ final class AudioSampleWriter: @unchecked Sendable {
     private var firstPresentationTime: CMTime?
     private var lastPresentationEnd: CMTime?
     private var appendError: (any Error)?
+    private var droppedSamples = 0
+    private let logger = Logger(subsystem: "local.callrecorder.app", category: "capture")
+
+    /// How long a sample may wait for the encoder before it is dropped.
+    ///
+    /// A capture stream delivers samples in real time, so the wait has to be bounded: the stream
+    /// stays in step by losing a sample, never by holding the queue. The budget is well under the
+    /// twenty milliseconds one buffer covers, so the next sample still finds the encoder free.
+    private static let readinessPatienceMilliseconds = 16
+
+    /// How long one wait step sleeps for.
+    private static let readinessStepMilliseconds: UInt32 = 2
 
     init(destination: URL) {
         self.destination = destination
@@ -51,7 +61,15 @@ final class AudioSampleWriter: @unchecked Sendable {
         if let appendError { throw appendError }
         do {
             let input = try prepareWriter(for: sampleBuffer)
-            guard input.isReadyForMoreMediaData else { throw AudioSampleWriterError.backPressure }
+            guard waitForReadiness(input) else {
+                // The encoder is behind. This used to throw, and the router reads any throw as a
+                // failed track and cancels that whole source: a disk still busy with the last
+                // call's audio cost the next call one entire side of it. A dropped sample is a
+                // click; losing the track is a call without the other person in it.
+                if let appendError { throw appendError }
+                droppedSamples += 1
+                return
+            }
             guard input.append(sampleBuffer) else {
                 throw AudioSampleWriterError.writerFailed(
                     writer?.error?.localizedDescription ?? "sample append failed"
@@ -91,14 +109,38 @@ final class AudioSampleWriter: @unchecked Sendable {
             throw AudioSampleWriterError.outputExists(destination)
         }
         try FileManager.default.moveItem(at: partial, to: destination)
+        if droppedSamples > 0 {
+            logger.notice(
+                "capture dropped \(self.droppedSamples, privacy: .public) samples under back pressure"
+            )
+        }
         return CapturedAudioSource(
             fileURL: destination,
             firstPresentationSeconds: CMTimeGetSeconds(context.firstPresentationTime),
             durationSeconds: max(
                 0,
                 CMTimeGetSeconds(context.lastPresentationEnd - context.firstPresentationTime)
-            )
+            ),
+            droppedSamples: droppedSamples > 0 ? droppedSamples : nil
         )
+    }
+
+    /// Waits a bounded moment for the encoder to accept another sample.
+    ///
+    /// The lock is released while waiting, so a stop that arrives during a stall is not held behind
+    /// the wait. Returns false when the patience ran out, which is the caller's cue to drop.
+    private func waitForReadiness(_ input: AVAssetWriterInput) -> Bool {
+        var waited = 0
+        while !input.isReadyForMoreMediaData {
+            // A failure recorded while waiting is the real answer, and the caller reports it.
+            if appendError != nil { return true }
+            guard waited < Self.readinessPatienceMilliseconds else { return false }
+            lock.unlock()
+            usleep(Self.readinessStepMilliseconds * 1_000)
+            lock.lock()
+            waited += Int(Self.readinessStepMilliseconds)
+        }
+        return true
     }
 
     func cancel() {

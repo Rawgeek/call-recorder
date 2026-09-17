@@ -156,4 +156,79 @@ struct MediaFinalizerTests {
         #expect(duration > 0.65)
         #expect(duration < 0.9)
     }
+
+    @Test("a single unbroken track is copied, not encoded a second time", .enabled(if: TestEnvironment.hasFFmpeg))
+    func singleSegmentTrackIsCopiedRatherThanEncoded() async throws {
+        // Given one segment holding both sides, which is what a call without a pause produces.
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "single-segment-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ffmpeg = URL(filePath: "/opt/homebrew/bin/ffmpeg")
+        let ffprobe = URL(filePath: "/opt/homebrew/bin/ffprobe")
+        let systemSource = directory.appending(path: "system-001.m4a")
+        let microphoneSource = directory.appending(path: "microphone-001.m4a")
+        for (url, frequency) in [(systemSource, 440), (microphoneSource, 880)] {
+            try ProcessRunner.runChecked(
+                executable: ffmpeg,
+                arguments: [
+                    "-v", "error", "-f", "lavfi", "-i", "sine=frequency=\(frequency):duration=0.2",
+                    "-c:a", "aac", url.path,
+                ]
+            )
+        }
+        let segments = [
+            try CaptureSegment(
+                index: 1,
+                system: CapturedAudioSource(
+                    fileURL: systemSource,
+                    firstPresentationSeconds: 0,
+                    durationSeconds: 0.2
+                ),
+                microphone: CapturedAudioSource(
+                    fileURL: microphoneSource,
+                    firstPresentationSeconds: 0,
+                    durationSeconds: 0.2
+                )
+            )
+        ]
+
+        // When
+        let result = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
+            .finalizeSources(segments: segments, destination: directory)
+
+        // Then each track is the recorded stream packet for packet, so nothing was decoded and
+        // encoded again on the way to disk.
+        let system = try #require(result.system)
+        let microphone = try #require(result.microphone)
+        #expect(try packetHash(of: system, ffmpeg: ffmpeg) == packetHash(of: systemSource, ffmpeg: ffmpeg))
+        #expect(
+            try packetHash(of: microphone, ffmpeg: ffmpeg)
+                == packetHash(of: microphoneSource, ffmpeg: ffmpeg)
+        )
+        // And the mix still carries both sides.
+        let mix = try #require(result.compatibilityMix)
+        let probe = try ProcessRunner.runChecked(
+            executable: ffprobe,
+            arguments: [
+                "-v", "error", "-show_entries", "format=duration",
+                "-of", "default=noprint_wrappers=1:nokey=1", mix.path,
+            ]
+        )
+        #expect(
+            (Double(probe.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0.15
+        )
+    }
+
+    /// The hash of a file's audio packets as they are, without decoding them.
+    private func packetHash(of url: URL, ffmpeg: URL) throws -> String {
+        let result = try ProcessRunner.runChecked(
+            executable: ffmpeg,
+            arguments: [
+                "-v", "error", "-i", url.path, "-map", "0:a:0", "-c", "copy",
+                "-f", "hash", "-hash", "sha256", "-",
+            ]
+        )
+        return result.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }

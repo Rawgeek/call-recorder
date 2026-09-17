@@ -7,6 +7,12 @@ struct CapturedAudioSource: Codable, Equatable, Sendable {
     let fileURL: URL
     let firstPresentationSeconds: Double
     let durationSeconds: Double
+    /// Samples the encoder could not take in time, when there were any.
+    ///
+    /// Optional so a manifest written before this was counted still reads. A drop is a few
+    /// milliseconds of audio and the recording carries on: the number is here to say whether a
+    /// call lost anything, which is otherwise invisible.
+    var droppedSamples: Int? = nil
 }
 
 struct CaptureSourcePaths: Equatable, Sendable {
