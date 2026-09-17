@@ -353,6 +353,7 @@ final class AppModel {
     private var backgroundDiagnosedFailures: Set<CallID> = []
     private var launchStartConsumed = false
     private var stopGraceTask: Task<Void, Never>?
+    private var recordingCeilingTask: Task<Void, Never>?
     private var modelMaintenanceTask: Task<Void, Never>?
     private var speakerReviewRequestTask: Task<Void, Never>?
     private var captureQueue = CaptureCommandQueue()
@@ -528,9 +529,14 @@ final class AppModel {
             // index a call themselves, and it must run after the pipeline started so it cannot
             // close a job the processor is working on.
             await settleCompletedIndexingJobsNow()
-            activityMonitor.start { [weak self] isActive in
-                self?.microphoneActivityChanged(isActive)
-            }
+            activityMonitor.start(
+                ignoringNonCallApps: { [weak self] in
+                    self?.settings.ignoresNonCallApps ?? true
+                },
+                onChange: { [weak self] isActive in
+                    self?.microphoneActivityChanged(isActive)
+                }
+            )
             // These used to run from the menu bar label's onAppear, which macOS does not
             // call until the menu is first drawn. Automatic model updates waited for a click
             // that might never come, so they start here instead.
@@ -2229,6 +2235,54 @@ final class AppModel {
         }
     }
 
+    /// Stops a recording that has run past the ceiling.
+    ///
+    /// A call app usually releases the microphone when the meeting ends, and the recorder that
+    /// watches the microphone then stops by itself. This is the backstop for the times it does not.
+    /// A microphone left open records the room, and the library has fifteen hours of exactly that,
+    /// in three recordings nobody asked for. The check is on the recorded time rather than on the
+    /// clock, so a call paused for an hour is judged by what it holds.
+    ///
+    /// Only a recording this app started by itself is stopped, and only while the setting is on.
+    /// The control that a person presses is not overruled by a timer.
+    private func startRecordingCeiling() {
+        recordingCeilingTask?.cancel()
+        guard settings.maximumAutomaticRecordingMinutes > 0 else {
+            recordingCeilingTask = nil
+            return
+        }
+        recordingCeilingTask = Task { [weak self] in
+            // Fifteen seconds is short enough that a long recording is not much past its ceiling,
+            // and long enough that the check costs nothing while a call runs.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(15))
+                guard !Task.isCancelled, let self else { return }
+                guard self.recorderState.phase == .recording else { continue }
+                let recorded = Self.recordedSeconds(
+                    banked: self.recordedSecondsBeforePause,
+                    currentRunStartedAt: self.recordingStartedAt,
+                    paused: self.recordingPausedAt != nil,
+                    at: Date()
+                )
+                let ceiling = self.settings.maximumAutomaticRecordingMinutes
+                guard AutomaticRecordingRails.hasReachedCeiling(
+                    recordedSeconds: recorded,
+                    maximumMinutes: ceiling
+                ) else { continue }
+                Logger(subsystem: "local.callrecorder.app", category: "capture")
+                    .notice(
+                        "stopping an automatic recording at its \(Int(ceiling), privacy: .public) minute ceiling"
+                    )
+                self.errorMessage = "Stopped after " + String(Int(ceiling))
+                    + " minutes. A call app held the microphone longer than the limit allows."
+                _ = self.captureQueue.enqueue { [weak self] in
+                    await self?.stopRecording(automatic: true)
+                }
+                return
+            }
+        }
+    }
+
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
         guard let pipeline else {
@@ -2261,6 +2315,9 @@ final class AppModel {
             capturedSegments = []
             nextSegmentIndex = 2
             recordingStartedAt = startedAt
+            // A recording this app started by itself carries a ceiling, so a call app that holds
+            // the microphone open after the meeting ends cannot record a room for hours.
+            if automatic { startRecordingCeiling() }
             // A new call starts its own count, so nothing banked by the call before it is added on.
             recordedSecondsBeforePause = 0
             if automatic {
@@ -2350,6 +2407,8 @@ final class AppModel {
         guard recorderState.phase == .recording || recorderState.phase == .paused else { return }
         guard !captureOperationInFlight else { return }
         stopGraceTask?.cancel()
+        recordingCeilingTask?.cancel()
+        recordingCeilingTask = nil
         captureOperationInFlight = true
         defer { captureOperationInFlight = false }
         if automatic {
@@ -2369,6 +2428,35 @@ final class AppModel {
                 let activeCallID,
                 let activeSessionDirectory
             else { throw AudioCaptureError.notCapturing }
+            // A recording this app started by itself, and that lasted less than the floor, is a
+            // microphone that opened for a moment and not a call. It goes where a recording
+            // discarded by hand goes, and nothing is ever transcribed from it.
+            let recorded = Self.recordedSeconds(
+                banked: recordedSecondsBeforePause,
+                currentRunStartedAt: recordingStartedAt,
+                paused: false,
+                at: Date()
+            )
+            let minimum = settings.minimumAutomaticRecordingSeconds
+            if automatic,
+               AutomaticRecordingRails.isTooShort(recordedSeconds: recorded, minimumSeconds: minimum)
+            {
+                _ = try artifactRecovery.discardCall(
+                    activeCallID,
+                    sourceDirectory: activeSessionDirectory
+                )
+                clearRecordingContext()
+                apply(.audioFinalizedAndQueued)
+                recoverableArtifacts = (try? artifactRecovery.items()) ?? recoverableArtifacts
+                recoveryMessage = "A recording of " + String(Int(recorded.rounded()))
+                    + " s was shorter than the " + String(Int(minimum))
+                    + " s minimum, so it was discarded."
+                Logger(subsystem: "local.callrecorder.app", category: "capture")
+                    .notice(
+                        "discarded an automatic recording of (Int(recorded.rounded()), privacy: .public) seconds"
+                    )
+                return
+            }
             let snapshot = PendingBackgroundCall(
                 callID: activeCallID,
                 segments: capturedSegments.map {

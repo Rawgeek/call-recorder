@@ -36,6 +36,73 @@ struct GeneralSettingsView: View {
             }
 
             CRSettingsCard(
+                title: "Automatic recording",
+                footnote: "These apply to recordings the app starts by itself. Anything you start "
+                    + "and stop by hand is kept and transcribed whatever it holds."
+            ) {
+                CRSettingsRow(
+                    title: "Leave out apps that are not calls",
+                    detail: model.settings.ignoresNonCallApps
+                        ? "The voice recorder, dictation and the assistant never start a recording."
+                        : "Any app that opens the microphone starts a recording.",
+                    info: "More than meetings open the microphone. A voice memo, a dictation, and "
+                        + "the system assistant all take it, and each of them used to start a call "
+                        + "that had to be discarded. The list is short on purpose: an app that is "
+                        + "not on it starts a recording, which costs one click to stop, while an "
+                        + "app wrongly on it loses a meeting."
+                ) {
+                    Toggle("", isOn: $model.settings.ignoresNonCallApps)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Discard recordings shorter than",
+                    detail: model.settings.minimumAutomaticRecordingSeconds == 0
+                        ? "Off. Every recording is transcribed, however short."
+                        : "A shorter recording goes to Recently Deleted instead of being transcribed.",
+                    info: "An app that opens the microphone for a second — a device check, a "
+                        + "notification, a test — used to cost a full transcription and a row in "
+                        + "the library. A recording that short is moved to Recently Deleted, where "
+                        + "it stays for a day and can be put back."
+                ) {
+                    Stepper(
+                        value: $model.settings.minimumAutomaticRecordingSeconds,
+                        in: 0...300,
+                        step: 15
+                    ) {
+                        Text(minimumRecordingText)
+                            .monospacedDigit()
+                            .frame(minWidth: 44, alignment: .trailing)
+                    }
+                    .fixedSize()
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Stop automatically after",
+                    detail: model.settings.maximumAutomaticRecordingMinutes == 0
+                        ? "Off. A recording runs until the call app lets the microphone go."
+                        : "A recording still running at the limit is stopped and kept.",
+                    info: "A call app can hold the microphone open after the meeting ends, and a "
+                        + "recorder that stops only when the microphone goes quiet records an empty "
+                        + "room. One recorded fifteen hours that way. The limit counts recorded "
+                        + "time, so a call paused for an hour is judged by what it holds."
+                ) {
+                    Stepper(
+                        value: $model.settings.maximumAutomaticRecordingMinutes,
+                        in: 0...600,
+                        step: 30
+                    ) {
+                        Text(maximumRecordingText)
+                            .monospacedDigit()
+                            .frame(minWidth: 64, alignment: .trailing)
+                    }
+                    .fixedSize()
+                }
+            }
+
+            CRSettingsCard(
                 title: "Recording",
                 footnote: "A headset's microphone drops to call quality while it is in use, so the built-in microphone usually records a meeting better."
             ) {
@@ -256,6 +323,18 @@ struct GeneralSettingsView: View {
         let components = model.settings.outputDirectory.split(separator: "/")
         if components.count <= 2 { return model.settings.outputDirectory }
         return "…/" + components.suffix(2).joined(separator: "/")
+    }
+
+    /// The floor, as a person reads it: a number of seconds, or off.
+    private var minimumRecordingText: String {
+        let seconds = model.settings.minimumAutomaticRecordingSeconds
+        return seconds == 0 ? "Off" : String(Int(seconds.rounded())) + " s"
+    }
+
+    /// The ceiling, as a person reads it: minutes, or off.
+    private var maximumRecordingText: String {
+        let minutes = model.settings.maximumAutomaticRecordingMinutes
+        return minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
     }
 
     private var selectedMicrophone: AudioInputDevice? {

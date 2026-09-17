@@ -1,0 +1,93 @@
+import Foundation
+
+/// The rules that keep automatic recording from producing a recording nobody wanted.
+///
+/// Automatic recording watches the microphone, and the microphone is opened by more than meetings.
+/// A voice memo, a dictation, and a system assistant all take it, and every one of them used to
+/// start a call. The other direction is worse: a call app can hold the microphone open after the
+/// meeting ends, and a recorder that only stops when the microphone goes quiet records the empty
+/// room. One known library recorded fifteen hours that way, in three recordings nobody asked for.
+///
+/// Three rules answer that, and each one is a backstop rather than a feature: a recording shorter
+/// than the floor is thrown away, a recording longer than the ceiling is stopped, and an app that
+/// is not a meeting never starts one. A recording a person starts and stops by hand is untouched by
+/// all three, because every one of them is a guess about intent and a button press is not.
+public enum AutomaticRecordingRails {
+    /// How long a recording has to last before it is worth transcribing.
+    ///
+    /// Thirty seconds. A call that matters is longer, and the recordings this drops are the ones
+    /// that open the microphone for a second: an app checking for a device, a notification that
+    /// plays a sound, a window that samples the input once. Transcription costs minutes of
+    /// processor time and the audio costs disk, so a recording that short is work spent on nothing.
+    public static let defaultMinimumSeconds: Double = 30
+
+    /// How long a recording may run before it is stopped.
+    ///
+    /// Three hours. The longest meeting in the library is under two, and a recording that passes
+    /// this is a microphone that was left open rather than a call that ran long.
+    public static let defaultMaximumMinutes: Double = 180
+
+    /// Whether a recording that has just stopped is too short to keep.
+    ///
+    /// A floor of zero turns the rule off, which is what a settings blob from before the rule
+    /// means and what a person who wants every recording asks for.
+    public static func isTooShort(
+        recordedSeconds: TimeInterval,
+        minimumSeconds: Double
+    ) -> Bool {
+        guard minimumSeconds > 0 else { return false }
+        return recordedSeconds < minimumSeconds
+    }
+
+    /// Whether a recording has run long enough to be stopped.
+    ///
+    /// A ceiling of zero turns the rule off. The comparison is on the recorded time rather than on
+    /// the wall clock, so a call that was paused for an hour is judged by what it holds.
+    public static func hasReachedCeiling(
+        recordedSeconds: TimeInterval,
+        maximumMinutes: Double
+    ) -> Bool {
+        guard maximumMinutes > 0 else { return false }
+        return recordedSeconds >= maximumMinutes * 60
+    }
+}
+
+/// Apps that take the microphone and are not a meeting.
+///
+/// Matched by prefix rather than by equality, because an app that uses the microphone often does it
+/// from a helper process: the identifier carries a suffix, and a list of exact identifiers would
+/// miss the process that actually holds the device.
+///
+/// The list is deliberately short. A meetings app that is not on it starts a recording, which is
+/// what the app is for and costs a click to stop; an app wrongly on it loses a meeting, which is
+/// the failure that cannot be undone. Every entry here is a device the person is talking *to*: a
+/// voice recorder, a dictation service, or an assistant. None of them is a conversation with
+/// somebody else.
+public enum NonCallMicrophoneApps {
+    /// Bundle identifiers that never start a recording, matched by prefix and without case.
+    public static let bundleIdentifierPrefixes: [String] = [
+        // The voice recorder, which is what most of these false starts were.
+        "com.apple.voicememos",
+        // Siri and the assistant daemon behind it.
+        "com.apple.siri",
+        "com.apple.assistantd",
+        "com.apple.assistantservices",
+        // Dictation and the speech recognition service it runs in.
+        "com.apple.speechrecognitioncore",
+        "com.apple.coreembeddedspeechrecognition",
+        "com.apple.dictation",
+        // A song being identified is not a meeting either.
+        "com.apple.shazam",
+    ]
+
+    /// Whether an app is one of the ones that never starts a recording.
+    ///
+    /// A process whose identifier could not be read is not ignored. That is the honest reading:
+    /// nothing is known about it, and a missed meeting costs more than a recording that has to be
+    /// discarded.
+    public static func isIgnored(bundleID: String?) -> Bool {
+        guard let bundleID, !bundleID.isEmpty else { return false }
+        let lowered = bundleID.lowercased()
+        return bundleIdentifierPrefixes.contains { lowered.hasPrefix($0) }
+    }
+}

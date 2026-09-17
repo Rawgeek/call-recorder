@@ -1,3 +1,4 @@
+import AppKit
 import CallRecorderCore
 import CoreAudio
 import Foundation
@@ -13,12 +14,23 @@ final class AudioActivityMonitor {
     private(set) var externalMicrophoneActive = false
     private var task: Task<Void, Never>?
 
-    func start(onChange: @escaping @MainActor (Bool) -> Void) {
+    /// Starts watching who holds the microphone.
+    ///
+    /// - Parameters:
+    ///   - ignoringNonCallApps: Read on every poll rather than taken once, so turning the list off
+    ///     in the settings takes effect at the next poll instead of at the next launch.
+    ///   - onChange: Called when the answer changes, and only then.
+    func start(
+        ignoringNonCallApps: @escaping @MainActor () -> Bool,
+        onChange: @escaping @MainActor (Bool) -> Void
+    ) {
         guard task == nil else { return }
         // ponytail: 500 ms polling is sufficient for call starts; add HAL listeners if latency is measured.
         task = Task { [weak self] in
             while !Task.isCancelled {
-                if let isActive = try? Self.readExternalActivity() {
+                if let isActive = try? Self.readExternalActivity(
+                    ignoringNonCallApps: ignoringNonCallApps()
+                ) {
                     guard let self else { return }
                     if isActive != self.externalMicrophoneActive {
                         self.externalMicrophoneActive = isActive
@@ -35,7 +47,7 @@ final class AudioActivityMonitor {
         task = nil
     }
 
-    private static func readExternalActivity() throws -> Bool {
+    private static func readExternalActivity(ignoringNonCallApps: Bool) throws -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyProcessObjectList,
             mScope: kAudioObjectPropertyScopeGlobal,
@@ -73,9 +85,19 @@ final class AudioActivityMonitor {
             guard try readRunningInput(processObject) else { return nil }
             return try readProcessID(processObject)
         }
+        // The process identifier is what the audio system reports; the bundle identifier is what
+        // says whether the process is a meeting. An app that cannot be resolved keeps its vote,
+        // because nothing is known about it.
+        let inputs = activeProcessIDs.map { processID in
+            AudioActivityDecision.Input(
+                processID: processID,
+                bundleID: NSRunningApplication(processIdentifier: pid_t(processID))?.bundleIdentifier
+            )
+        }
         return AudioActivityDecision.hasExternalInput(
-            activeProcessIDs: activeProcessIDs,
-            ownProcessID: ProcessInfo.processInfo.processIdentifier
+            inputs: inputs,
+            ownProcessID: ProcessInfo.processInfo.processIdentifier,
+            ignoringNonCallApps: ignoringNonCallApps
         )
     }
 

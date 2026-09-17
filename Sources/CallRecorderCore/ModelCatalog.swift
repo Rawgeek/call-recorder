@@ -11,6 +11,17 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// off again is a new decision about it and brings the reminder back.
     public var automaticDetectionNoticeDismissed: Bool
     public var automaticStopGraceSeconds: Double
+    /// How long a recording the app started by itself has to last before it is kept.
+    ///
+    /// Zero keeps every recording. The rule lives in `AutomaticRecordingRails`.
+    public var minimumAutomaticRecordingSeconds: Double
+    /// How long a recording the app started by itself may run before it is stopped.
+    ///
+    /// Zero is no ceiling. The rule lives in `AutomaticRecordingRails`.
+    public var maximumAutomaticRecordingMinutes: Double
+    /// Whether the voice recorder, dictation, and the assistant are left out of automatic
+    /// detection. The list is `NonCallMicrophoneApps`.
+    public var ignoresNonCallApps: Bool
     public var selectedMicrophoneID: String?
     public var localParticipantID: ParticipantID?
     public var selectedWhisperModelID: String
@@ -54,6 +65,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case automaticDetectionEnabled
         case automaticDetectionNoticeDismissed
         case automaticStopGraceSeconds
+        case minimumAutomaticRecordingSeconds
+        case maximumAutomaticRecordingMinutes
+        case ignoresNonCallApps
         case selectedMicrophoneID
         case localParticipantID
         case selectedWhisperModelID
@@ -70,6 +84,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
             automaticDetectionEnabled: true,
             automaticDetectionNoticeDismissed: false,
             automaticStopGraceSeconds: 2,
+            minimumAutomaticRecordingSeconds: AutomaticRecordingRails.defaultMinimumSeconds,
+            maximumAutomaticRecordingMinutes: AutomaticRecordingRails.defaultMaximumMinutes,
+            ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
@@ -106,6 +123,18 @@ extension AppSettings {
         automaticStopGraceSeconds =
             try container.decodeIfPresent(Double.self, forKey: .automaticStopGraceSeconds)
             ?? fallback.automaticStopGraceSeconds
+        // Added after the first release, and each carries the behaviour the app had before the
+        // option existed: a settings blob with no value here belongs to a Mac that recorded
+        // everything it detected, which is what the defaults describe.
+        minimumAutomaticRecordingSeconds =
+            try container.decodeIfPresent(Double.self, forKey: .minimumAutomaticRecordingSeconds)
+            ?? fallback.minimumAutomaticRecordingSeconds
+        maximumAutomaticRecordingMinutes =
+            try container.decodeIfPresent(Double.self, forKey: .maximumAutomaticRecordingMinutes)
+            ?? fallback.maximumAutomaticRecordingMinutes
+        ignoresNonCallApps =
+            try container.decodeIfPresent(Bool.self, forKey: .ignoresNonCallApps)
+            ?? fallback.ignoresNonCallApps
         selectedMicrophoneID =
             try container.decodeIfPresent(String.self, forKey: .selectedMicrophoneID)
         localParticipantID =
