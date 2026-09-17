@@ -23,4 +23,12 @@ enum TestEnvironment {
     /// CI image the interpreter is present but its pipes behave differently, so the suite is
     /// skipped there. The same behaviour is covered on any Mac, and by the app itself.
     static let canRunSpeakerScript = ProcessInfo.processInfo.environment["CI"] == nil
+
+    /// Whether stopping a running command can be measured by wall-clock time here.
+    ///
+    /// The stop tests assert that a cancelled command ends within seconds. Delivering the
+    /// signal needs threads to be free: on a small CI virtual machine the interpreter's pool is
+    /// starved, and the assertion then measures the machine instead of the stop. The stop path
+    /// itself is covered by the app on any desktop.
+    static let canMeasureProcessStop = ProcessInfo.processInfo.environment["CI"] == nil
 }

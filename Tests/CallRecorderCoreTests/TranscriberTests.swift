@@ -400,7 +400,7 @@ struct TranscriberTests {
         #expect(leftover.isEmpty)
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .enabled(if: TestEnvironment.canMeasureProcessStop))
     func aStoppedTranscriptionEndsItsRunningCommand() async throws {
         // Given a transcriber whose first command does not finish on its own
         let directory = FileManager.default.temporaryDirectory

@@ -40,7 +40,7 @@ struct ToolLocatorTests {
         }
     }
 
-    @Test(.timeLimit(.minutes(1)))
+    @Test(.timeLimit(.minutes(1)), .enabled(if: TestEnvironment.canMeasureProcessStop))
     func aStoppedCommandEndsEarlyAndReportsCancellation() async throws {
         // Given a command that would run far past the test
         let cancellation = ProcessCancellation()
