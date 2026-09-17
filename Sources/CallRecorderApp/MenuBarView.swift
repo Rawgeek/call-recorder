@@ -24,6 +24,8 @@ struct MenuBarView: View {
         }
         .padding(CR.Space.section)
         .frame(width: 360)
+        // The window this content is drawn in is the panel, and the probe is what says so.
+        .background(PanelWindowProbe().frame(width: 1, height: 1))
     }
 
     // MARK: - Now

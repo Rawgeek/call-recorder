@@ -40,6 +40,24 @@ struct WindowPresentationTests {
         #expect(
             WindowPresentation.keepsAppPromoted(styleMask: [.titled], isVisible: false) == false
         )
-        #expect(WindowPresentation.presentationCounts([]) == false)
+        #expect(WindowPresentation.presentationCounts([], panel: nil) == false)
+    }
+
+    @MainActor
+    @Test("the panel does not keep the app promoted even though it is titled")
+    func thePanelIsNeverCounted() {
+        let panel = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 400),
+            styleMask: [.titled, .fullSizeContentView],
+            backing: .buffered,
+            defer: false
+        )
+        panel.orderFront(nil)
+        defer { panel.orderOut(nil) }
+        #expect(
+            WindowPresentation.presentationCounts([panel], panel: panel) == false,
+            "a popover that promotes the app puts a Dock icon on screen for it"
+        )
+        #expect(WindowPresentation.presentationCounts([panel], panel: nil) == true)
     }
 }

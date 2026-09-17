@@ -4,6 +4,31 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.10] - 2026-09-18
+
+A correction to 0.1.9. The strip above the panel's content was still there, because the fit added
+in that release never reached the window it was written for.
+
+### Fixed
+- The menu bar panel is put back under the menu bar every time the system moves or resizes it. The
+  0.1.9 fit looked for a borderless window, and the panel is not one: the system gives it a title
+  bar that is never drawn, so the rule that was meant to leave a person's own windows alone skipped
+  the panel as well. The panel is now found from the inside. The popover's content reports the
+  window it is drawn in, and that window is the one that is fitted. The fit also runs after every
+  move and resize, because the system keeps the corner it placed and grows the window from there;
+  that is what slides the top edge down the screen and leaves the desktop showing above the content
+  as the popover changes height.
+- The panel no longer keeps the app in the Dock. Promotion to a regular app counts titled windows,
+  and the panel carries a title bar, so an open popover used to put a Dock icon and a menu bar on
+  screen. The panel is named and excluded.
+
+### Verified
+- 594 tests pass. Five of them are new: the titled panel is placed under the menu bar, a resize of
+  the panel is corrected, the sweep fits the panel and leaves a titled window that is not the panel
+  alone, a panel shorter than its content is placed but never grown, and the panel is not counted
+  when the app decides whether it stays a menu bar app. Each of the first four was run against the
+  code without the fix, where it fails for the reason it was written for.
+
 ## [0.1.9] - 2026-09-18
 
 A reading release. Every row in the recent list says how long its call ran, and the panel no

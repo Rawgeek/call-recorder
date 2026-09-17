@@ -45,29 +45,34 @@ enum WindowPresentation {
         }
     }
 
-    /// Gives every borderless window of the app, which is the menu bar panel and nothing else,
-    /// the height of what it holds.
+    /// Gives the panel, and any borderless window of the app, the height of what it holds.
     static func fitMenuBarPanels() {
+        // The window the probe found is the panel, whatever shape the system gave it.
+        if let panel = PanelWindow.current { fitMenuBarPanel(panel) }
         for window in NSApplication.shared.windows where !window.styleMask.contains(.titled) {
             fitMenuBarPanel(window)
         }
     }
 
-    /// Puts the menu bar panel under the menu bar, and no taller than what it holds.
+    /// Puts a window under the menu bar, and no taller than what it holds.
     ///
-    /// The panel is the app's only borderless window. SwiftUI sizes it from the height of the
-    /// surface inside it, and that height only ever grows: a list that loses rows, or a card that
-    /// is sent away, leaves the window at the tallest height the surface has had. Nothing is drawn
-    /// in the leftover strip at the top, and the window is clear there, so the desktop shows
-    /// through it and the panel reads as though it had a transparent header. The strip is removed
-    /// by giving the window the height its content asks for, and its top edge is put against the
-    /// menu bar for the same reason: a panel that hangs lower than the bar reads the same way.
+    /// The panel's window belongs to the system. It is placed below the bar while it appears, and
+    /// it is sized from its content; that size change moves the top edge, because the system keeps
+    /// the corner it placed and grows the window from it. Nothing is drawn above the content, and
+    /// the window is clear there, so the desktop shows through and the panel reads as though it had
+    /// a transparent header. The strip is removed by putting the top edge back under the menu bar
+    /// every time the window is moved or resized.
     ///
     /// The measurement is only ever used to make the window shorter. A window drawn by the system
     /// is the authority on how tall it should be, and a number larger than the window would be a
     /// measurement of something else.
     static func fitMenuBarPanel(_ window: NSWindow) {
-        guard !window.styleMask.contains(.titled) else { return }
+        // Measuring a hosting view lays it out, and laying it out can size or move the window,
+        // which is another change to correct. Without this the measurement calls straight back
+        // into the fit and the stack runs out.
+        guard !fitting else { return }
+        fitting = true
+        defer { fitting = false }
         // The screen it is on, or the main one: a window that has not been placed yet reports no
         // screen of its own, and the menu bar of the main screen is the same answer.
         guard let content = window.contentView, let screen = window.screen ?? NSScreen.main else { return }
@@ -81,6 +86,9 @@ enum WindowPresentation {
         else { return }
         window.setFrame(frame, display: true)
     }
+
+    /// True while a fit is measuring, so the change that measurement causes does not fit again.
+    private static var fitting = false
 
     static func present(
         open: () -> Void,
@@ -116,18 +124,26 @@ enum WindowPresentation {
         _ = NSRunningApplication.current.activate(options: [.activateAllWindows])
     }
 
-    /// Counts only titled windows. The menu bar popover is borderless, so it never keeps the app
-    /// promoted after the user closes it.
+    /// Counts only titled windows, and never the panel.
+    ///
+    /// The panel's window carries a title bar that is never drawn, so a count that went by the
+    /// style mask alone promoted the app to a regular one for as long as the popover was open and
+    /// put a Dock icon on screen for it. The panel is named here instead of guessed.
     static func hasPresentableWindows() -> Bool {
         presentationCounts(NSApplication.shared.windows)
     }
 
-    static func presentationCounts(_ windows: [NSWindow]) -> Bool {
-        windows.contains { keepsAppPromoted(styleMask: $0.styleMask, isVisible: $0.isVisible) }
+    static func presentationCounts(
+        _ windows: [NSWindow],
+        panel: NSWindow? = PanelWindow.current
+    ) -> Bool {
+        windows.contains { window in
+            window !== panel
+                && keepsAppPromoted(styleMask: window.styleMask, isVisible: window.isVisible)
+        }
     }
 
-    /// The menu bar popover is borderless and must not keep the app promoted. Only a real,
-    /// visible window counts.
+    /// Only a real, visible window counts. The panel is excluded by the caller.
     static func keepsAppPromoted(styleMask: NSWindow.StyleMask, isVisible: Bool) -> Bool {
         isVisible && styleMask.contains(.titled)
     }
