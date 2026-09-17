@@ -16,6 +16,9 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 - Records both sides of a call: the microphone and the system audio.
 - Optional automatic start when another app opens the microphone, with automatic stop a couple
   of seconds after the call ends.
+- Automatic recording stays inside limits: an app that is not a call never starts one, a
+  recording shorter than the floor is set aside, and one that reaches the ceiling is stopped.
+  Recording you start and stop by hand is kept whatever it holds.
 - Manual Start, Pause, Resume, Stop, and Discard from the menu-bar panel. The next call can
   start while an earlier one is still being processed.
 - The microphone is chosen by name, or set to follow whichever input macOS is set to use. A call
@@ -39,6 +42,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
   detected per call, so English and Russian calls need no configuration.
 - Output is cleaned for reading: no timestamps, no `[music]`-style annotations, one line per
   spoken turn.
+- The same sentence is written once. A chunk seam or a room echo that put the same words into a
+  transcript twice is removed, and the copy that stays is the one said first.
 - Each call produces a Markdown transcript in the recordings folder, named by date and time.
 
 **Speakers**
@@ -95,7 +100,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.5.zip` from the
+1. Download `CallRecorder-0.1.6.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -256,7 +261,7 @@ The repository layout:
 | `Sources/CallRecorderCore` | Database, reducer, matchers, glossary correction, transcription boundaries. |
 | `mcp/` | The MCP server and the transcript indexer (TypeScript, run by bun). |
 | `scripts/` | Packaging, preview rendering, layout measurement, and glossary tooling. |
-| `docs/` | Install guide, MCP guide, design contract, and screenshots. |
+| `docs/` | Install guide, MCP guide, design contract, pitfalls, and screenshots. |
 
 ## Troubleshooting
 

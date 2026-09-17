@@ -1,4 +1,4 @@
-Call Recorder 0.1.5
+Call Recorder 0.1.6
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
@@ -25,6 +25,12 @@ Updates
   can be put back. The log is at ~/Library/Logs/CallRecorder/app-update.log.
 
 Queued calls process in the background, so the next recording can start immediately.
+Automatic recording leaves out apps that are not calls (the voice recorder, dictation, the
+system assistant), sets aside a recording shorter than 30 seconds instead of transcribing it,
+and stops one that reaches 180 minutes. Settings > General turns each of those off, and a
+recording started by hand is outside all three.
+The same sentence reaches the model twice when chunks overlap or the microphone hears the
+speakers; the repeat is removed as the call is transcribed, so a transcript holds it once.
 Microphone and system audio are captured separately. Whisper transcribes each available
 source locally; a missing source does not discard the other one.
 The menu shows the five latest calls; select a completed call to copy its transcript.

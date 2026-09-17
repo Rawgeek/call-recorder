@@ -4,6 +4,44 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.6] - 2026-09-17
+
+An accuracy release. A transcript holds each sentence once, and automatic recording stays inside
+limits it was missing.
+
+### Added
+- Repeated speech is removed from a transcript, while a call is transcribed and over the saved
+  library. Transcription runs in five-minute chunks that overlap, and a microphone also hears the
+  speakers, so the same sentence reaches the model twice and both copies are written down: one call
+  in the library held 473 repeated runs, and 17.2% of the words across four calls were said twice.
+  A repeat is removed only when it is the same words, five or more of them, and the first copy is
+  the one that stays, so a word the model heard differently is never chosen between. The repair
+  that runs when the cleaning rules move applies the rule to the saved library as well, and
+  Settings > Recovery reports the words it took out.
+- Settings > General > Automatic recording: three backstops for the recordings the app starts by
+  itself. The voice recorder, dictation, the system assistant, and the services behind them, which
+  are matched by bundle-identifier prefix, no longer start a recording. A recording shorter than
+  the floor, 30 seconds by default, is moved to Recently Deleted instead of being transcribed. A
+  recording that reaches the ceiling, 180 minutes by default, is stopped and kept. Both limits can
+  be turned off, and a recording started by hand is outside all three.
+- `docs/pitfalls.md`: the traps this app has already paid for, each with the rule it bought.
+
+### Changed
+- The transcript cleaning rules are at version five, so the saved library is repaired once on the
+  next launch. The repair copies what it rewrites into the Backups folder first, as it does for a
+  glossary repair.
+
+### Verified
+- 561 tests pass, 28 of them new: 12 over the repeat rule and 16 over the rails, including the
+  cases where a rule has to stay out of the way.
+- The repeat rule was measured on four recorded calls before it was written: 174 runs, 1 358 words
+  of 7 917, which is 17.2% of the library, and the count is the same whether a copy sits 50 words
+  away or 400.
+
+### Fixed
+- The transcript a call is saved from, the JSON the search index is built from, and the markdown a
+  person reads are cleaned in one pass, so the three cannot disagree about what was said.
+
 ## [0.1.5] - 2026-09-17
 
 The first release the app installs by itself, and the one that stops an update from fetching the
