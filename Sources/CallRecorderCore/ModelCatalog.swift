@@ -260,6 +260,19 @@ public struct WhisperModel: Codable, Hashable, Identifiable, Sendable {
             speed: "~2×",
             englishWER: "2.6%"
         ),
+
+        model(
+            id: "large-v1",
+            detail: "The first large model; superseded by Large v2 and v3",
+            bytes: 3_094_623_691,
+            sha256: "7d99f41a10525d0206bddadd86760181fa920438b6b33237e3118ff6c83bb53d",
+            parameters: "1,550 M",
+            memoryBytes: 3_900_000_000,
+            vram: "~10 GB",
+            speed: "1×",
+            englishWER: "2.7%",
+            multilingualWER: "5.2%"
+        ),
         model(
             id: "large-v2",
             detail: "Older large model; prefer Large v3 or Large v3 Turbo",
@@ -295,6 +308,255 @@ public struct WhisperModel: Codable, Hashable, Identifiable, Sendable {
             speed: "~8×",
             englishWER: "2.5%",
             multilingualWER: "3.7%"
+        ),
+
+        // The quantized files. Upstream publishes each of these beside the full one, and they
+        // matter most where memory is tight: a five-bit Large v3 Turbo is 574 MB instead of 1.6 GB
+        // and holds about 1.3 GB of working set instead of 2.3 GB.
+        //
+        // The working set of a quantized file is not published anywhere. It is counted here the way
+        // the published figures are made: the weight bytes of the file, plus the activation memory
+        // its family needs, which is the published working set of the full file less that file's
+        // own weight bytes. The parameters, the speed, and the architectures are unchanged by
+        // quantization, so those are the family's own figures.
+        model(
+            id: "tiny-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Tiny"),
+            bytes: 32_152_673,
+            sha256: "818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7",
+            parameters: "39 M",
+            memoryBytes: 230_000_000,
+            vram: "~1 GB",
+            speed: "~10×",
+            englishWER: nil,
+            twin: "tiny.en-q5_1"
+        ),
+        model(
+            id: "tiny-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Tiny"),
+            bytes: 43_537_433,
+            sha256: "c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca",
+            parameters: "39 M",
+            memoryBytes: 240_000_000,
+            vram: "~1 GB",
+            speed: "~10×",
+            englishWER: nil,
+            twin: "tiny.en-q8_0"
+        ),
+        model(
+            id: "tiny.en-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Tiny (English)"),
+            bytes: 32_166_155,
+            sha256: "c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b",
+            parameters: "39 M",
+            memoryBytes: 230_000_000,
+            vram: "~1 GB",
+            speed: "~10×",
+            englishWER: nil
+        ),
+        model(
+            id: "tiny.en-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Tiny (English)"),
+            bytes: 43_550_795,
+            sha256: "5bc2b3860aa151a4c6e7bb095e1fcce7cf12c7b020ca08dcec0c6d018bb7dd94",
+            parameters: "39 M",
+            memoryBytes: 240_000_000,
+            vram: "~1 GB",
+            speed: "~10×",
+            englishWER: nil
+        ),
+        model(
+            id: "base-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Base"),
+            bytes: 59_707_625,
+            sha256: "422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898",
+            parameters: "74 M",
+            memoryBytes: 300_000_000,
+            vram: "~1 GB",
+            speed: "~7×",
+            englishWER: nil,
+            twin: "base.en-q5_1"
+        ),
+        model(
+            id: "base-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Base"),
+            bytes: 81_768_585,
+            sha256: "c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9",
+            parameters: "74 M",
+            memoryBytes: 330_000_000,
+            vram: "~1 GB",
+            speed: "~7×",
+            englishWER: nil,
+            twin: "base.en-q8_0"
+        ),
+        model(
+            id: "base.en-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Base (English)"),
+            bytes: 59_721_011,
+            sha256: "4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f",
+            parameters: "74 M",
+            memoryBytes: 300_000_000,
+            vram: "~1 GB",
+            speed: "~7×",
+            englishWER: nil
+        ),
+        model(
+            id: "base.en-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Base (English)"),
+            bytes: 81_781_811,
+            sha256: "a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e",
+            parameters: "74 M",
+            memoryBytes: 330_000_000,
+            vram: "~1 GB",
+            speed: "~7×",
+            englishWER: nil
+        ),
+        model(
+            id: "small-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Small"),
+            bytes: 190_085_487,
+            sha256: "ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb",
+            parameters: "244 M",
+            memoryBytes: 580_000_000,
+            vram: "~1 GB",
+            speed: "~4×",
+            englishWER: nil,
+            twin: "small.en-q5_1"
+        ),
+        model(
+            id: "small-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Small"),
+            bytes: 264_464_607,
+            sha256: "49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f",
+            parameters: "244 M",
+            memoryBytes: 650_000_000,
+            vram: "~2 GB",
+            speed: "~4×",
+            englishWER: nil,
+            twin: "small.en-q8_0"
+        ),
+        model(
+            id: "small.en-q5_1",
+            detail: quantizedDetail("Q5_1", of: "Small (English)"),
+            bytes: 190_098_681,
+            sha256: "bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30",
+            parameters: "244 M",
+            memoryBytes: 580_000_000,
+            vram: "~1 GB",
+            speed: "~4×",
+            englishWER: nil
+        ),
+        model(
+            id: "small.en-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Small (English)"),
+            bytes: 264_477_561,
+            sha256: "67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067",
+            parameters: "244 M",
+            memoryBytes: 650_000_000,
+            vram: "~2 GB",
+            speed: "~4×",
+            englishWER: nil
+        ),
+        model(
+            id: "medium-q5_0",
+            detail: quantizedDetail("Q5_0", of: "Medium"),
+            bytes: 539_212_467,
+            sha256: "19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f",
+            parameters: "769 M",
+            memoryBytes: 1_140_000_000,
+            vram: "~2 GB",
+            speed: "~2×",
+            englishWER: nil,
+            twin: "medium.en-q5_0"
+        ),
+        model(
+            id: "medium-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Medium"),
+            bytes: 823_369_779,
+            sha256: "42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502",
+            parameters: "769 M",
+            memoryBytes: 1_420_000_000,
+            vram: "~3 GB",
+            speed: "~2×",
+            englishWER: nil,
+            twin: "medium.en-q8_0"
+        ),
+        model(
+            id: "medium.en-q5_0",
+            detail: quantizedDetail("Q5_0", of: "Medium (English)"),
+            bytes: 539_225_533,
+            sha256: "76733e26ad8fe1c7a5bf7531a9d41917b2adc0f20f2e4f5531688a8c6cd88eb0",
+            parameters: "769 M",
+            memoryBytes: 1_140_000_000,
+            vram: "~2 GB",
+            speed: "~2×",
+            englishWER: nil
+        ),
+        model(
+            id: "medium.en-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Medium (English)"),
+            bytes: 823_382_461,
+            sha256: "43fa2cd084de5a04399a896a9a7a786064e221365c01700cea4666005218f11c",
+            parameters: "769 M",
+            memoryBytes: 1_420_000_000,
+            vram: "~3 GB",
+            speed: "~2×",
+            englishWER: nil
+        ),
+        model(
+            id: "large-v2-q5_0",
+            detail: quantizedDetail("Q5_0", of: "Large v2"),
+            bytes: 1_080_732_091,
+            sha256: "3a214837221e4530dbc1fe8d734f302af393eb30bd0ed046042ebf4baf70f6f2",
+            parameters: "1,550 M",
+            memoryBytes: 2_080_000_000,
+            vram: "~3 GB",
+            speed: "1×",
+            englishWER: nil
+        ),
+        model(
+            id: "large-v2-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Large v2"),
+            bytes: 1_656_129_691,
+            sha256: "fef54e6d898246a65c8285bfa83bd1807e27fadf54d5d4e81754c47634737e8c",
+            parameters: "1,550 M",
+            memoryBytes: 2_660_000_000,
+            vram: "~4 GB",
+            speed: "1×",
+            englishWER: nil
+        ),
+        model(
+            id: "large-v3-q5_0",
+            detail: quantizedDetail("Q5_0", of: "Large v3"),
+            bytes: 1_081_140_203,
+            sha256: "d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1",
+            parameters: "1,550 M",
+            memoryBytes: 2_080_000_000,
+            vram: "~3 GB",
+            speed: "1×",
+            englishWER: nil
+        ),
+        model(
+            id: "large-v3-turbo-q5_0",
+            detail: quantizedDetail("Q5_0", of: "Large v3 Turbo"),
+            bytes: 574_041_195,
+            sha256: "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+            parameters: "809 M",
+            memoryBytes: 1_270_000_000,
+            vram: "~2 GB",
+            speed: "~8×",
+            englishWER: nil
+        ),
+        model(
+            id: "large-v3-turbo-q8_0",
+            detail: quantizedDetail("Q8_0", of: "Large v3 Turbo"),
+            bytes: 874_188_075,
+            sha256: "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1",
+            parameters: "809 M",
+            memoryBytes: 1_570_000_000,
+            vram: "~3 GB",
+            speed: "~8×",
+            englishWER: nil
         ),
     ]
 
@@ -334,7 +596,9 @@ public struct WhisperModel: Codable, Hashable, Identifiable, Sendable {
             speed: speed,
             englishWordErrorRate: englishWER,
             multilingualWordErrorRate: multilingualWER,
-            englishOnly: id.hasSuffix(".en"),
+            // A quantized file keeps the suffix in the middle of its identifier, so the test is
+            // whether the model is English-only anywhere in it rather than at the very end.
+            englishOnly: id.contains(".en"),
             englishTwinID: twin
         )
     }
@@ -342,6 +606,44 @@ public struct WhisperModel: Codable, Hashable, Identifiable, Sendable {
     /// The name people read. The English-only files carry the distinction in the name, which is
     /// the one thing to notice before choosing one, so it stays in the display name.
     private static func displayName(for id: String) -> String {
+        // A quantized file is the same model at a smaller size: "large-v3-turbo-q5_0" is named for
+        // what it is, so a person reading the list can see both the model and the trade.
+        if let split = splitQuantization(id) {
+            return baseName(for: split.base) + " " + split.label
+        }
+        return baseName(for: id)
+    }
+
+    /// Separates the quantization from the model in an identifier.
+    ///
+    /// The file name decides it: ggml-large-v3-turbo-q5_0.bin is Large v3 Turbo, quantized to five
+    /// bits. Nothing else in the catalog ends in a token shaped like that, so the test is the shape
+    /// of the last part rather than a list of names that would have to be kept up to date.
+    private static func splitQuantization(_ id: String) -> (base: String, label: String)? {
+        guard
+            let last = id.split(separator: "-").last,
+            last.first == "q",
+            last.count == 4,
+            last.dropFirst().allSatisfy({ $0.isNumber || $0 == "_" })
+        else { return nil }
+        return (String(id.dropLast(last.count + 1)), last.uppercased())
+    }
+
+    /// What a quantized file trades for its size.
+    ///
+    /// The sizes are the ones upstream publishes: a five-bit file is about a third of the full one,
+    /// and an eight-bit file a little over half. The accuracy cost is the few tenths of a percent
+    /// of word error rate that quantization is documented to cost, which is why these rows carry
+    /// no word error rate of their own: the published numbers belong to the full files, and
+    /// repeating them beside a smaller file would claim it matched.
+    private static func quantizedDetail(_ label: String, of base: String) -> String {
+        label.hasPrefix("Q5")
+            ? "About a third of the size of " + base + "; a little less accurate"
+            : "A little over half the size of " + base + "; very close to its accuracy"
+    }
+
+    private static func baseName(for id: String) -> String {
+
         switch id {
         case "tiny": "Tiny"
         case "tiny.en": "Tiny (English)"
@@ -351,6 +653,7 @@ public struct WhisperModel: Codable, Hashable, Identifiable, Sendable {
         case "small.en": "Small (English)"
         case "medium": "Medium"
         case "medium.en": "Medium (English)"
+        case "large-v1": "Large v1"
         case "large-v2": "Large v2"
         case "large-v3": "Large v3"
         case "large-v3-turbo": "Large v3 Turbo"
@@ -396,6 +699,15 @@ extension WhisperModel {
     /// Whether this model is one the settings page shows without being asked, on this Mac.
     public func isPrimary(inMemoryOf bytes: Int64) -> Bool {
         Self.primaryIDs(inMemoryOf: bytes).contains(id)
+    }
+
+    /// The quantization this file is, when it is one: "Q5_1", "Q8_0", or nil for a full file.
+    ///
+    /// Quantized files are the same model at a smaller size. They carry none of the published
+    /// accuracy figures, because those belong to the full files, so the name is what says which
+    /// trade a row is offering.
+    public var quantizationLabel: String? {
+        Self.splitQuantization(id)?.label
     }
 
     /// The models the settings page shows before it is asked for more.

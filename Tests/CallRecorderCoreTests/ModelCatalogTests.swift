@@ -18,17 +18,35 @@ struct ModelCatalogTests {
         // Given / When
         let models = WhisperModel.catalog
 
-        // Then
-        #expect(
-            models.map(\.id) == [
-                "tiny", "tiny.en", "base", "base.en", "small", "small.en",
-                "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo",
-            ]
-        )
+        // Then the list is every file the model host publishes, and nothing else. It is written
+        // out rather than counted: a file that appears upstream and not here is a model a person
+        // cannot install, which is the whole point of the list.
+        let full = [
+            "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+            "medium", "medium.en", "large-v1", "large-v2", "large-v3", "large-v3-turbo",
+        ]
+        let quantized = [
+            "tiny-q5_1", "tiny-q8_0", "tiny.en-q5_1", "tiny.en-q8_0",
+            "base-q5_1", "base-q8_0", "base.en-q5_1", "base.en-q8_0",
+            "small-q5_1", "small-q8_0", "small.en-q5_1", "small.en-q8_0",
+            "medium-q5_0", "medium-q8_0", "medium.en-q5_0", "medium.en-q8_0",
+            "large-v2-q5_0", "large-v2-q8_0", "large-v3-q5_0",
+            "large-v3-turbo-q5_0", "large-v3-turbo-q8_0",
+        ]
+        #expect(Set(models.map(\.id)) == Set(full + quantized))
+        #expect(models.count == full.count + quantized.count)
         #expect(models.contains { $0.id == "large-v3-turbo" })
         #expect(models.allSatisfy { $0.sha256.count == 64 && $0.expectedBytes > 0 })
         #expect(Set(models.map(\.downloadURL)).count == models.count)
         #expect(models.allSatisfy { $0.downloadURL.path.contains(WhisperModel.pinnedRevision) })
+        // Every quantized file is a smaller copy of a full one that is also listed.
+        for model in models {
+            guard let label = model.quantizationLabel else { continue }
+            #expect(model.displayName.hasSuffix(label))
+            let base = model.id.replacingOccurrences(of: "-" + label.lowercased(), with: "")
+            #expect(models.contains { $0.id == base && $0.quantizationLabel == nil })
+            #expect(model.expectedBytes < (models.first { $0.id == base }?.expectedBytes ?? 0))
+        }
     }
 
     @Test func everyModelCarriesTheGuidanceTheModelsPageShows() {
@@ -41,17 +59,21 @@ struct ModelCatalogTests {
             #expect(model.memoryBytes > 0)
             #expect(!model.requiredVRAM.isEmpty)
             #expect(!model.speed.isEmpty)
-            #expect(model.englishWordErrorRate != nil)
+            // The published accuracy belongs to the full file. A quantized copy says what it
+            // trades in its own line instead of repeating a number it does not have.
+            #expect((model.englishWordErrorRate != nil) == (model.quantizationLabel == nil))
         }
         // English-only files say so in the name, and they are the ones without a multilingual
         // score. A multilingual model names the English-only twin a reader can choose instead.
         for model in models where model.englishOnly {
-            #expect(model.fileName.contains(".en.bin"))
+            #expect(model.fileName.contains(".en"))
             #expect(model.multilingualWordErrorRate == nil)
             #expect(model.englishTwinID == nil)
         }
         for model in models where !model.englishOnly {
-            #expect(model.multilingualWordErrorRate != nil)
+            // Same rule as the English figure: the published multilingual score is the full
+            // file's, and a quantized copy does not claim it.
+            #expect((model.multilingualWordErrorRate != nil) == (model.quantizationLabel == nil))
             // Only the smaller sizes have an English-only file to point at; OpenAI publishes
             // no English-only large or turbo model.
             if let twinID = model.englishTwinID {
