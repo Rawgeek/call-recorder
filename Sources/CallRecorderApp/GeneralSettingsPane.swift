@@ -57,7 +57,7 @@ struct GeneralSettingsView: View {
                         .controlSize(.small)
                 }
                 CRSettingsDivider()
-                CRSettingsRow(
+                AutomaticRailRow(
                     title: "Discard recordings shorter than",
                     detail: model.settings.minimumAutomaticRecordingSeconds == 0
                         ? "Off. Every recording is transcribed, however short."
@@ -65,30 +65,17 @@ struct GeneralSettingsView: View {
                     info: "An app that opens the microphone for a second — a device check, a "
                         + "notification, a test — used to cost a full transcription and a row in "
                         + "the library. A recording that short is moved to Recently Deleted, where "
-                        + "it stays for a day and can be put back."
-                ) {
-                    HStack(spacing: CR.Space.inner) {
-                        // The number sits before the switch so that the switch is the last thing on
-                        // every row of the card, and the three of them line up in one column.
-                        Stepper(
-                            value: $model.settings.minimumAutomaticRecordingSeconds,
-                            in: 0...300,
-                            step: 15
-                        ) {
-                            Text(minimumRecordingText)
-                                .monospacedDigit()
-                                .frame(minWidth: 44, alignment: .trailing)
-                        }
-                        .fixedSize()
-                        .disabled(!discardsShortRecordings)
-                        Toggle("", isOn: shortRecordingSwitch)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                    }
+                        + "it stays for a day and can be put back.",
+                    value: $model.settings.minimumAutomaticRecordingSeconds,
+                    range: 0...300,
+                    step: 15,
+                    labelWidth: 44,
+                    switchWrites: AutomaticRecordingRails.floorForSwitch
+                ) { seconds in
+                    seconds == 0 ? "Off" : String(Int(seconds.rounded())) + " s"
                 }
                 CRSettingsDivider()
-                CRSettingsRow(
+                AutomaticRailRow(
                     title: "Stop automatically after",
                     detail: model.settings.maximumAutomaticRecordingMinutes == 0
                         ? "Off. A recording runs until the call app lets the microphone go."
@@ -96,28 +83,17 @@ struct GeneralSettingsView: View {
                     info: "A call app can hold the microphone open after the meeting ends, and a "
                         + "recorder that stops only when the microphone goes quiet records an empty "
                         + "room. One recorded fifteen hours that way. The limit counts recorded "
-                        + "time, so a call paused for an hour is judged by what it holds."
-                ) {
-                    HStack(spacing: CR.Space.inner) {
-                        Stepper(
-                            value: $model.settings.maximumAutomaticRecordingMinutes,
-                            in: 0...600,
-                            step: 30
-                        ) {
-                            Text(maximumRecordingText)
-                                .monospacedDigit()
-                                .frame(minWidth: 64, alignment: .trailing)
-                        }
-                        .fixedSize()
-                        .disabled(!stopsAtCeiling)
-                        Toggle("", isOn: ceilingSwitch)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                    }
+                        + "time, so a call paused for an hour is judged by what it holds.",
+                    value: $model.settings.maximumAutomaticRecordingMinutes,
+                    range: 0...600,
+                    step: 30,
+                    labelWidth: 64,
+                    switchWrites: AutomaticRecordingRails.ceilingForSwitch
+                ) { minutes in
+                    minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
                 }
                 CRSettingsDivider()
-                CRSettingsRow(
+                AutomaticRailRow(
                     title: "Stop after silence",
                     detail: model.settings.silenceStopMinutes == 0
                         ? "Off. A recording runs while both tracks are quiet."
@@ -129,25 +105,14 @@ struct GeneralSettingsView: View {
                         + "long silence, it never applies to a recording you started by hand, and "
                         + "it does nothing at all when the level cannot be measured, because "
                         + "stopping a call that could not be heard is the one failure it must not "
-                        + "have."
-                ) {
-                    HStack(spacing: CR.Space.inner) {
-                        Stepper(
-                            value: $model.settings.silenceStopMinutes,
-                            in: 0...120,
-                            step: 5
-                        ) {
-                            Text(silenceText)
-                                .monospacedDigit()
-                                .frame(minWidth: 48, alignment: .trailing)
-                        }
-                        .fixedSize()
-                        .disabled(!stopsAfterSilence)
-                        Toggle("", isOn: silenceSwitch)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                    }
+                        + "have.",
+                    value: $model.settings.silenceStopMinutes,
+                    range: 0...120,
+                    step: 5,
+                    labelWidth: 48,
+                    switchWrites: AutomaticRecordingRails.silenceForSwitch
+                ) { minutes in
+                    minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
                 }
             }
 
@@ -374,73 +339,6 @@ struct GeneralSettingsView: View {
         return "…/" + components.suffix(2).joined(separator: "/")
     }
 
-    /// The floor, as a person reads it: a number of seconds, or off.
-    private var minimumRecordingText: String {
-        let seconds = model.settings.minimumAutomaticRecordingSeconds
-        return seconds == 0 ? "Off" : String(Int(seconds.rounded())) + " s"
-    }
-
-    /// The ceiling, as a person reads it: minutes, or off.
-    private var maximumRecordingText: String {
-        let minutes = model.settings.maximumAutomaticRecordingMinutes
-        return minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
-    }
-
-    /// Whether the floor is in force.
-    ///
-    /// The rail has one setting rather than a switch beside a number, so a switch and its number
-    /// cannot end up disagreeing about whether the rail is on. Zero is what the rules read as "not
-    /// in force", and the switch writes either zero or the standard.
-    private var discardsShortRecordings: Bool {
-        model.settings.minimumAutomaticRecordingSeconds > 0
-    }
-
-    private var shortRecordingSwitch: Binding<Bool> {
-        Binding(
-            get: { discardsShortRecordings },
-            set: {
-                model.settings.minimumAutomaticRecordingSeconds =
-                    AutomaticRecordingRails.floorForSwitch($0)
-            }
-        )
-    }
-
-    /// Whether the ceiling is in force, by the same rule.
-    private var stopsAtCeiling: Bool {
-        model.settings.maximumAutomaticRecordingMinutes > 0
-    }
-
-    private var ceilingSwitch: Binding<Bool> {
-        Binding(
-            get: { stopsAtCeiling },
-            set: {
-                model.settings.maximumAutomaticRecordingMinutes =
-                    AutomaticRecordingRails.ceilingForSwitch($0)
-            }
-        )
-    }
-
-    /// The silence limit, as a person reads it: minutes, or off.
-    private var silenceText: String {
-        let minutes = model.settings.silenceStopMinutes
-        return minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
-    }
-
-    /// Whether the quiet rail is in force, by the same rule as the other two.
-    private var stopsAfterSilence: Bool {
-        model.settings.silenceStopMinutes > 0
-    }
-
-    private var silenceSwitch: Binding<Bool> {
-        Binding(
-            get: { stopsAfterSilence },
-            set: {
-                model.settings.silenceStopMinutes =
-                    AutomaticRecordingRails.silenceForSwitch($0)
-            }
-        )
-    }
-
     private var selectedMicrophone: AudioInputDevice? {
         model.availableMicrophones.first { $0.id == model.selectedMicrophoneID }
     }
@@ -482,5 +380,53 @@ struct GeneralSettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             model.settings.outputDirectory = url.path
         }
+    }
+}
+
+/// One automatic-recording rail: a number beside a switch, and the two of them one setting.
+///
+/// The switch writes either zero or the standard the rule names, so a switch and the number beside
+/// it cannot end up disagreeing about whether the rail is in force. The rails read the same way
+/// because they are written once: the floor, the ceiling, and the silence limit differ in their
+/// words, their range, and their rule, and in nothing else.
+private struct AutomaticRailRow: View {
+    let title: String
+    let detail: String
+    let info: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+    /// The width the number needs, so that the switches of the card line up in one column.
+    let labelWidth: CGFloat
+    /// What the switch writes: the rule's standard while it is on, and zero while it is off.
+    let switchWrites: (Bool) -> Double
+    /// What the number reads, for the value it is given.
+    let label: (Double) -> String
+
+    var body: some View {
+        CRSettingsRow(title: title, detail: detail, info: info) {
+            HStack(spacing: CR.Space.inner) {
+                // The number sits before the switch so that the switch is the last thing on every
+                // row of the card.
+                Stepper(value: $value, in: range, step: step) {
+                    Text(label(value))
+                        .monospacedDigit()
+                        .frame(minWidth: labelWidth, alignment: .trailing)
+                }
+                .fixedSize()
+                .disabled(value == 0)
+                Toggle("", isOn: switchBinding)
+                    .labelsHidden()
+                    .toggleStyle(.switch)
+                    .controlSize(.small)
+            }
+        }
+    }
+
+    private var switchBinding: Binding<Bool> {
+        Binding(
+            get: { value > 0 },
+            set: { value = switchWrites($0) }
+        )
     }
 }
