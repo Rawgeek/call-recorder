@@ -34,6 +34,15 @@ struct SettingsPane<Content: View>: View {
             .padding(.horizontal, CR.Space.screen)
             .padding(.vertical, CR.Space.screen)
             .frame(maxWidth: .infinity, alignment: .center)
+            // The running app leaves this nil: a pointer opens the sentences. A render names one
+            // row, because a pointer is the one thing it cannot supply.
+            .environment(\.crPinnedTooltipRow, TooltipPreview.row)
+        }
+        // The sentences the information glyphs carry are drawn here rather than inside the card
+        // that holds the glyph: a card clips what it holds, and a sentence under a glyph near the
+        // bottom of a card would be cut in half. Both halves of the mechanism are in Tooltip.swift.
+        .overlayPreferenceValue(CRTooltipPreference.self) { requests in
+            CRTooltipLayer(requests: requests)
         }
     }
 }
@@ -51,6 +60,8 @@ struct CRSettingsCard<Content: View>: View {
     var info: String?
     @ViewBuilder var content: () -> Content
 
+    @Environment(\.crPinnedTooltipRow) private var pinnedTooltipRow
+
     var body: some View {
         VStack(alignment: .leading, spacing: CR.Space.snug) {
             if let title {
@@ -58,10 +69,10 @@ struct CRSettingsCard<Content: View>: View {
                     Text(title)
                         .font(CR.Font.headline)
                         .foregroundStyle(CR.Ink.readable)
-                    if let info { CRInfoIcon(text: info) }
+                    if let info { CRInfoIcon(text: info, pinnedOpen: isPinned(title)) }
                 }
             } else if let info {
-                CRInfoIcon(text: info)
+                CRInfoIcon(text: info, pinnedOpen: false)
             }
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -83,6 +94,13 @@ struct CRSettingsCard<Content: View>: View {
             }
         }
     }
+
+    /// Whether a render pinned this card's sentence open. A card without a title cannot be named
+    /// by one, so it is never the row a render points at.
+    private func isPinned(_ rowTitle: String?) -> Bool {
+        guard let rowTitle else { return false }
+        return rowTitle == pinnedTooltipRow
+    }
 }
 
 /// One row inside a settings card: a label on the left, its control on the right.
@@ -103,13 +121,15 @@ struct CRSettingsRow<Content: View>: View {
     var warning: Bool = false
     @ViewBuilder var control: () -> Content
 
+    @Environment(\.crPinnedTooltipRow) private var pinnedTooltipRow
+
     var body: some View {
         HStack(alignment: .center, spacing: CR.Space.item) {
             VStack(alignment: .leading, spacing: CR.Space.hairline) {
                 HStack(spacing: CR.Space.tight) {
                     Text(title)
                         .font(CR.Font.body)
-                    if let info { CRInfoIcon(text: info) }
+                    if let info { CRInfoIcon(text: info, pinnedOpen: title == pinnedTooltipRow) }
                 }
                 if let detail {
                     Text(detail)
@@ -140,12 +160,22 @@ struct CRSettingsRow<Content: View>: View {
 struct CRInfoIcon: View {
     let text: String
     var tone: CR.Tone = .muted
+    /// True when a render pinned this sentence open, so a picture can be taken of it.
+    var pinnedOpen = false
+
+    @State private var hovering = false
 
     var body: some View {
         Image(systemName: "info.circle")
             .font(.system(size: 11, weight: .medium))
             .foregroundStyle(tone.ink)
-            .help(text)
+            // An 11-point glyph is an 11-point target, and a target that small is missed by a
+            // hand that is on its way to the row's control. The square is wider than the glyph
+            // and still shorter than the control slot, so no row grows to hold it.
+            .frame(width: CR.Icon.infoSlot, height: CR.Icon.infoSlot)
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .crTooltip(text, isOpen: hovering || pinnedOpen, isPinned: pinnedOpen)
             .accessibilityLabel(text)
     }
 }

@@ -108,6 +108,27 @@ enum CR {
         static let statusDot: CGFloat = 8
         /// How far an SF Symbol's ink sits inside the status slot, measured on the header glyphs.
         static let symbolInkInset: CGFloat = 1.5
+        /// The square an information glyph is drawn in.
+        ///
+        /// The glyph is 11 points, and so was its target: a hand on its way to the row's control
+        /// missed it, and the sentence it carries never appeared. The square is wider than the
+        /// glyph and shorter than a control slot, so a row keeps the height it had.
+        static let infoSlot: CGFloat = 18
+    }
+
+    /// The sentence a glyph carries, drawn for the pointer.
+    enum Tooltip {
+        /// The widest a sentence is allowed to get. Past this the eye loses the start of the
+        /// line, and the sentence stops being something read at a glance.
+        static let width: CGFloat = 300
+        /// The width under which a sentence is unreadable, so a narrow surface still wraps it
+        /// rather than drawing it one word to a line.
+        static let minimumWidth: CGFloat = 160
+        /// How far the sentence sits from the glyph that carries it.
+        static let gap: CGFloat = 6
+        /// How long the pointer rests on a glyph before its sentence appears. Short enough to
+        /// answer a question, long enough not to fire while the hand travels past.
+        static let rest: Int = 220
     }
 
     /// How strongly a piece of text is drawn.
@@ -877,6 +898,55 @@ struct CRCallout<Actions: View>: View {
 
     private var cardShape: RoundedRectangle {
         RoundedRectangle(cornerRadius: CR.Radius.medium, style: .continuous)
+    }
+}
+
+/// A download drawn as a ring that fills.
+///
+/// A spinner says that something is happening. A ring says how much is left, which is the
+/// question a person asks when a model of two gigabytes is arriving: whether to wait or to do
+/// something else first. The ring is drawn in the square an information glyph keeps, so a row
+/// that holds one keeps the height it had.
+struct CRProgressRing: View {
+    /// How much has arrived, from 0 to 1, or nil when the server did not name the size.
+    let progress: Double?
+    var tone: CR.Tone = .working
+    var diameter: CGFloat = CR.Icon.infoSlot
+    /// The width of the ring itself, thin enough to leave a hole to see through.
+    var thickness: CGFloat = 2
+
+    @State private var spinning = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .strokeBorder(tone.color.opacity(0.22), lineWidth: thickness)
+            if let progress {
+                Circle()
+                    .trim(from: 0, to: min(max(progress, 0), 1))
+                    .stroke(tone.ink, style: StrokeStyle(lineWidth: thickness, lineCap: .round))
+                    // The fill starts at twelve o'clock, so it reads as a clock face rather than
+                    // as whatever angle the shape happened to begin at.
+                    .rotationEffect(.degrees(-90))
+            } else {
+                // A size that was never named still has to say the transfer is running, so a
+                // quarter of the ring travels.
+                Circle()
+                    .trim(from: 0, to: 0.25)
+                    .stroke(tone.ink, style: StrokeStyle(lineWidth: thickness, lineCap: .round))
+                    .rotationEffect(.degrees(spinning ? 360 : 0))
+                    .animation(
+                        .linear(duration: 1).repeatForever(autoreverses: false),
+                        value: spinning
+                    )
+            }
+        }
+        .frame(width: diameter, height: diameter)
+        .onAppear { spinning = true }
+        .accessibilityElement()
+        .accessibilityLabel(
+            progress.map { "Downloaded \(Int(($0 * 100).rounded())) percent" } ?? "Downloading"
+        )
     }
 }
 
