@@ -378,16 +378,29 @@ extension WhisperModel {
         id == "small" || id == "large-v3-turbo"
     }
 
-    /// Whether this model is one of the four the settings page shows without being asked.
-    ///
-    /// These are one answer per kind of decision: the smallest file, the balanced one, the accurate
-    /// one, and the one that is accurate and fast. The rest are variations on them —
-    /// an English-only twin, an older large file — and they are worth a fold rather than a page.
-    public var isPrimary: Bool {
-        Self.primaryIDs.contains(id)
+    /// Whether this model is one the settings page shows without being asked, on this Mac.
+    public func isPrimary(inMemoryOf bytes: Int64) -> Bool {
+        Self.primaryIDs(inMemoryOf: bytes).contains(id)
     }
 
-    public static let primaryIDs = ["tiny", "small", "medium", "large-v3-turbo"]
+    /// The models the settings page shows before it is asked for more.
+    ///
+    /// The three small files answer for every Mac, from the one that only has room for a rough
+    /// transcript to the one that wants a good one. The fourth row is the accurate model this Mac
+    /// can actually run: Large v3 Turbo where there is room for it, and Medium where there is not.
+    /// Turbo is both faster and nearly as accurate as Medium, so offering Medium beside it would
+    /// be offering a slower answer to the same question. Everything else is a variation: an
+    /// English-only twin, an older large file.
+    public static func primaryIDs(inMemoryOf bytes: Int64) -> [String] {
+        let first = ["tiny", "base", "small"]
+        guard
+            let turbo = catalog.first(where: { $0.id == "large-v3-turbo" }),
+            turbo.fits(inMemoryOf: bytes)
+        else {
+            return first + ["medium"]
+        }
+        return first + ["large-v3-turbo"]
+    }
 }
 
 public enum WhisperModelMemoryFit: Equatable, Sendable {

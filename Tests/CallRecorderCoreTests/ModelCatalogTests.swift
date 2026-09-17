@@ -96,16 +96,21 @@ struct ModelCatalogTests {
         #expect(recommended == ["small", "large-v3-turbo"])
     }
 
-    @Test func thePageShowsFourModelsBeforeItIsAskedForMore() {
-        // Given / When the four the card lists without being unfolded.
-        let listed = WhisperModel.catalog.filter(\.isPrimary).map(\.id)
+    @Test func thePageShowsTheModelsThatAnswerTheQuestion() {
+        // Given a Mac with memory to spare.
+        let roomy = WhisperModel.primaryIDs(inMemoryOf: 32_000_000_000)
 
-        // Then one per kind of decision, so both picks are in the first screen and neither the
-        // English-only twins nor the older large files are.
-        #expect(listed == WhisperModel.primaryIDs)
-        #expect(listed == ["tiny", "small", "medium", "large-v3-turbo"])
-        #expect(WhisperModel.catalog.filter(\.isPrimary).allSatisfy { $0.englishWordErrorRate != nil })
-        #expect(listed.contains("large-v3-turbo"))
+        // Then the three small files are listed, and the accurate row is Turbo rather than
+        // Medium: Turbo is faster and nearly as accurate, so Medium beside it would be a slower
+        // answer to the same question.
+        #expect(roomy == ["tiny", "base", "small", "large-v3-turbo"])
+        #expect(!roomy.contains("medium"))
+
+        // And on a Mac that cannot hold Turbo, Medium takes that row instead.
+        let small = WhisperModel.primaryIDs(inMemoryOf: 2_000_000_000)
+        #expect(small == ["tiny", "base", "small", "medium"])
+        #expect(!small.contains("large-v3-turbo"))
+        #expect(WhisperModel.catalog.allSatisfy { !$0.isPrimary(inMemoryOf: 0) || $0.englishWordErrorRate != nil })
     }
 
     @Test func sizeLabelsStateFileAndMemorySizesTheWayTheModelTableDoes() {

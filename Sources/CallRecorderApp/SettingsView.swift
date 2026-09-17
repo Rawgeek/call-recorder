@@ -1362,22 +1362,18 @@ struct ModelSettingsView: View {
         model.modelManager.models.filter { !$0.englishOnly }
     }
 
-    /// The model rows the card shows before anything is unfolded.
+    /// The model rows the card shows before anything is unfolded: the four the catalog answers
+    /// with, and nothing else.
     ///
-    /// Anything installed, and anything a new recording would use, is shown whatever else is
-    /// hidden. A row that holds the delete button for the file in use cannot be behind a fold.
+    /// A model that was downloaded earlier, or one that a new recording would use, is marked in
+    /// the list once the fold is open rather than pulled up above it, so the card opens the same
+    /// way on every Mac and the four rows keep meaning one thing.
     private var listedModels: [WhisperModel] {
-        model.modelManager.models.filter { alwaysListed($0) }
+        model.modelManager.models.filter { $0.isPrimary(inMemoryOf: physicalMemoryBytes) }
     }
 
     private var advancedModels: [WhisperModel] {
-        model.modelManager.models.filter { !alwaysListed($0) }
-    }
-
-    private func alwaysListed(_ whisperModel: WhisperModel) -> Bool {
-        whisperModel.isPrimary
-            || whisperModel.id == model.settings.selectedWhisperModelID
-            || model.modelManager.state(for: whisperModel).isInstalled
+        model.modelManager.models.filter { !$0.isPrimary(inMemoryOf: physicalMemoryBytes) }
     }
 
     private var englishOnlyModels: [WhisperModel] {
