@@ -4,6 +4,32 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.9] - 2026-09-18
+
+A reading release. Every row in the recent list says how long its call ran, and the panel no
+longer opens with a strip of nothing above its content.
+
+### Added
+- Each row in the recent list carries the length of its call as a clock: `1:04:22`. All three
+  fields are always drawn, so a column of lengths can be read against the next one at a glance,
+  and the digits are fixed-width so the column lines up. A call that has not ended — one still
+  being recorded, or one whose end was never written — says nothing rather than showing a length
+  it does not have.
+
+### Fixed
+- The menu bar panel no longer opens with a transparent strip above its content. SwiftUI sizes the
+  panel window from the surface inside it, and that size only ever grows: a list that loses rows,
+  or a card that is sent away, leaves the window at the tallest height the surface has had. The
+  leftover strip sits above the content, nothing is drawn in it, and the desktop shows through it,
+  which reads as a stray transparent header. The window is now given the height of what it holds,
+  and its top edge is put against the menu bar, every time the panel comes on screen.
+
+### Verified
+- 590 tests pass. Six of them are new: four pin the panel's height and position, and two pin the
+  length a row shows and the length it refuses to show.
+- The invented library the published pictures are drawn from now carries three different call
+  lengths, so the row's new field is visible in the documentation and not only in a test.
+
 ## [0.1.8] - 2026-09-17
 
 A settings release. A version that is waiting installs when you ask for it, the check runs on a
