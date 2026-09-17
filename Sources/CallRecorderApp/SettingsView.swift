@@ -863,10 +863,8 @@ struct ModelSettingsView: View {
                     componentRow(component)
                     componentNotes(component)
                 }
-                if let notice = model.indexerRuntimeNotice {
-                    CRSettingsDivider()
-                    CRSettingsNote(icon: "exclamationmark.triangle", text: notice, tone: .failed)
-                }
+                CRSettingsDivider()
+                indexerRuntimeRow
             }
         }
         .task {
@@ -961,6 +959,51 @@ struct ModelSettingsView: View {
     /// The model that turns text into vectors for search.
     private var embeddingComponent: SupportingModel? {
         model.supportingManager.models.first { $0.id == SupportingModel.embeddingGemmaID }
+    }
+
+    /// The JavaScript runtime the indexer and the MCP server both run on.
+    ///
+    /// It is not a model anyone chooses between. It earns a row because it is the one thing the
+    /// app fetches that a person can watch arrive, and because a Mac with no network is owed the
+    /// reason search is waiting. The failure is drawn as a sentence in the row rather than behind
+    /// the information glyph: a fault that only appears on hover is a fault nobody reads.
+    @ViewBuilder
+    private var indexerRuntimeRow: some View {
+        let installer = model.indexerRuntime
+        CRSettingsRow(
+            title: "Transcript indexer runtime",
+            detail: indexerRuntimeDetail,
+            info: "Transcript search and the MCP server both run on a JavaScript runtime of about "
+                + "36 MB. It is fetched once instead of travelling inside the app, which is what "
+                + "keeps the download of the app small. The archive is kept beside the unpacked "
+                + "copy, so a Mac that has it once can rebuild the runtime without the network.",
+            warning: installer.state.failure != nil
+        ) {
+            switch installer.state {
+            case .ready:
+                CRStatusChip(tone: .ready, text: "Ready")
+            case .missing:
+                CRButton(title: "Download", kind: .primary) { installer.install() }
+            case .downloading:
+                downloadRow(progress: installer.progress) { installer.cancel() }
+            case .failed:
+                CRStatusChip(tone: .failed, text: "Failed")
+                CRButton(title: "Retry") { installer.install() }
+            }
+        }
+    }
+
+    private var indexerRuntimeDetail: String? {
+        switch model.indexerRuntime.state {
+        case .ready:
+            return nil
+        case .missing:
+            return "Search waits for this. It is fetched once."
+        case .downloading:
+            return nil
+        case .failed(let message):
+            return message
+        }
     }
 
     @ViewBuilder

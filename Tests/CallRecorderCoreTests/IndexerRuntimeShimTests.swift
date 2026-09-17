@@ -59,8 +59,77 @@ struct IndexerRuntimeShimTests {
 
         // Then nothing was unpacked, and the reason names the check that failed.
         #expect(result.exitCode != 0)
-        #expect(result.standardError.contains("does not match its recorded hash"))
+        #expect(result.standardError.contains("does not match the hash recorded when the app"))
         #expect(!FileManager.default.fileExists(atPath: fixture.state.appending(path: "bun").path))
+    }
+
+    @Test func theRuntimeIsFetchedWhenTheAppDoesNotCarryOne() throws {
+        // Given a bundle that carries the hash and where to fetch from, but no archive. That is
+        // how the app ships now: the archive is 36 MB and most of what the app used to weigh.
+        let fixture = try ShimFixture()
+        defer { fixture.cleanUp() }
+        _ = try fixture.moveArchiveOutOfTheBundle()
+
+        // When
+        let result = try fixture.run(arguments: ["indexer.js", "index"])
+
+        // Then it was fetched, verified, and unpacked, and the archive was kept so the next start
+        // does not fetch it again.
+        #expect(result.exitCode == 0)
+        #expect(
+            FileManager.default.fileExists(atPath: fixture.state.appending(path: ".ready").path)
+        )
+        #expect(FileManager.default.fileExists(atPath: fixture.downloadedArchive.path))
+    }
+
+    @Test func anArchiveThatFailsItsHashAfterFetchingIsDiscarded() throws {
+        // Given a release asset that is not the archive the app recorded a hash for.
+        let fixture = try ShimFixture()
+        defer { fixture.cleanUp() }
+        let remote = try fixture.moveArchiveOutOfTheBundle()
+        try Data("not the archive".utf8).write(to: remote)
+
+        // When
+        let result = try fixture.run(arguments: ["indexer.js"], tolerateFailure: true)
+
+        // Then it stopped at the hash and removed what it fetched, so the next start fetches again
+        // rather than repeating the same failure for ever.
+        #expect(result.exitCode != 0)
+        #expect(!FileManager.default.fileExists(atPath: fixture.downloadedArchive.path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.state.appending(path: "bun").path))
+    }
+
+    @Test func aFetchedArchiveIsUnpackedAgainWithoutFetching() throws {
+        // Given a runtime that was fetched and unpacked once.
+        let fixture = try ShimFixture()
+        defer { fixture.cleanUp() }
+        _ = try fixture.moveArchiveOutOfTheBundle()
+        _ = try fixture.run(arguments: ["indexer.js"])
+        // The app's runtime is then lost, and the release is no longer reachable.
+        try FileManager.default.removeItem(at: fixture.state)
+        try FileManager.default.removeItem(at: fixture.bundle.appending(path: "runtime.url"))
+
+        // When
+        let result = try fixture.run(arguments: ["indexer.js"])
+
+        // Then the kept archive was enough: a Mac that fetched it once can rebuild the runtime
+        // without the network.
+        #expect(result.exitCode == 0)
+        #expect(FileManager.default.fileExists(atPath: fixture.state.appending(path: "bun").path))
+    }
+
+    @Test func aBundleWithNeitherArchiveNorSourceReportsWhatIsMissing() throws {
+        // Given a bundle built before the archive was a download.
+        let fixture = try ShimFixture()
+        defer { fixture.cleanUp() }
+        try FileManager.default.removeItem(at: fixture.bundle.appending(path: "runtime.zip"))
+
+        // When
+        let result = try fixture.run(arguments: ["indexer.js"], tolerateFailure: true)
+
+        // Then the reason is a sentence rather than a silent failure.
+        #expect(result.exitCode != 0)
+        #expect(result.standardError.contains("no runtime archive and nothing to fetch"))
     }
 
     @Test func anArchiveWithNoRecordedHashIsRefused() throws {
@@ -175,6 +244,27 @@ private struct ShimFixture {
             )
         }
         return result
+    }
+
+    /// Where the shim keeps the archive it fetched, beside the runtime it unpacks.
+    var downloadedArchive: URL {
+        state.deletingLastPathComponent().appending(path: "runtime.zip")
+    }
+
+    /// Moves the archive out of the bundle and leaves a URL to it, which is how the shipped app is
+    /// built: the archive travels as a release asset, and the bundle carries its hash and where to
+    /// find it. The file URL stands in for the release here, so no test needs the network.
+    ///
+    /// - Returns: the file the bundle now points at, so a test can replace or damage it.
+    @discardableResult
+    func moveArchiveOutOfTheBundle() throws -> URL {
+        let manager = FileManager.default
+        let release = root.appending(path: "release", directoryHint: .isDirectory)
+        try manager.createDirectory(at: release, withIntermediateDirectories: true)
+        let destination = release.appending(path: "CallRecorder-runtime.zip")
+        try manager.moveItem(at: bundle.appending(path: "runtime.zip"), to: destination)
+        try Self.write("file://" + destination.path, to: bundle.appending(path: "runtime.url"))
+        return destination
     }
 
     func cleanUp() {

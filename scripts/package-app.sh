@@ -29,10 +29,15 @@ trap 'rm -rf -- "$task_temp"' EXIT
 task_app="$task_temp/Call Recorder.app"
 task_contents="$task_app/Contents"
 task_indexer="$task_contents/Resources/indexer"
-# The JavaScript runtime is built here and shipped as one archive. Unpacked it is about 95 MB,
-# which is most of the app; archived it is about 35 MB, and the app unpacks it once into
-# Application Support. scripts/indexer-runtime-shim.sh does that, and stays the path Codex
-# registers, so an existing registration keeps working.
+# The JavaScript runtime is built here and shipped as one archive. Unpacked it is about 95 MB and
+# archived it is about 36 MB, which was most of the app: 36 MB of a 49 MB download. It travels as
+# a release asset instead, and the bundle keeps only its hash and the address to fetch it from.
+# The app downloads the archive, and the shim beside it unpacks it once into Application Support.
+# scripts/indexer-runtime-shim.sh stays the path Codex registers, so an existing registration
+# keeps working, and it can fetch the archive itself when Codex starts with no app running.
+#
+# Set CALL_RECORDER_EMBED_RUNTIME=1 to build a self-contained app instead: the archive travels
+# inside the bundle and no fetch is ever needed. That build is for a machine with no network.
 task_runtime="$task_temp/runtime"
 task_verify="$task_temp/verify-runtime"
 task_packages="$task_root/mcp/node_modules/.pnpm"
@@ -69,7 +74,8 @@ cp Resources/Info.plist "$task_contents/Info.plist"
 cp Resources/AppIcon.icns "$task_contents/Resources/AppIcon.icns"
 cp Sources/CallRecorderApp/diarize.py "$task_contents/Resources/diarize.py"
 chmod 755 "$task_contents/MacOS/CallRecorder"
-/usr/bin/strip -S "$task_contents/MacOS/CallRecorder"
+# The binary carries a symbol table the app never reads: 13 MB of it is 8.5 MB without one.
+/usr/bin/strip -x -S "$task_contents/MacOS/CallRecorder"
 
 # The two entry points. Minifying syntax and whitespace takes a quarter off both files; identifier
 # names are kept, so a stack trace in the log still reads as code.
@@ -131,14 +137,30 @@ task_onnx_path="$task_runtime/node_modules/onnxruntime-node/bin/napi-v6/darwin/a
 /usr/bin/strip -x -S "$task_onnx_path"
 codesign --force --sign - "$task_onnx_path"
 
-(cd "$task_runtime" && ditto -c -k --sequesterRsrc . "$task_indexer/runtime.zip")
-shasum -a 256 "$task_indexer/runtime.zip" | awk '{print $1}' > "$task_indexer/runtime.sha256"
+task_runtime_archive="$task_temp/runtime.zip"
+(cd "$task_runtime" && ditto -c -k --sequesterRsrc . "$task_runtime_archive")
+task_runtime_hash=$(shasum -a 256 "$task_runtime_archive" | awk '{print $1}')
+task_runtime_short=${task_runtime_hash[1,8]}
+print -n "$task_runtime_hash" > "$task_indexer/runtime.sha256"
 cp scripts/indexer-runtime-shim.sh "$task_indexer/bun"
 chmod 755 "$task_indexer/bun"
 
+# The archive is published beside the app rather than inside it. The address is named for the
+# bytes, so the same runtime keeps one address across app releases, and the hash written above is
+# what decides whether what arrives is accepted.
+mkdir -p "$task_root/dist/releases"
+task_runtime_asset="$task_root/dist/releases/CallRecorder-runtime-$task_runtime_short.zip"
+cp "$task_runtime_archive" "$task_runtime_asset"
+if [[ "${CALL_RECORDER_EMBED_RUNTIME:-0}" == "1" ]]; then
+    cp "$task_runtime_archive" "$task_indexer/runtime.zip"
+else
+    print -n "${CALL_RECORDER_RUNTIME_URL:-https://github.com/Rawgeek/call-recorder/releases/download/runtime-$task_runtime_short/CallRecorder-runtime-$task_runtime_short.zip}" \
+        > "$task_indexer/runtime.url"
+fi
+
 # Unpack the archive here, so a build that would fail on the first recording fails now instead.
 mkdir -p "$task_verify"
-ditto -x -k "$task_indexer/runtime.zip" "$task_verify"
+ditto -x -k "$task_runtime_archive" "$task_verify"
 for task_member in \
     bun \
     indexer.js \
@@ -161,7 +183,6 @@ task_required=(
     "$task_contents/Info.plist"
     "$task_contents/Resources/diarize.py"
     "$task_indexer/bun"
-    "$task_indexer/runtime.zip"
     "$task_indexer/runtime.sha256"
 )
 for task_file in "${task_required[@]}"; do
@@ -170,6 +191,11 @@ for task_file in "${task_required[@]}"; do
         exit 1
     fi
 done
+# The runtime is either carried or fetched, and the bundle has to say which.
+if [[ ! -s "$task_indexer/runtime.zip" && ! -s "$task_indexer/runtime.url" ]]; then
+    print -u2 "the bundle has no runtime archive and no address to fetch one from"
+    exit 1
+fi
 # The Silero VAD model is a download now, and the runtime is an archive. A copy inside the bundle
 # is the mistake this guards against: it is what made the app 150 MB.
 if rg --files "$task_app" | rg -q 'ggml-silero'; then
@@ -224,3 +250,4 @@ ditto "$task_app" "$task_output/Call Recorder.app"
 cp DISTRIBUTION_README.txt "$task_output/README.txt"
 ditto -c -k --sequesterRsrc --keepParent "$task_output" "$task_archive"
 print "$task_archive"
+print "$task_runtime_asset"

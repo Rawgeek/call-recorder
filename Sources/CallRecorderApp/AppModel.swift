@@ -110,12 +110,6 @@ final class AppModel {
     /// Calls whose unfinished job has nothing left to work with. Retrying one cannot succeed, so
     /// the Recovery pane offers to remove the row instead of a button that fails again.
     private(set) var unfinishableCallIDs: Set<CallID> = []
-    /// What went wrong the last time the app prepared the transcript indexer's runtime.
-    ///
-    /// The runtime ships as an archive and is unpacked at launch. It is silent while it works and
-    /// carries a sentence here when it does not, because the alternative is an indexing stage that
-    /// stops with nothing on screen to explain it.
-    private(set) var indexerRuntimeNotice: String?
     private(set) var speakerReviews: [SpeakerReviewItem] = []
     private(set) var speakerReviewEvidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
     private(set) var speakerReviewCallDates: [CallID: Date] = [:]
@@ -301,6 +295,8 @@ final class AppModel {
 
     private let pipeline: CallPipeline?
     private let indexer: IndexerClient?
+    /// The JavaScript runtime the indexer runs on, fetched rather than carried in the bundle.
+    let indexerRuntime: IndexerRuntimeInstaller
     @ObservationIgnored private lazy var processor: MeetingProcessor? = {
         guard let store else { return nil }
         return MeetingProcessor(store: store, runStage: { [weak self] job in
@@ -467,6 +463,12 @@ final class AppModel {
             pipeline = nil
         }
         indexer = IndexerClient.standard(applicationDirectory: applicationDirectory)
+        indexerRuntime = IndexerRuntimeInstaller(
+            applicationDirectory: applicationDirectory,
+            unpacker: Bundle.main.url(forResource: "bun", withExtension: nil, subdirectory: "indexer"),
+            remoteURL: IndexerClient.runtimeArchiveURL(),
+            expectedHash: IndexerClient.runtimeArchiveHash()
+        )
         let backgroundFinalization = BackgroundAudioFinalization(
             store: localStore,
             pipeline: pipeline
@@ -533,18 +535,12 @@ final class AppModel {
 
     /// Gets what the next recording needs out of the way while the app is idle.
     ///
-    /// Two things are prepared here. The transcript indexer travels inside the app as an archive
-    /// and is unpacked once per build. The silence filter is a download of under a megabyte that
-    /// every transcription waits for. Neither is urgent, and both are worse to hit at the end of a
-    /// call than at launch.
+    /// Two things are prepared here. The transcript indexer's runtime is 36 MB and arrives as a
+    /// download, so it is fetched at launch rather than while a call waits to be indexed. The
+    /// silence filter is a download of under a megabyte that every transcription waits for.
+    /// Neither is urgent, and both are worse to hit at the end of a call than at launch.
     private func prepareSupportingModels() {
-        if let indexer {
-            Task { [weak self] in
-                let notice = await indexer.prepareRuntime()
-                guard !Task.isCancelled else { return }
-                await MainActor.run { self?.indexerRuntimeNotice = notice }
-            }
-        }
+        indexerRuntime.install()
         if let vad = supportingManager.models.first(where: { $0.id == SupportingModel.sileroVADID }) {
             supportingManager.downloadIfNeeded(vad)
         }

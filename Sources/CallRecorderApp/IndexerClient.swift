@@ -1,6 +1,93 @@
 import CallRecorderCore
 import Foundation
 
+extension IndexerClient {
+    /// The archive the bundle carries, or nil when it names one to fetch instead.
+    static func runtimeArchive(in bundle: Bundle = .main) -> URL? {
+        bundle.url(forResource: "runtime", withExtension: "zip", subdirectory: "indexer")
+    }
+
+    /// Where the archive can be fetched when the bundle does not carry it.
+    ///
+    /// One line, written when the app was built: the release asset that holds this build's runtime.
+    /// The companion hash beside it decides whether what arrives is accepted, so a URL that points
+    /// somewhere else cannot put different code on the machine.
+    static func runtimeArchiveURL(in bundle: Bundle = .main) -> URL? {
+        guard
+            let file = bundle.url(
+                forResource: "runtime",
+                withExtension: "url",
+                subdirectory: "indexer"
+            ),
+            let text = try? String(contentsOf: file, encoding: .utf8),
+            let url = URL(string: text.trimmingCharacters(in: .whitespacesAndNewlines)),
+            url.scheme == "https"
+        else { return nil }
+        return url
+    }
+
+    /// The hash the runtime archive must have.
+    static func runtimeArchiveHash(in bundle: Bundle = .main) -> String? {
+        guard
+            let file = bundle.url(
+                forResource: "runtime",
+                withExtension: "sha256",
+                subdirectory: "indexer"
+            ),
+            let text = try? String(contentsOf: file, encoding: .utf8)
+        else { return nil }
+        let hash = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return hash.isEmpty ? nil : hash
+    }
+}
+
+/// Where the JavaScript runtime lives on this Mac, and whether it is the one this build expects.
+///
+/// The app and the shim both need these paths, and they must agree: the app downloads an archive to
+/// one of them, and the shim unpacks it into the other. Keeping the names in one type is what stops
+/// the two from drifting into two different runtimes.
+struct IndexerRuntimeLayout: Equatable, Sendable {
+    let applicationDirectory: URL
+
+    /// The unpacked runtime: what the entry points are started from.
+    var directory: URL {
+        applicationDirectory.appending(path: "runtime", directoryHint: .isDirectory)
+    }
+
+    /// The executable the shim leaves behind when the unpack succeeded.
+    var executable: URL {
+        directory.appending(path: "bun")
+    }
+
+    /// The file the shim writes the unpacked archive's hash into, once it is in place.
+    var readyMark: URL {
+        directory.appending(path: ".ready")
+    }
+
+    /// The archive: downloaded here by the app, or fetched straight to here by the shim.
+    var archive: URL {
+        applicationDirectory.appending(path: "runtime.zip")
+    }
+
+    /// Whether the unpacked runtime is present and is the one the app was built with.
+    ///
+    /// A hash the build never recorded leaves the answer to the files alone: an app that cannot say
+    /// what it expects must not claim a runtime is wrong.
+    func isReady(expectedHash: String?) -> Bool {
+        let manager = FileManager.default
+        guard manager.isExecutableFile(atPath: executable.path) else { return false }
+        guard let expectedHash else { return true }
+        guard let mark = try? String(contentsOf: readyMark, encoding: .utf8) else { return false }
+        return mark.trimmingCharacters(in: .whitespacesAndNewlines) == expectedHash
+    }
+
+    /// Whether an archive is here to unpack.
+    var hasArchive: Bool {
+        FileManager.default.fileExists(atPath: archive.path)
+    }
+}
+
+
 /// How the indexer's entry point is addressed inside an app bundle.
 ///
 /// The runtime travels as one archive now, and the file it holds is unpacked into Application
@@ -27,12 +114,21 @@ enum IndexerBundleLayout: Equatable, Sendable {
         bundledRuntime: URL?,
         canExecute: (URL) -> Bool,
         archive: URL?,
-        script: URL?
+        script: URL?,
+        remoteSource: URL? = nil
     ) -> IndexerBundleLayout {
         guard let bundledRuntime, canExecute(bundledRuntime) else { return .unavailable }
-        if archive != nil { return .archivedRuntime }
+        // The archive is either carried by the bundle or named by it and fetched. Both are the
+        // same layout to everything downstream: the shim owns the archive, and the entry point
+        // inside it is asked for by name.
+        if archive != nil || remoteSource != nil { return .archivedRuntime }
         if let script { return .unpackedRuntime(script: script) }
         return .unavailable
+    }
+
+    /// Whether this build can supply the runtime at all.
+    var canSupplyRuntime: Bool {
+        self != .unavailable
     }
 
     /// The arguments that come before the command, for whichever layout this is.
@@ -71,7 +167,8 @@ struct IndexerClient: Sendable {
                 forResource: "indexer",
                 withExtension: "js",
                 subdirectory: "indexer"
-            )
+            ),
+            remoteSource: IndexerClient.runtimeArchiveURL()
         )
         if let bundledRuntime, layout != .unavailable {
             return IndexerClient(
@@ -114,8 +211,9 @@ struct IndexerClient: Sendable {
     ///
     /// A source checkout has neither the archive nor the shim, and runs the entry point directly,
     /// so there is nothing to prepare.
-    var hasArchivedRuntime: Bool {
-        Bundle.main.url(forResource: "runtime", withExtension: "zip", subdirectory: "indexer") != nil
+    var canSupplyRuntime: Bool {
+        IndexerClient.runtimeArchive(in: .main) != nil
+            || IndexerClient.runtimeArchiveURL(in: .main) != nil
     }
 
     /// Unpacks the JavaScript runtime into Application Support when it is not there yet.
@@ -126,7 +224,7 @@ struct IndexerClient: Sendable {
     ///
     /// - Returns: A message naming the fault, or nil when the runtime is ready.
     func prepareRuntime() async -> String? {
-        guard hasArchivedRuntime else { return nil }
+        guard canSupplyRuntime else { return nil }
         do {
             try await Task.detached {
                 _ = try ProcessRunner.runChecked(

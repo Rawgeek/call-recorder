@@ -1,20 +1,29 @@
 #!/bin/sh
 # The entry point Call Recorder and Codex both start.
 #
-# The JavaScript runtime is 94 MB unpacked, and an app that carried it unpacked shipped 150 MB to
-# every Mac. It travels inside the app as one compressed archive instead, and this script unpacks
-# it once into Application Support. The path in the app bundle never changes, so a Codex
-# registration written by hand or by an earlier version keeps working.
+# The JavaScript runtime is 95 MB unpacked and 36 MB archived, and an app that carried it shipped
+# 49 MB to every Mac. It travels as a release asset instead: the app downloads the archive with a
+# progress bar and leaves it in Application Support, and this script unpacks it once. A build that
+# wants to carry everything can still place the archive beside this script, and that copy wins.
+# The path in the app bundle never changes, so a Codex registration written by hand or by an
+# earlier version keeps working.
 #
 # Two processes can race here: the app starts indexing while the app's own launch task is still
 # running, or Codex starts the MCP server with no app running at all. The first to take the lock
-# unpacks; the others wait for it, and unpack themselves only if it fails.
+# unpacks; the others wait for it, and unpack themselves only if it fails. Codex can start with no
+# app running and no archive downloaded, so this script can fetch the archive itself as well.
 set -eu
 
 runtime_root="${CALL_RECORDER_RUNTIME_DIR:-$HOME/Library/Application Support/CallRecorder/runtime}"
 bundle_dir=$(cd "$(dirname "$0")" && pwd)
 archive="$bundle_dir/runtime.zip"
 archive_hash_file="$bundle_dir/runtime.sha256"
+# Where the archive can be fetched when the app does not carry one. One line, written when the app
+# was built, naming the release asset that holds this archive.
+archive_url_file="$bundle_dir/runtime.url"
+# The app downloads the archive here, so fetching it once is enough for every later unpack.
+support_directory="$(dirname "$runtime_root")"
+downloaded_archive="$support_directory/runtime.zip"
 # CALL_RECORDER_LOG_DIR keeps the log out of the real home during a test run.
 log_directory="${CALL_RECORDER_LOG_DIR:-$HOME/Library/Logs/CallRecorder}"
 log_file="$log_directory/indexer-runtime.log"
@@ -34,6 +43,15 @@ report() {
     # failure that had just happened.
     printf '%s call-recorder indexer runtime: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" \
         | tee -a "$log_file" >&2
+}
+
+# Removes a downloaded archive that turned out to be unusable, never one the app carries. A bad
+# download must not be kept, or every later start would read the same broken file and fail the
+# same way. A good one is kept, so a later unpack does not fetch it again.
+discard_downloaded_archive() {
+    if [ "${archive_from_download:-0}" = "1" ] && [ -f "$downloaded_archive" ]; then
+        rm -f -- "$downloaded_archive"
+    fi
 }
 
 fail() {
@@ -56,14 +74,54 @@ is_ready() {
     return 0
 }
 
+# Fetches the archive when neither the app nor Application Support holds one.
+#
+# Returns 1 when this build has nowhere to fetch from, and reports and exits when a fetch was
+# attempted and failed.
+fetch_archive() {
+    [ -f "$archive_url_file" ] || return 1
+    archive_url=$(tr -d '[:space:]' < "$archive_url_file")
+    [ -n "$archive_url" ] || return 1
+    mkdir -p "$support_directory" || fail "cannot create $support_directory"
+    staging_download="$downloaded_archive.partial.$$"
+    report "downloading the indexer runtime from $archive_url"
+    # Codex starts this script with an environment of its own, so the fetcher is named by path when
+    # the machine has one there.
+    curl_bin=/usr/bin/curl
+    [ -x "$curl_bin" ] || curl_bin=curl
+    if ! "$curl_bin" --fail --location --silent --show-error --output "$staging_download" \
+        "$archive_url" >>"$log_file" 2>&1; then
+        rm -f -- "$staging_download"
+        fail "the indexer runtime could not be downloaded from $archive_url"
+    fi
+    mv "$staging_download" "$downloaded_archive" || {
+        rm -f -- "$staging_download"
+        fail "cannot keep the downloaded runtime archive at $downloaded_archive"
+    }
+    archive="$downloaded_archive"
+    archive_from_download=1
+    return 0
+}
+
 # Unpacks into a staging folder, checks the archive against the hash the app was built with, and
 # only then moves it into place. A half-unpacked runtime is never visible to a running process.
 unpack() {
-    [ -f "$archive" ] || fail "the app is missing its runtime archive at $archive"
+    # The archive the app carries wins; then the one a previous download left in Application
+    # Support; then a download.
+    if [ ! -f "$archive" ] && [ -f "$downloaded_archive" ]; then
+        archive="$downloaded_archive"
+        archive_from_download=1
+    fi
+    if [ ! -f "$archive" ]; then
+        fetch_archive || fail "this build has no runtime archive and nothing to fetch one from"
+    fi
     expected=$(read_expected_hash) \
         || fail "the app is missing runtime.sha256 beside the runtime archive"
     actual=$(shasum -a 256 "$archive" | awk '{print $1}')
-    [ "$expected" = "$actual" ] || fail "the runtime archive in the app does not match its recorded hash"
+    if [ "$expected" != "$actual" ]; then
+        discard_downloaded_archive
+        fail "the runtime archive does not match the hash recorded when the app was built"
+    fi
 
     staging="$runtime_root.incoming.$$"
     if [ -e "$staging" ]; then
@@ -71,6 +129,7 @@ unpack() {
     fi
     mkdir -p "$staging" || fail "cannot create $staging"
     if ! ditto -x -k "$archive" "$staging" >>"$log_file" 2>&1; then
+        discard_downloaded_archive
         report "unpacking the runtime archive failed; the archive may be incomplete"
         exit 1
     fi
