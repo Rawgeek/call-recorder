@@ -211,7 +211,10 @@ final class AppUpdateChecker {
     func setCheckInterval(_ seconds: TimeInterval) {
         guard seconds != checkInterval else { return }
         checkInterval = seconds
-        guard schedule != nil else { return }
+        // A check or a download that is already under way is left alone: ending that task would
+        // report the work it was doing as a failure. The wait that follows it reads the new step,
+        // which is the wait this is about.
+        guard schedule != nil, !checking, work == nil else { return }
         log("a check now follows every \(Int(seconds / 60)) minutes")
         beginSchedule(after: .seconds(2))
     }

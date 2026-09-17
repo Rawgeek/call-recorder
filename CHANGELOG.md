@@ -32,9 +32,10 @@ step you choose, and a model you picked from the folded list stays in sight.
   that was already waiting.
 
 ### Verified
-- 582 tests pass. Nine of them are new: the waiting shell and its log line, the restart that quits
-  and the one that must not, the six steps and what an unreadable step costs, and the model the
-  models page keeps showing.
+- 584 tests pass. Eleven of them are new: the waiting shell and its log line, the restart that
+  quits and the one that must not, the six steps and what an unreadable step costs, the check a
+  changed step must not cut short, the wait a changed step ends, and the model the models page
+  keeps showing.
 - The Updates card was rendered in the waiting state before it was published, which is what caught
   a Restart button drawn as "Rest…" beside a wrapping sentence.
 

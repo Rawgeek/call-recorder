@@ -34,7 +34,10 @@ struct AppUpdateRestartTests {
     }
 
     /// A running copy and a checked copy waiting beside it, which is the state a restart acts on.
-    private func makeFixture(quits: QuitCounter) throws -> Fixture {
+    private func makeFixture(
+        quits: QuitCounter,
+        fetchReleases: @escaping () async throws -> Data = { throw AppUpdateError.httpStatus(500) }
+    ) throws -> Fixture {
         let fileManager = FileManager.default
         let root = fileManager.temporaryDirectory
             .appending(path: "app-update-restart-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -60,9 +63,9 @@ struct AppUpdateRestartTests {
             applicationDirectory: applicationDirectory,
             defaults: defaults,
             requestTermination: { quits.record() },
-            // The check never reaches the network in these tests: what is being tested is what a
-            // restart does with a version that is already checked.
-            fetchReleases: { throw AppUpdateError.httpStatus(500) }
+            // The check never reaches the network: what is being tested is what a restart does with
+            // a version that is already checked, and how a chosen step meets a check in flight.
+            fetchReleases: fetchReleases
         )
         return Fixture(
             root: root,
@@ -95,6 +98,101 @@ struct AppUpdateRestartTests {
         // opens it again was pointed at the bundle the swap replaces.
         #expect(quits.count == 1)
         #expect(opened?.path == fixture.bundle.path)
+    }
+
+    /// A check that stops until the test lets it answer, so a check can be held in flight.
+    @MainActor
+    final class PendingFetch {
+        private var resume: CheckedContinuation<Void, Never>?
+        private(set) var started = false
+
+        func hold() async -> Data {
+            started = true
+            await withCheckedContinuation { continuation in
+                resume = continuation
+            }
+            return Self.upToDate
+        }
+
+        func open() {
+            resume?.resume()
+            resume = nil
+        }
+
+        /// The release list that says this copy is the newest one.
+        static let upToDate = Data(
+            """
+            [
+              {
+                "tag_name": "v0.1.7",
+                "html_url": "https://example.test/releases/tag/v0.1.7",
+                "draft": false,
+                "prerelease": false,
+                "published_at": "2026-09-01T10:00:00Z",
+                "assets": []
+              }
+            ]
+            """.utf8
+        )
+    }
+
+    @Test("a step chosen while a check is running does not cut that check short")
+    func aChosenStepLeavesARunningCheckAlone() async throws {
+        // Given a check that has started and is waiting for its answer.
+        let quits = QuitCounter()
+        let pending = PendingFetch()
+        let fixture = try makeFixture(quits: quits, fetchReleases: { await pending.hold() })
+        defer { fixture.remove() }
+        fixture.checker.start()
+        fixture.checker.checkNow()
+        try await waitUntil("the check to start") { pending.started }
+
+        // When the step changes while that check is in flight.
+        fixture.checker.setCheckInterval(AppUpdateInterval.everyThirtyMinutes.seconds)
+
+        // Then the step is taken, and the check that was running finishes on its own: ending its
+        // task would report the work it was doing as a failure.
+        #expect(fixture.checker.checkInterval == 30 * 60)
+        pending.open()
+        try await waitUntil("the check to finish") { fixture.checker.state == .upToDate(version: "0.1.7") }
+    }
+
+    @Test("a step chosen while the app waits ends the wait that was running")
+    func aChosenStepEndsTheWaitThatWasRunning() async throws {
+        // Given an app that has settled and is waiting: its first check is twenty seconds away.
+        let quits = QuitCounter()
+        var checks = 0
+        let fixture = try makeFixture(
+            quits: quits,
+            fetchReleases: {
+                checks += 1
+                return PendingFetch.upToDate
+            }
+        )
+        defer { fixture.remove() }
+        fixture.checker.start()
+
+        // When a shorter step is chosen.
+        fixture.checker.setCheckInterval(AppUpdateInterval.everyThirtyMinutes.seconds)
+
+        // Then the check that follows arrives in seconds rather than after the wait that was
+        // replaced. The wait is a real one, so this is given room: a busy machine can stretch two
+        // seconds, and the wait it replaced was twenty.
+        try await waitUntil("a check to follow the change", seconds: 20) { checks >= 1 }
+    }
+
+    /// Waits for something a test cannot be told about, with a bound so a failure is a failure.
+    private func waitUntil(
+        _ what: String,
+        seconds: Double = 10,
+        _ condition: @MainActor () -> Bool
+    ) async throws {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        Issue.record("waited \(Int(seconds)) seconds for \(what), and it did not happen")
     }
 
     @Test("a restart that cannot arrange an open leaves the version waiting and does not quit")
