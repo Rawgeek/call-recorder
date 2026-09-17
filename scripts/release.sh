@@ -8,6 +8,7 @@
 #                                  machine needs
 #   scripts/release.sh --sync      write the version into the documents and re-render the
 #                                  screenshots into docs/images
+#   scripts/release.sh --verify    read a published release back the way the updater reads it
 #   scripts/release.sh --publish   check, test, package, publish the release with its two assets,
 #                                  then download the archive back and check it
 #
@@ -129,20 +130,22 @@ test_suite() {
 }
 
 verify() {
-    local temp=$(mktemp -d /tmp/call-recorder-verify.XXXXXX)
-    trap 'rm -rf -- "$temp"' EXIT
+    # The name is not local: the trap runs after the function has returned, and a local would be
+    # out of scope by then.
+    verify_temp=$(mktemp -d /tmp/call-recorder-verify.XXXXXX)
+    trap 'rm -rf -- "$verify_temp"' EXIT
 
-    gh release download "$tag" --pattern "$archive" --dir "$temp" --clobber
-    local digest=$(shasum -a 256 "$temp/$archive" | awk '{ print $1 }')
-    gh release view "$tag" --json assets > "$temp/assets.json"
-    local published=$(jq -r --arg name "$archive" '.assets[] | select(.name == $name) | .digest' "$temp/assets.json" | sed 's/^sha256://')
+    gh release download "$tag" --pattern "$archive" --dir "$verify_temp" --clobber
+    local digest=$(shasum -a 256 "$verify_temp/$archive" | awk '{ print $1 }')
+    gh release view "$tag" --json assets > "$verify_temp/assets.json"
+    local published=$(jq -r --arg name "$archive" '.assets[] | select(.name == $name) | .digest' "$verify_temp/assets.json" | sed 's/^sha256://')
     if [[ "$digest" != "$published" ]]; then
         print -u2 "The download does not match the digest the release published."
         return 1
     fi
 
-    ditto -x -k "$temp/$archive" "$temp/unpacked"
-    local bundle="$temp/unpacked/Call Recorder.app"
+    ditto -x -k "$verify_temp/$archive" "$verify_temp/unpacked"
+    local bundle="$verify_temp/unpacked/Call Recorder.app"
     if [[ ! -d "$bundle" ]]; then
         print -u2 "The archive holds no Call Recorder.app at its top level."
         return 1
@@ -161,9 +164,10 @@ case "${1:---check}" in
     --check) check ;;
     --sync) sync ;;
     --test) test_suite ;;
+    --verify) verify ;;
     --publish) publish ;;
     *)
-        print -u2 "usage: scripts/release.sh [--check | --test | --sync | --publish]"
+        print -u2 "usage: scripts/release.sh [--check | --test | --sync | --verify | --publish]"
         print -u2 "Do not run a release by hand: $hooks installs the hooks that keep the documents in step."
         exit 2
         ;;
