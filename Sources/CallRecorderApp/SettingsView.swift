@@ -832,7 +832,10 @@ struct ModelSettingsView: View {
                 }
                 if model.modelManager.installedBytes > 0 {
                     CRSettingsDivider()
-                    CRSettingsRow(title: "On disk", info: "The models installed on this Mac.") {
+                    CRSettingsRow(
+                        title: "On disk",
+                        detail: "Total size of the models installed on this Mac."
+                    ) {
                         Text(ModelSizeLabel.file(bytes: model.modelManager.installedBytes))
                         .font(CR.Font.body)
                         .foregroundStyle(CR.Ink.readable)
@@ -1245,9 +1248,7 @@ struct ModelSettingsView: View {
         let fit = whisperModel.memoryFit(inMemoryOf: physicalMemoryBytes)
         CRSettingsRow(
             title: whisperModel.displayName,
-            // A model that fits says nothing at all. The list is a list of names until one of them
-            // is a problem, and the figures a person compares are on the pointer.
-            detail: fitDetail(whisperModel, fit: fit),
+            detail: rowDetail(whisperModel, fit: fit),
             info: modelSummary(whisperModel),
             warning: fit != .comfortable
         ) {
@@ -1293,10 +1294,16 @@ struct ModelSettingsView: View {
     ) -> CRStatusChip? {
         switch fit {
         case .comfortable:
-            // The blue chip already says which model is in use, so the green one would repeat it.
-            return whisperModel.isRecommended && !isSelected
-                ? CRStatusChip(tone: .ready, text: "Recommended")
-                : nil
+            guard model.modelManager.state(for: whisperModel).isInstalled else {
+                // Nothing is installed and nothing is wrong: the only thing left to say is which
+                // of the two picks this is.
+                // The blue chip already says which model is in use, so the green one would repeat
+                // it.
+                return whisperModel.isRecommended && !isSelected
+                    ? CRStatusChip(tone: .ready, text: "Recommended")
+                    : nil
+            }
+            return isSelected ? nil : CRStatusChip(tone: .ready, text: "Installed")
         case .tight:
             return CRStatusChip(tone: .waiting, text: "Tight")
         case .insufficient:
@@ -1304,7 +1311,18 @@ struct ModelSettingsView: View {
         }
     }
 
-    /// The one thing a row says about memory, and only when it has something to say.
+    /// The line under a model's name: what it is for, what it costs to download, and, when the
+    /// model is a problem, why.
+    private func rowDetail(_ whisperModel: WhisperModel, fit: WhisperModelMemoryFit) -> String {
+        var parts = [
+            whisperModel.detail,
+            ModelSizeLabel.file(bytes: whisperModel.expectedBytes),
+        ]
+        if let warning = fitDetail(whisperModel, fit: fit) { parts.append(warning) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// What a row says about memory, and only when it has something to say.
     private func fitDetail(_ whisperModel: WhisperModel, fit: WhisperModelMemoryFit) -> String? {
         switch fit {
         case .comfortable:

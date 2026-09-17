@@ -103,7 +103,7 @@ struct ModelCatalogTests {
         // Then one per kind of decision, so both picks are in the first screen and neither the
         // English-only twins nor the older large files are.
         #expect(listed == WhisperModel.primaryIDs)
-        #expect(listed == ["base", "small", "medium", "large-v3-turbo"])
+        #expect(listed == ["tiny", "small", "medium", "large-v3-turbo"])
         #expect(WhisperModel.catalog.filter(\.isPrimary).allSatisfy { $0.englishWordErrorRate != nil })
         #expect(listed.contains("large-v3-turbo"))
     }
