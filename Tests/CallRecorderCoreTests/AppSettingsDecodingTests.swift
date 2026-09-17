@@ -24,6 +24,9 @@ struct AppSettingsDecodingTests {
         #expect(decoded.outputDirectory == "/tmp/recordings")
         #expect(decoded.automaticStopGraceSeconds == 4)
         #expect(decoded.automaticModelUpdatesEnabled == true)
+        // Same rule for the app's own updates: a blob written before the option existed keeps the
+        // behaviour the app shipped with, which is to install a newer release on its own.
+        #expect(decoded.automaticAppUpdatesEnabled == true)
         // Giving the audio back is what the app did before the option existed, so a blob written
         // without the flag keeps the behaviour it had.
         #expect(decoded.removeAudioAfterTranscription == true)
@@ -51,11 +54,13 @@ struct AppSettingsDecodingTests {
     func settingsRoundTrip() throws {
         var settings = AppSettings.default
         settings.automaticModelUpdatesEnabled = false
+        settings.automaticAppUpdatesEnabled = false
         settings.selectedMicrophoneID = "Built-in"
         let data = try JSONEncoder().encode(settings)
         let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
         #expect(decoded == settings)
         #expect(decoded.automaticModelUpdatesEnabled == false)
+        #expect(decoded.automaticAppUpdatesEnabled == false)
     }
 
     @Test("a settings blob that is not JSON is rejected so defaults apply")

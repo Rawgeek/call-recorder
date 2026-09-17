@@ -118,6 +118,127 @@ struct GeneralSettingsView: View {
                         .controlSize(.small)
                 }
             }
+
+            CRSettingsCard(
+                title: "Updates",
+                footnote: "Installed when Call Recorder quits, so the next launch is the new version."
+            ) {
+                CRSettingsRow(
+                    title: "Version",
+                    detail: updateDetail,
+                    info: "Call Recorder follows its own repository for releases. A newer one is "
+                        + "downloaded and checked while the app runs: the digest the release "
+                        + "published, the identifier, the version, and the signature all have to "
+                        + "match. The swap happens at the one moment the app is not using its "
+                        + "bundle, which is when it quits. The version it replaced is kept, so a "
+                        + "release that misbehaves can be put back."
+                ) {
+                    updateControls
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Install updates automatically",
+                    detail: model.settings.automaticAppUpdatesEnabled
+                        ? "Checked at launch and every six hours."
+                        : "Checks still run; nothing is downloaded until it is asked for."
+                ) {
+                    HStack(spacing: CR.Space.inner) {
+                        Toggle("", isOn: $model.settings.automaticAppUpdatesEnabled)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        CRButton(title: "Check Now") { model.appUpdater.checkNow() }
+                    }
+                }
+                if let kept = model.appUpdater.keptVersion, kept != model.appUpdater.installedVersion {
+                    CRSettingsDivider()
+                    CRSettingsRow(
+                        title: "Version " + kept + " is kept",
+                        detail: "The copy from before the last automatic update. Going back stages "
+                            + "it the way an update is staged."
+                    ) {
+                        CRButton(title: "Go Back") { model.appUpdater.rollBackToKeptVersion() }
+                            .disabled(
+                                model.appUpdater.pendingVersion != nil
+                                    || model.appUpdater.state.isBusy
+                            )
+                    }
+                }
+            }
+        }
+    }
+
+    /// What the app knows about its own version, in one sentence, plus anything it is doing.
+    private var updateDetail: String {
+        let updater = model.appUpdater
+        let current = "Version " + updater.installedVersion + " (build "
+            + String(updater.installedBuild) + ")."
+        switch updater.state {
+        case .idle:
+            return current + " Not checked yet."
+        case .checking:
+            return current + " Checking…"
+        case .upToDate:
+            return current + " Up to date."
+        case .available(let version):
+            if updater.heldBackVersion == version {
+                return current + " Version " + version
+                    + " is available, and is not installed by itself because you went back."
+            }
+            return current + " Version " + version + " is available."
+        case .downloading(let version):
+            return current + " Downloading version " + version + "…"
+        case .ready(let version):
+            return updater.isRestoringOlderVersion
+                ? current + " Version " + version + " is put back when Call Recorder quits."
+                : current + " Version " + version + " is installed when Call Recorder quits."
+        case .failed(let message):
+            return message
+        case .installByHand(let version, _):
+            return "Version " + version
+                + " cannot be installed by the app from here. Open the release page to do it yourself."
+        }
+    }
+
+    @ViewBuilder
+    private var updateControls: some View {
+        let updater = model.appUpdater
+        switch updater.state {
+        case .idle:
+            CRButton(title: "Check Now") { updater.checkNow() }
+        case .checking:
+            CRProgressRing(progress: nil)
+        case .upToDate:
+            CRStatusChip(tone: .ready, text: "Up to date")
+        case .available(let version):
+            HStack(spacing: CR.Space.inner) {
+                CRStatusChip(tone: .waiting, text: version + " available")
+                CRButton(title: "Download", kind: .primary) { updater.prepareOfferedUpdate() }
+            }
+        case .downloading:
+            HStack(spacing: CR.Space.inner) {
+                CRProgressRing(progress: updater.progress)
+                if let progress = updater.progress {
+                    Text(progress.formatted(.percent.precision(.fractionLength(0))))
+                        .font(CR.Font.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(CR.Ink.readable)
+                        .frame(width: 30, alignment: .trailing)
+                }
+                CRButton(title: "Cancel") { updater.cancel() }
+            }
+        case .ready(let version):
+            CRStatusChip(tone: .ready, text: version + " ready")
+        case .failed:
+            HStack(spacing: CR.Space.inner) {
+                CRStatusChip(tone: .failed, text: "Check failed")
+                CRButton(title: "Try Again") { updater.checkNow() }
+            }
+        case .installByHand(_, let page):
+            HStack(spacing: CR.Space.inner) {
+                CRStatusChip(tone: .waiting, text: "Install by hand")
+                CRButton(title: "Open Release Page") { NSWorkspace.shared.open(page) }
+            }
         }
     }
 

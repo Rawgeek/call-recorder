@@ -80,6 +80,7 @@ final class AppModel {
     /// people who were actually there before the people who were not.
     private(set) var callParticipants: [CallID: [Participant]] = [:]
     private var sessionUnlockObserver: NSObjectProtocol?
+    private var appTerminationObserver: NSObjectProtocol?
     private(set) var recentCalls: [RecentCallSummary] = []
     /// True once the first read of the database has finished, successfully or not.
     ///
@@ -297,6 +298,8 @@ final class AppModel {
     private let indexer: IndexerClient?
     /// The JavaScript runtime the indexer runs on, fetched rather than carried in the bundle.
     let indexerRuntime: IndexerRuntimeInstaller
+    /// Follows the releases of this app's repository and installs a newer one when the app quits.
+    let appUpdater: AppUpdateChecker
     @ObservationIgnored private lazy var processor: MeetingProcessor? = {
         guard let store else { return nil }
         return MeetingProcessor(store: store, runStage: { [weak self] job in
@@ -469,6 +472,10 @@ final class AppModel {
             remoteURL: IndexerClient.runtimeArchiveURL(),
             expectedHash: IndexerClient.runtimeArchiveHash()
         )
+        appUpdater = AppUpdateChecker(
+            applicationDirectory: applicationDirectory,
+            defaults: defaults
+        )
         let backgroundFinalization = BackgroundAudioFinalization(
             store: localStore,
             pipeline: pipeline
@@ -482,6 +489,11 @@ final class AppModel {
             }
         }
         updateStartAtLogin()
+        // Read through the setting every time, so turning automatic updates off takes effect at
+        // the next check rather than at the next launch.
+        appUpdater.automaticUpdatesEnabled = { [weak self] in
+            self?.settings.automaticAppUpdatesEnabled ?? true
+        }
         Task {
             await loadMetadata()
             // Preview mode stops here. Everything below either watches the microphone, writes
@@ -525,6 +537,8 @@ final class AppModel {
             startFromLaunchArgumentIfNeeded()
             startModelMaintenance()
             prepareSupportingModels()
+            observeApplicationTermination()
+            appUpdater.start()
             // The clips the speaker review plays are a cache: the recording is the record, and
             // anything nobody has listened to for a fortnight can go.
             speakerSamples?.prune()
@@ -1060,6 +1074,24 @@ final class AppModel {
             MainActor.assumeIsolated {
                 guard let self, self.speakerStore == nil else { return }
                 self.retryVoiceIdentity()
+            }
+        }
+    }
+
+    /// Installs an update that is waiting, as the app quits.
+    ///
+    /// The swap needs the bundle to be idle, and quitting is the one moment the app is not using
+    /// it. The notification arrives on the main thread, so the filesystem work runs to completion
+    /// here; work handed to a task at this point would not be guaranteed to start at all.
+    private func observeApplicationTermination() {
+        guard appTerminationObserver == nil else { return }
+        appTerminationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.willTerminateNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.appUpdater.applyStagedOnExit()
             }
         }
     }

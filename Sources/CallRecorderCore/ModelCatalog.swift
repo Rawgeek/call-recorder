@@ -18,6 +18,12 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// Whether Call Recorder refreshes its model files on its own when the host publishes newer
     /// ones. Off means the user runs every check by hand.
     public var automaticModelUpdatesEnabled: Bool
+    /// Whether Call Recorder fetches its own newer releases and installs them.
+    ///
+    /// A newer release is downloaded and checked while the app runs, and swapped in when the app
+    /// quits, so the next launch is the new version. Off means the check still runs and says what
+    /// is available; nothing is downloaded until it is asked for.
+    public var automaticAppUpdatesEnabled: Bool
     /// Whether a finished call gives up the audio it was recorded from.
     ///
     /// The audio of a finished call is moved out of the way once its transcript and its search
@@ -53,6 +59,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case selectedWhisperModelID
         case outputDirectory
         case automaticModelUpdatesEnabled
+        case automaticAppUpdatesEnabled
         case removeAudioAfterTranscription
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
@@ -69,6 +76,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             outputDirectory: FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Desktop/Call Recordings", directoryHint: .isDirectory).path,
             automaticModelUpdatesEnabled: true,
+            automaticAppUpdatesEnabled: true,
             removeAudioAfterTranscription: true,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
@@ -113,6 +121,11 @@ extension AppSettings {
         automaticModelUpdatesEnabled =
             try container.decodeIfPresent(Bool.self, forKey: .automaticModelUpdatesEnabled)
             ?? fallback.automaticModelUpdatesEnabled
+        // Added after the first release, with the same rule as the model option above: a Mac that
+        // has never been offered the choice keeps the behaviour the app shipped with.
+        automaticAppUpdatesEnabled =
+            try container.decodeIfPresent(Bool.self, forKey: .automaticAppUpdatesEnabled)
+            ?? fallback.automaticAppUpdatesEnabled
         // Added after the first release. Absent means the audio is given up, which is what the
         // app did before the option existed.
         removeAudioAfterTranscription =
