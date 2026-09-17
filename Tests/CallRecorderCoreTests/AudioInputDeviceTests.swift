@@ -27,5 +27,62 @@ struct AudioInputDeviceTests {
         #expect(!AudioCaptureSession.isBluetooth(builtIn))
         #expect(!AudioCaptureSession.isBluetooth(usb))
     }
-}
 
+    @Test("the system choice follows the microphone macOS is set to use")
+    func systemChoiceFollowsTheSystem() {
+        let devices = ["BuiltInMicrophoneDevice", "34-0E-22-81-A2-53:input"]
+
+        #expect(
+            AudioCaptureSession.resolvedMicrophoneID(
+                availableIDs: devices,
+                selectedID: AudioCaptureSession.systemMicrophoneID,
+                systemDefaultID: "34-0E-22-81-A2-53:input"
+            ) == "34-0E-22-81-A2-53:input"
+        )
+        // A system set to a device that has been unplugged falls back to the built-in microphone
+        // rather than leaving the recorder with nothing to record from.
+        #expect(
+            AudioCaptureSession.resolvedMicrophoneID(
+                availableIDs: devices,
+                selectedID: AudioCaptureSession.systemMicrophoneID,
+                systemDefaultID: "unplugged"
+            ) == "BuiltInMicrophoneDevice"
+        )
+        #expect(
+            AudioCaptureSession.resolvedMicrophoneID(
+                availableIDs: devices,
+                selectedID: AudioCaptureSession.systemMicrophoneID
+            ) == "BuiltInMicrophoneDevice"
+        )
+    }
+
+    @Test("a named device is used whatever the system points at")
+    func aNamedDeviceWins() {
+        #expect(
+            AudioCaptureSession.resolvedMicrophoneID(
+                availableIDs: ["BuiltInMicrophoneDevice", "yeti"],
+                selectedID: "yeti",
+                systemDefaultID: "BuiltInMicrophoneDevice"
+            ) == "yeti"
+        )
+    }
+
+    @Test("the system choice names the device it points at today")
+    func systemChoiceIsNamed() {
+        let devices = [
+            AudioInputDevice(id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone"),
+            AudioInputDevice(id: "34-0E-22-81-A2-53:input", name: "A Headset"),
+        ]
+
+        #expect(
+            AudioCaptureSession.systemChoiceName(
+                systemDefaultID: "34-0E-22-81-A2-53:input",
+                devices: devices
+            ) == "System (A Headset)"
+        )
+        #expect(
+            AudioCaptureSession.systemChoiceName(systemDefaultID: nil, devices: devices)
+                == "System default"
+        )
+    }
+}

@@ -602,9 +602,32 @@ final class AppModel {
         AudioCaptureSession.availableMicrophones()
     }
 
+    /// The microphone choices the settings menu offers.
+    ///
+    /// The system's own choice comes first and is named for the device it points at today, so a
+    /// person can see what following the system means before choosing it.
+    var microphoneChoices: [AudioInputDevice] {
+        let devices = availableMicrophones
+        return [
+            AudioInputDevice(
+                id: AudioCaptureSession.systemMicrophoneID,
+                name: AudioCaptureSession.systemChoiceName(
+                    systemDefaultID: AudioCaptureSession.systemDefaultMicrophoneID(),
+                    devices: devices
+                )
+            )
+        ] + devices
+    }
+
     var selectedMicrophoneID: String {
         get {
-            AudioCaptureSession.resolvedMicrophoneID(
+            // The saved choice is reported as it was saved. Resolving it here would collapse
+            // "follow the system" into whichever device the system points at while the menu is
+            // drawn, and the menu would then show that device as chosen instead of the choice.
+            if settings.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
+                return AudioCaptureSession.systemMicrophoneID
+            }
+            return AudioCaptureSession.resolvedMicrophoneID(
                 availableIDs: availableMicrophones.map(\.id),
                 selectedID: settings.selectedMicrophoneID
             ) ?? ""
@@ -2529,7 +2552,11 @@ final class AppModel {
         case .finalizingArtifacts:
             try await promoteTranscript(for: job.callID, store: store)
             do {
-                _ = try await artifactRecovery.finalizeReadyCall(job.callID, store: store)
+                _ = try await artifactRecovery.finalizeReadyCall(
+                    job.callID,
+                    store: store,
+                    removingAudio: settings.removeAudioAfterTranscription
+                )
             } catch ArtifactRecoveryError.speakerReviewPending {
                 // Keep source audio available until every detected speaker is reviewed.
             }
@@ -3878,7 +3905,11 @@ final class AppModel {
                 else { continue }
                 try await promoteTranscript(for: job.callID, store: store)
                 do {
-                    _ = try await artifactRecovery.finalizeReadyCall(job.callID, store: store)
+                    _ = try await artifactRecovery.finalizeReadyCall(
+                        job.callID,
+                        store: store,
+                        removingAudio: settings.removeAudioAfterTranscription
+                    )
                 } catch ArtifactRecoveryError.speakerReviewPending {
                     continue
                 }
@@ -3899,7 +3930,11 @@ final class AppModel {
                     atPath: URL(filePath: audioPath).deletingLastPathComponent().path
                 )
             else { return }
-            _ = try await artifactRecovery.finalizeReadyCall(callID, store: store)
+            _ = try await artifactRecovery.finalizeReadyCall(
+                callID,
+                store: store,
+                removingAudio: settings.removeAudioAfterTranscription
+            )
             try await purgeExpiredArtifacts(store: store)
             recoverableArtifacts = try artifactRecovery.items()
         } catch {

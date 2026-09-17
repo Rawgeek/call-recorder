@@ -980,15 +980,8 @@ struct ModelSettingsView: View {
                     model.supportingManager.download(component)
                 }
             case .downloading:
-                HStack(spacing: CR.Space.inner) {
-                    if let progress = model.supportingManager.progress(for: component) {
-                        Text(progress.formatted(.percent.precision(.fractionLength(0))))
-                            .font(CR.Font.caption)
-                            .monospacedDigit()
-                            .foregroundStyle(CR.Ink.readable)
-                    }
-                    ProgressView().controlSize(.small)
-                    CRButton(title: "Cancel") { model.supportingManager.cancel(component) }
+                downloadRow(progress: model.supportingManager.progress(for: component)) {
+                    model.supportingManager.cancel(component)
                 }
             case .installed:
                 HStack(spacing: CR.Space.inner) {
@@ -1245,6 +1238,25 @@ struct ModelSettingsView: View {
         return reason
     }
 
+    /// A download in flight: a ring that fills, the share it has reached, and the way to stop it.
+    ///
+    /// The share is a number beside the ring rather than a word under the row. Its column is
+    /// fixed, so the Cancel button next to it does not step sideways as the digits change, and
+    /// the ring is the part that moves.
+    private func downloadRow(progress: Double?, cancel: @escaping () -> Void) -> some View {
+        HStack(spacing: CR.Space.inner) {
+            CRProgressRing(progress: progress)
+            if let progress {
+                Text(progress.formatted(.percent.precision(.fractionLength(0))))
+                    .font(CR.Font.caption)
+                    .monospacedDigit()
+                    .foregroundStyle(CR.Ink.readable)
+                    .frame(width: 30, alignment: .trailing)
+            }
+            CRButton(title: "Cancel", action: cancel)
+        }
+    }
+
     @ViewBuilder
     private func modelRow(_ whisperModel: WhisperModel) -> some View {
         let fit = whisperModel.memoryFit(inMemoryOf: physicalMemoryBytes)
@@ -1258,16 +1270,29 @@ struct ModelSettingsView: View {
                 // A model that is simply fine carries nothing. The page marks the one in use, the
                 // picks, and the problems, and leaves the rest of the list as names.
                 let isSelected = whisperModel.id == model.settings.selectedWhisperModelID
-                if isSelected { CRStatusChip(tone: .working, text: "Selected") }
-                if let chip = fitChip(whisperModel, fit: fit, isSelected: isSelected) { chip }
+                // While a download is running the row says what is left and how to stop it, and
+                // nothing else. A chip beside a ring, a share, and a button was wider than the
+                // card, and the Cancel button was pushed off its edge.
+                let isDownloading = model.modelManager.state(for: whisperModel).isDownloading
+                if isSelected, !isDownloading {
+                    CRStatusChip(tone: .working, text: "Selected")
+                }
+                if !isDownloading, let chip = fitChip(
+                    whisperModel,
+                    fit: fit,
+                    isSelected: isSelected
+                ) {
+                    chip
+                }
                 switch model.modelManager.state(for: whisperModel) {
                 case .notInstalled:
                     CRButton(title: "Download", kind: .primary) {
                         model.modelManager.download(whisperModel)
                     }
                 case .downloading:
-                    ProgressView().controlSize(.small)
-                    CRButton(title: "Cancel") { model.modelManager.cancel(whisperModel) }
+                    downloadRow(progress: model.modelManager.progress(for: whisperModel)) {
+                        model.modelManager.cancel(whisperModel)
+                    }
                 case .installed:
                     // Only offered once an update has replaced something, because that is the
                     // only time an earlier copy exists to go back to.

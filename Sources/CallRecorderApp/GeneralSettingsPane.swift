@@ -45,8 +45,8 @@ struct GeneralSettingsView: View {
                     warning: microphoneHintIsWarning
                 ) {
                     Picker("", selection: $model.selectedMicrophoneID) {
-                        ForEach(model.availableMicrophones) { microphone in
-                            Text(AudioCaptureSession.displayName(for: microphone)).tag(microphone.id)
+                        ForEach(model.microphoneChoices) { microphone in
+                            Text(choiceName(microphone)).tag(microphone.id)
                         }
                     }
                     .labelsHidden()
@@ -79,7 +79,9 @@ struct GeneralSettingsView: View {
 
             CRSettingsCard(
                 title: "Storage",
-                footnote: "Transcripts are written here. Audio is removed once the transcript and its search index are verified."
+                footnote: model.settings.removeAudioAfterTranscription
+                    ? "Transcripts are written here. Audio is moved out of the way once the transcript and its search index are verified."
+                    : "Transcripts are written here, and every recording keeps its audio beside them."
             ) {
                 CRSettingsRow(title: "Recordings folder") {
                     HStack(spacing: CR.Space.inner) {
@@ -98,8 +100,33 @@ struct GeneralSettingsView: View {
                         CRButton(title: "Choose…", kind: .primary, action: chooseOutputDirectory)
                     }
                 }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Remove the audio of a finished call",
+                    detail: model.settings.removeAudioAfterTranscription
+                        ? "Moved to Recently Deleted, where it stays for a day."
+                        : "Every recording keeps its audio next to its transcript.",
+                    info: "A finished call gives up its audio once the transcript and its search "
+                        + "index are verified. The audio is kept in Recently Deleted for a day, so "
+                        + "a transcript can still be checked against what was said, and a recording "
+                        + "can be put back. Turning this off keeps the audio of every call, which "
+                        + "costs the space the recordings take."
+                ) {
+                    Toggle("", isOn: $model.settings.removeAudioAfterTranscription)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
             }
         }
+    }
+
+    /// The name of a microphone choice. Only a real device carries the built-in label; the
+    /// system choice names the device it points at instead.
+    private func choiceName(_ choice: AudioInputDevice) -> String {
+        choice.id == AudioCaptureSession.systemMicrophoneID
+            ? choice.name
+            : AudioCaptureSession.displayName(for: choice)
     }
 
     /// Shows the last two components of the path. The full path is one hover away, and the
@@ -117,6 +144,11 @@ struct GeneralSettingsView: View {
     /// Point out a Bluetooth headset, because its audio quality drops when it switches to call mode.
     private var microphoneHint: String {
         guard !model.availableMicrophones.isEmpty else { return "No microphone available" }
+        if model.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
+            guard let systemMicrophone else { return "Follows the microphone macOS is set to use." }
+            return "Follows the microphone macOS is set to use, which is " + systemMicrophone.name
+                + " now."
+        }
         guard let selectedMicrophone else { return "Used for new recordings" }
         return AudioCaptureSession.isBluetooth(selectedMicrophone)
             ? "Bluetooth headset selected. The built-in microphone usually sounds clearer."
@@ -124,7 +156,18 @@ struct GeneralSettingsView: View {
     }
 
     private var microphoneHintIsWarning: Bool {
-        selectedMicrophone.map(AudioCaptureSession.isBluetooth) ?? false
+        // The warning follows the device the recording will actually use, so a system choice that
+        // points at a headset warns about the headset rather than saying nothing.
+        (model.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID
+            ? systemMicrophone
+            : selectedMicrophone)
+            .map(AudioCaptureSession.isBluetooth) ?? false
+    }
+
+    /// The device the system choice points at right now.
+    private var systemMicrophone: AudioInputDevice? {
+        guard let id = AudioCaptureSession.systemDefaultMicrophoneID() else { return nil }
+        return model.availableMicrophones.first { $0.id == id }
     }
 
     private func chooseOutputDirectory() {

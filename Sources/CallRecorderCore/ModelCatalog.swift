@@ -18,6 +18,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// Whether Call Recorder refreshes its model files on its own when the host publishes newer
     /// ones. Off means the user runs every check by hand.
     public var automaticModelUpdatesEnabled: Bool
+    /// Whether a finished call gives up the audio it was recorded from.
+    ///
+    /// The audio of a finished call is moved out of the way once its transcript and its search
+    /// index are verified, and kept for a day where it can be put back. A recording of a long
+    /// meeting at 48 kHz is hundreds of megabytes, and a library of them is the largest thing the
+    /// app holds, so giving the space back is the default. Keeping it is a choice, and a person
+    /// who wants the audio beside the transcript asks for it here.
+    public var removeAudioAfterTranscription: Bool
     /// The glossary repair rules that were in force when the saved transcripts were last
     /// rewritten, or nil when that has never happened.
     ///
@@ -45,6 +53,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case selectedWhisperModelID
         case outputDirectory
         case automaticModelUpdatesEnabled
+        case removeAudioAfterTranscription
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
     }
@@ -60,6 +69,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             outputDirectory: FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Desktop/Call Recordings", directoryHint: .isDirectory).path,
             automaticModelUpdatesEnabled: true,
+            removeAudioAfterTranscription: true,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
         )
@@ -103,6 +113,11 @@ extension AppSettings {
         automaticModelUpdatesEnabled =
             try container.decodeIfPresent(Bool.self, forKey: .automaticModelUpdatesEnabled)
             ?? fallback.automaticModelUpdatesEnabled
+        // Added after the first release. Absent means the audio is given up, which is what the
+        // app did before the option existed.
+        removeAudioAfterTranscription =
+            try container.decodeIfPresent(Bool.self, forKey: .removeAudioAfterTranscription)
+            ?? fallback.removeAudioAfterTranscription
         // Also added after the first release. Absent means the library has never been repaired
         // against a recorded glossary, which is the honest reading and makes the next launch do
         // the work once.

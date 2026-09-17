@@ -8,6 +8,18 @@ versioning.
 
 A size release. The app bundle is 49 MB instead of 150 MB, and what it does is unchanged.
 
+### Added
+- A sentence behind an information glyph now appears in about a fifth of a second. The app draws
+  it, because the system's own tooltip took three or four seconds on an 11-point glyph, and on
+  many rows never appeared at all. Every settings pane uses it.
+- A model that is downloading draws a ring that fills, with the share it has reached beside it.
+  The bytes are counted as they arrive, so a slow transfer can be told from a stopped one.
+- Settings > General > Storage: "Remove the audio of a finished call". Turning it off keeps each
+  recording's audio beside its transcript. It is on by default, which is what the app did before
+  the option existed, and the audio of a finished call is still recoverable for a day.
+- The microphone menu offers the system's own choice first, named for the device macOS is set to
+  use today, so following the system can be chosen and checked. Naming a device still pins it.
+
 ### Changed
 - The JavaScript runtime ships as one compressed archive and is unpacked into
   `~/Library/Application Support/CallRecorder/runtime` on first use. The path Codex registers,
@@ -29,6 +41,12 @@ A size release. The app bundle is 49 MB instead of 150 MB, and what it does is u
   that cannot be cut leaves the recording playing as before.
 
 ### Fixed
+- The app stopped starting index jobs when the runtime became one archive: it looked for a script
+  that now lives inside the archive and quietly fell back to the command line. It reads the layout
+  it was packaged with and names the entry point inside the archive.
+- A row holding a download pushed its Cancel button off the edge of the card. The status chip,
+  the ring, the share, and the button do not fit on one line; while a download runs the row shows
+  the ring, the share, and the button.
 - The runtime script treated a folder it could not create as another process holding the lock,
   and waited three minutes before failing for the wrong reason. It now reports what it could not
   create.

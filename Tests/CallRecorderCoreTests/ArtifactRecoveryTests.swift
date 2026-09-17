@@ -37,6 +37,27 @@ struct ArtifactRecoveryTests {
         #expect(try fixture.recovery().items().isEmpty)
     }
 
+    @Test("a call told to keep its audio keeps it, and is finished all the same")
+    func keepsAudioWhenTheSettingSaysTo() async throws {
+        // Given
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let recovery = fixture.recovery()
+
+        // When
+        let item = try await recovery.finalizeReadyCall(
+            fixture.callID,
+            store: fixture.store,
+            removingAudio: false,
+            at: fixture.finishedAt
+        )
+
+        // Then
+        #expect(item == nil)
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(try recovery.items().isEmpty)
+    }
+
     @Test("cleanup refuses a call whose index is not ready")
     func refusesCleanupUntilIndexIsReady() async throws {
         // Given

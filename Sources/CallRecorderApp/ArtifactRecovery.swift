@@ -79,6 +79,7 @@ struct ArtifactRecovery: Sendable {
     func finalizeReadyCall(
         _ callID: CallID,
         store: CallStore,
+        removingAudio: Bool = true,
         at date: Date = Date()
     ) async throws -> RecoverableArtifact? {
         guard let call = try await store.call(id: callID) else {
@@ -101,6 +102,11 @@ struct ArtifactRecovery: Sendable {
             let transcript = try await store.transcript(for: callID),
             isNonemptyFile(URL(filePath: transcript.markdownPath))
         else { throw ArtifactRecoveryError.transcriptUnavailable }
+
+        // Keeping the audio is a choice, not a failure. Every measure this stage exists to check
+        // has passed, and the folder that holds the audio stays where the recording is played
+        // from. Nothing is left half-moved: the stage simply has nothing to do.
+        guard removingAudio else { return nil }
 
         // A finished call keeps its working files for a day, then loses them. Re-running this
         // stage is normal: a re-index, a retry, or a repair walks a finished call back through

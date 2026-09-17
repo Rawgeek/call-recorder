@@ -105,7 +105,11 @@ struct DiarizerTests {
         try """
             import json
             import signal
-            signal.alarm(3)
+            # A watchdog, not a deadline: if the reader stops draining the pipe this script blocks
+            # on a full buffer and the alarm ends the test. Three seconds was short enough to fire
+            # while the machine was busy with the rest of the suite, which failed the test for the
+            # load rather than for the drain.
+            signal.alarm(30)
             segments = [
                 {"start": index / 10, "end": index / 10 + 0.05, "speaker": "SPEAKER_00"}
                 for index in range(12000)

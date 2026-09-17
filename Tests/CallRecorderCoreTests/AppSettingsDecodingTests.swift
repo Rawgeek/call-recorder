@@ -24,6 +24,9 @@ struct AppSettingsDecodingTests {
         #expect(decoded.outputDirectory == "/tmp/recordings")
         #expect(decoded.automaticStopGraceSeconds == 4)
         #expect(decoded.automaticModelUpdatesEnabled == true)
+        // Giving the audio back is what the app did before the option existed, so a blob written
+        // without the flag keeps the behaviour it had.
+        #expect(decoded.removeAudioAfterTranscription == true)
         // The reminder is due on a settings blob that has never carried the flag, which is the
         // state a first run is in.
         #expect(decoded.automaticDetectionNoticeDismissed == false)

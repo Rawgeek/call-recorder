@@ -213,6 +213,21 @@ enum SnapshotRunner {
                 into: directory
             )
         }
+        // A download in flight. The ring that fills is drawn from a byte count, and a render has
+        // no transfer to count: without this the one state that answers "how long will this take"
+        // is the one state that cannot be looked at.
+        if let fraction = ProcessInfo.processInfo.environment["CALL_RECORDER_DOWNLOAD_PREVIEW"]
+            .flatMap(Double.init) {
+            model.modelManager.enterPreviewDownloading("large-v3-turbo", fraction: fraction)
+            renderWindow(
+                model: model,
+                section: .models,
+                size: settingsSize,
+                name: "settings-models-downloading",
+                into: directory
+            )
+            model.modelManager.leavePreviewDownloading()
+        }
         // The window checks the speaker runtime when it opens, which takes a few seconds. Drawing
         // while that ran caught the chip reading "Checking setup…", so two renders of the same
         // window could disagree. Run the check first and draw the settled state.

@@ -28,6 +28,12 @@ enum ModelManagerError: LocalizedError {
     }
 }
 
+/// What a download has received, and how large the server said the file is.
+struct DownloadByteCount: Equatable, Sendable {
+    var received: Int64
+    var expected: Int64
+}
+
 /// Fetches what a model host publishes for a repository.
 struct ModelHostClient: Sendable {
     var session: URLSession = .shared
@@ -64,6 +70,13 @@ final class ModelManager {
     private(set) var statusMessage: String?
     private(set) var failingModels: [String: String] = [:]
 
+    /// How many bytes of each download have arrived.
+    ///
+    /// A model is up to three gigabytes, and the row that shows it used to hold an indeterminate
+    /// spinner for the minutes that takes. The count is kept per model so a first download and an
+    /// update can be told apart while both are running.
+    private(set) var downloadBytes: [String: DownloadByteCount] = [:]
+
     /// Set by the app. An update must never move a model file while it is being read.
     var isBusy: () -> Bool = { false }
 
@@ -86,6 +99,45 @@ final class ModelManager {
 
     func state(for model: WhisperModel) -> ModelInstallState {
         states[model.id] ?? .notInstalled
+    }
+
+    /// How far along a download is, from 0 to 1, or nil when the size is not yet known.
+    func progress(for model: WhisperModel) -> Double? {
+        guard let counted = downloadBytes[model.id] else { return nil }
+        return Self.fraction(received: counted.received, expected: counted.expected)
+    }
+
+    /// Draws a model as if it were arriving, so a render can show the ring that fills.
+    ///
+    /// Nothing is fetched and nothing on disk is touched: the state and the byte count are the two
+    /// things the row reads, and both are set here. A picture of a download is otherwise
+    /// impossible to take, because it needs a model of two gigabytes and a slow line.
+    func enterPreviewDownloading(_ modelID: String, fraction: Double) {
+        guard let model = models.first(where: { $0.id == modelID }) else { return }
+        states[model.id] = .downloading
+        downloadBytes[model.id] = DownloadByteCount(
+            received: Int64(Double(model.expectedBytes) * min(max(fraction, 0), 1)),
+            expected: model.expectedBytes
+        )
+    }
+
+    /// Puts back the state the render borrowed, and never touches a real download.
+    func leavePreviewDownloading() {
+        for model in models where downloads[model.id] == nil {
+            guard states[model.id] == .downloading else { continue }
+            states[model.id] = stateOnDisk(for: model)
+            downloadBytes[model.id] = nil
+        }
+    }
+
+    /// The share of a file that has arrived, or nil when the server did not name its size.
+    ///
+    /// A host that sends no length leaves nothing to divide by, and an empty ring would claim
+    /// that nothing had arrived rather than that the size is unknown, so the answer is nil and
+    /// the ring spins instead.
+    nonisolated static func fraction(received: Int64, expected: Int64) -> Double? {
+        guard expected > 0 else { return nil }
+        return min(1, max(0, Double(received) / Double(expected)))
     }
 
     func fileURL(for model: WhisperModel) -> URL {
@@ -128,6 +180,7 @@ final class ModelManager {
     func download(_ model: WhisperModel) {
         guard downloads[model.id] == nil, !state(for: model).isInstalled else { return }
         states[model.id] = .downloading
+        downloadBytes[model.id] = DownloadByteCount(received: 0, expected: model.expectedBytes)
         failingModels[model.id] = nil
         downloads[model.id] = Task { [weak self] in
             guard let self else { return }
@@ -151,6 +204,7 @@ final class ModelManager {
                 self.states[model.id] = .failed(error.localizedDescription)
                 self.failingModels[model.id] = error.localizedDescription
             }
+            self.downloadBytes[model.id] = nil
             self.downloads[model.id] = nil
         }
     }
@@ -182,6 +236,7 @@ final class ModelManager {
             return
         }
         states[model.id] = .downloading
+        downloadBytes[model.id] = DownloadByteCount(received: 0, expected: remote.bytes)
         failingModels[model.id] = nil
         downloads[model.id] = Task { [weak self] in
             guard let self else { return }
@@ -204,6 +259,7 @@ final class ModelManager {
                 self.failingModels[model.id] = error.localizedDescription
                 self.statusMessage = "Could not update \(model.displayName)."
             }
+            self.downloadBytes[model.id] = nil
             self.downloads[model.id] = nil
         }
     }
@@ -310,13 +366,25 @@ final class ModelManager {
         let partial = directory.appending(path: model.fileName + ".partial")
         _ = try? FileManager.default.removeItem(at: partial)
 
-        let (temporary, response) = try await URLSession.shared.download(from: source)
+        // The bytes are counted as they land, so the row can draw how much is left. The file is
+        // written straight to the partial name: the downloader is handed the path, because the
+        // location a download delegate is given is deleted the moment its callback returns.
+        var request = URLRequest(url: source)
+        request.timeoutInterval = 60
+        request.setValue("CallRecorder", forHTTPHeaderField: "User-Agent")
+        let download = ModelFileDownload(destination: partial) { [weak self] received, expected in
+            Task { @MainActor [weak self] in
+                self?.downloadBytes[model.id] = DownloadByteCount(
+                    received: received,
+                    expected: expected
+                )
+            }
+        }
+        let response = try await download.run(request)
         try Task.checkCancellation()
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw ModelManagerError.invalidResponse
         }
-        _ = try? FileManager.default.removeItem(at: partial)
-        try FileManager.default.moveItem(at: temporary, to: partial)
         do {
             let verified = try await Task.detached {
                 try ModelFileVerifier.verify(
@@ -401,14 +469,173 @@ final class ModelManager {
     /// Reads the file sizes on disk and marks what is installed.
     private func refresh() {
         for model in models {
-            let url = fileURL(for: model)
-            let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
-            let bytes = (attributes?[.size] as? NSNumber)?.int64Value
-            // A recorded model is trusted by its record. One with no record still counts as
-            // installed when the size matches the catalog, which is what earlier builds wrote.
-            let recorded = manifest.record(for: model.id)
-            let matchesCatalog = bytes == model.expectedBytes
-            states[model.id] = (recorded != nil || matchesCatalog) ? .installed : .notInstalled
+            states[model.id] = stateOnDisk(for: model)
+        }
+    }
+
+    /// What the file for one model says, with no regard for a transfer in flight.
+    private func stateOnDisk(for model: WhisperModel) -> ModelInstallState {
+        let url = fileURL(for: model)
+        let attributes = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let bytes = (attributes?[.size] as? NSNumber)?.int64Value
+        // A recorded model is trusted by its record. One with no record still counts as installed
+        // when the size matches the catalog, which is what earlier builds wrote.
+        let recorded = manifest.record(for: model.id)
+        let matchesCatalog = bytes == model.expectedBytes
+        return (recorded != nil || matchesCatalog) ? .installed : .notInstalled
+    }
+}
+
+/// One file, downloaded with its byte count reported while it arrives.
+///
+/// `URLSession.download(from:)` is a black box: it says nothing until the whole file has landed.
+/// The largest Whisper model is three gigabytes, so the row that showed it held an indeterminate
+/// spinner for minutes, and a person could not tell a slow download from a stopped one. This owns
+/// its session and its delegate, counts every chunk, and moves the finished file to the path the
+/// caller named, because the location a download delegate is handed is deleted as soon as the
+/// callback returns.
+///
+/// Cancelling the surrounding task cancels the transfer, and the caller sees a
+/// `CancellationError` rather than the URL loading error underneath it.
+final class ModelFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    typealias ProgressHandler = @Sendable (_ received: Int64, _ expected: Int64) -> Void
+
+    private let destination: URL
+    private let configuration: URLSessionConfiguration
+    private let onProgress: ProgressHandler
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var task: URLSessionDownloadTask?
+    private var continuation: CheckedContinuation<URLResponse, any Error>?
+    private var reportedBytes: Int64 = 0
+    private var reportStep: Int64 = 0
+    private var isCancelled = false
+    private var isSettled = false
+
+    init(
+        destination: URL,
+        configuration: URLSessionConfiguration = .ephemeral,
+        onProgress: @escaping ProgressHandler
+    ) {
+        self.destination = destination
+        self.configuration = configuration
+        self.onProgress = onProgress
+    }
+
+    /// Downloads the request and leaves the file at the destination.
+    ///
+    /// - Returns: the server's response, so the caller can refuse a status that is not a success.
+    func run(_ request: URLRequest) async throws -> URLResponse {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                lock.lock()
+                self.continuation = continuation
+                configuration.timeoutIntervalForRequest = 60
+                // A three-gigabyte file over a slow line is minutes of legitimate work, and the
+                // resource timeout must not end it early.
+                configuration.timeoutIntervalForResource = 60 * 60
+                let session = URLSession(
+                    configuration: configuration,
+                    delegate: self,
+                    delegateQueue: nil
+                )
+                self.session = session
+                let task = session.downloadTask(with: request)
+                self.task = task
+                let alreadyCancelled = isCancelled
+                lock.unlock()
+                if alreadyCancelled {
+                    task.cancel()
+                } else {
+                    task.resume()
+                }
+            }
+        } onCancel: {
+            cancel()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        let task = task
+        lock.unlock()
+        task?.cancel()
+    }
+
+    // MARK: - URLSessionDownloadDelegate
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        lock.lock()
+        let expected = max(totalBytesExpectedToWrite, 0)
+        if reportStep == 0 {
+            // Two hundred reports over a known size, and one every four megabytes over an unknown
+            // one, so a fast transfer does not cross to the main thread for every chunk.
+            reportStep = expected > 0 ? max(1, expected / 200) : 4 * 1_048_576
+        }
+        // The first bytes always count. A ring that waits for the first two hundredth of a
+        // three-gigabyte file shows an empty circle for the seconds before it starts moving.
+        let due = reportedBytes == 0 || totalBytesWritten - reportedBytes >= reportStep
+        if due { reportedBytes = totalBytesWritten }
+        lock.unlock()
+        guard due else { return }
+        onProgress(totalBytesWritten, expected)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        do {
+            let manager = FileManager.default
+            _ = try? manager.removeItem(at: destination)
+            try manager.moveItem(at: location, to: destination)
+        } catch {
+            settle(.failure(error))
+            return
+        }
+        settle(.success(downloadTask.response ?? URLResponse()))
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didCompleteWithError error: (any Error)?
+    ) {
+        guard let error else { return }
+        let cocoa = error as NSError
+        if isCancelled || (cocoa.domain == NSURLErrorDomain && cocoa.code == NSURLErrorCancelled) {
+            settle(.failure(CancellationError()))
+            return
+        }
+        settle(.failure(error))
+    }
+
+    private func settle(_ result: Result<URLResponse, any Error>) {
+        lock.lock()
+        guard !isSettled else {
+            lock.unlock()
+            return
+        }
+        isSettled = true
+        let continuation = self.continuation
+        self.continuation = nil
+        let session = self.session
+        self.session = nil
+        lock.unlock()
+        // A session holds its delegate until it is invalidated, and a model of three gigabytes
+        // must not keep this object alive behind the manager that finished with it.
+        session?.invalidateAndCancel()
+        switch result {
+        case .success(let response): continuation?.resume(returning: response)
+        case .failure(let error): continuation?.resume(throwing: error)
         }
     }
 }

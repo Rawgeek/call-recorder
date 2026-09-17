@@ -1,4 +1,5 @@
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
 import ScreenCaptureKit
@@ -80,6 +81,15 @@ enum AudioCaptureError: Error {
 final class AudioCaptureSession {
     nonisolated private static let builtInMicrophoneID = "BuiltInMicrophoneDevice"
 
+    /// The choice that follows the microphone macOS is set to use.
+    ///
+    /// A saved choice is a device identifier. That is right for "always record on the built-in
+    /// microphone" and wrong for "record on whatever I have selected in the system", because that
+    /// decision belongs to whoever picks up the headset before the call. This identifier is not a
+    /// device: it is the instruction to ask the system when a recording starts, and it is spelled
+    /// like the built-in microphone's so the two can sit in one menu.
+    nonisolated static let systemMicrophoneID = "SystemDefaultMicrophoneDevice"
+
     private struct ActiveCapture {
         let stream: SCStream
         let router: AudioCaptureRouter
@@ -96,11 +106,80 @@ final class AudioCaptureSession {
 
     nonisolated static func resolvedMicrophoneID(
         availableIDs: [String],
-        selectedID: String?
+        selectedID: String?,
+        systemDefaultID: String? = nil
     ) -> String? {
+        // The system can be set to a device that has since been unplugged, and it can be set to
+        // one this app cannot open. Either way the choice has been made, so it falls through to
+        // the built-in microphone below rather than leaving the recorder with nothing.
+        if selectedID == systemMicrophoneID,
+            let systemDefaultID,
+            availableIDs.contains(systemDefaultID) {
+            return systemDefaultID
+        }
         if let selectedID, availableIDs.contains(selectedID) { return selectedID }
         if availableIDs.contains(builtInMicrophoneID) { return builtInMicrophoneID }
         return availableIDs.first
+    }
+
+    /// The identifier of the microphone macOS is set to use, in the form the device list uses.
+    ///
+    /// The system's choice is a Core Audio device, and the device list this app records from is
+    /// built from AVCaptureDevice. The Core Audio device's UID is the identifier both of them
+    /// answer to, which was measured on this machine: the default input device reports
+    /// 34-0E-22-81-A2-53:input, and the capture device with that identifier is the same headset.
+    nonisolated static func systemDefaultMicrophoneID() -> String? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDefaultInputDevice,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var device = AudioDeviceID(0)
+        var deviceSize = UInt32(MemoryLayout<AudioDeviceID>.size)
+        guard
+            AudioObjectGetPropertyData(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &deviceSize,
+                &device
+            ) == noErr,
+            device != kAudioObjectUnknown
+        else { return nil }
+
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var uid: CFString?
+        var uidSize = UInt32(MemoryLayout<CFString?>.size)
+        let read = withUnsafeMutablePointer(to: &uid) { pointer in
+            AudioObjectGetPropertyData(
+                device,
+                &uidAddress,
+                0,
+                nil,
+                &uidSize,
+                UnsafeMutableRawPointer(pointer)
+            )
+        }
+        guard read == noErr, let uid else { return nil }
+        return uid as String
+    }
+
+    /// What the system choice is called in the menu, naming the device it points at today.
+    ///
+    /// Without the name the choice says nothing a person can check: the point of following the
+    /// system is lost if the row does not say which microphone that currently is.
+    nonisolated static func systemChoiceName(
+        systemDefaultID: String?,
+        devices: [AudioInputDevice]
+    ) -> String {
+        guard let systemDefaultID, let device = devices.first(where: { $0.id == systemDefaultID })
+        else { return "System default" }
+        return "System (" + device.name + ")"
     }
 
 
@@ -126,7 +205,8 @@ final class AudioCaptureSession {
         let devices = captureDevices()
         let resolvedID = resolvedMicrophoneID(
             availableIDs: devices.map(\.uniqueID),
-            selectedID: deviceID
+            selectedID: deviceID,
+            systemDefaultID: systemDefaultMicrophoneID()
         )
         guard let microphone = devices.first(where: { $0.uniqueID == resolvedID }) else {
             throw AudioCaptureError.noMicrophone
