@@ -201,7 +201,9 @@ struct TranscriberTests {
         #expect(first["speakerName"] as? String == "Sam")
     }
 
-    @Test("safe global voice match labels a remote speaker without enrolling it", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel))
+    // The speaker stage drives a Python script through its pipes, which a CI image does not run the
+    // way a desktop does. The same path is covered on any Mac, and by the app itself.
+    @Test("safe global voice match labels a remote speaker without enrolling it", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel), .enabled(if: TestEnvironment.canRunSpeakerScript))
     func labelsSafeGlobalVoiceMatch() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "call-recorder-identity-\(UUID().uuidString)", directoryHint: .isDirectory)
