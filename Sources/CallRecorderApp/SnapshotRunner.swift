@@ -233,6 +233,22 @@ enum SnapshotRunner {
             )
             model.modelManager.leavePreviewDownloading()
         }
+        // A version checked and waiting to be installed. Its row is the only place the Restart
+        // button exists, and a render cannot reach the state on its own: the download that produces
+        // it happens after the point preview mode stops at.
+        if let version = ProcessInfo.processInfo.environment["CALL_RECORDER_UPDATE_READY"],
+            !version.isEmpty
+        {
+            model.appUpdater.enterPreviewStaged(version)
+            renderWindow(
+                model: model,
+                section: .general,
+                size: settingsSize,
+                name: "settings-general-update-ready",
+                into: directory
+            )
+            model.appUpdater.leavePreviewStaged()
+        }
         // The window checks the speaker runtime when it opens, which takes a few seconds. Drawing
         // while that ran caught the chip reading "Checking setup…", so two renders of the same
         // window could disagree. Run the check first and draw the settled state.

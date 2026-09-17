@@ -239,6 +239,12 @@ final class AppModel {
             if settings.automaticDetectionEnabled, !oldValue.automaticDetectionEnabled {
                 settings.automaticDetectionNoticeDismissed = false
             }
+            // The wait between checks is running on the step that was in force when it started.
+            // A change to the setting ends that wait, so the choice takes effect now rather than
+            // after the day it may have replaced.
+            if settings.appUpdateCheckInterval != oldValue.appUpdateCheckInterval {
+                appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
+            }
             saveSettings()
         }
     }
@@ -475,7 +481,8 @@ final class AppModel {
         )
         appUpdater = AppUpdateChecker(
             applicationDirectory: applicationDirectory,
-            defaults: defaults
+            defaults: defaults,
+            requestTermination: { NSApplication.shared.terminate(nil) }
         )
         let backgroundFinalization = BackgroundAudioFinalization(
             store: localStore,
@@ -495,6 +502,9 @@ final class AppModel {
         appUpdater.automaticUpdatesEnabled = { [weak self] in
             self?.settings.automaticAppUpdatesEnabled ?? true
         }
+        // The step the user chose is handed over once, here; every later change arrives through
+        // the settings observer above.
+        appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
         Task {
             await loadMetadata()
             // Preview mode stops here. Everything below either watches the microphone, writes

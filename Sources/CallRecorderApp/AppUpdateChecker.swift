@@ -9,6 +9,7 @@ enum AppUpdateError: LocalizedError, Equatable {
     case httpStatus(Int)
     case digestMismatch(expected: String, found: String)
     case notWritable(String)
+    case cannotRelaunch
 
     var errorDescription: String? {
         switch self {
@@ -23,6 +24,9 @@ enum AppUpdateError: LocalizedError, Equatable {
                 + "\(expected.prefix(12))… and got \(found.prefix(12))…."
         case .notWritable(let path):
             "Call Recorder cannot replace itself in \(path). Move the app to Applications and try again."
+        case .cannotRelaunch:
+            "Call Recorder could not arrange to open again, so the waiting version was left in "
+                + "place. Quit the app to install it."
         }
     }
 }
@@ -79,7 +83,19 @@ final class AppUpdateChecker {
     /// Whether the automatic pass installs what it finds. The app sets this from its settings.
     var automaticUpdatesEnabled: () -> Bool = { true }
     /// How long the automatic pass waits between checks while the app stays open.
-    var checkInterval: TimeInterval = 6 * 60 * 60
+    ///
+    /// Read at the top of every wait, and written only through `setCheckInterval`, which also ends
+    /// the wait that is already running: a person who asks for a check every half hour means the
+    /// next one, not the one after the twelve hours the app was told to wait before.
+    private(set) var checkInterval: TimeInterval = AppUpdateInterval.default.seconds
+    /// How the app is quit when an update is installed early. The model sets this: quitting is the
+    /// app's own business, and the updater has no other reason to know how it is done.
+    var requestTermination: () -> Void = {}
+    /// Opens the app again once this process has gone. `AppRelaunch.schedule` is the real one; a
+    /// test supplies its own so a restart can be watched without opening anything.
+    var scheduleRelaunch: (_ bundle: URL, _ log: URL) -> Bool = { bundle, log in
+        AppRelaunch.schedule(bundle: bundle, log: log)
+    }
 
     private let bundle: Bundle
     private let stager: AppUpdateStager?
@@ -101,8 +117,13 @@ final class AppUpdateChecker {
         bundle: Bundle = .main,
         applicationDirectory: URL,
         defaults: UserDefaults = .standard,
+        // How the app is quit, given rather than assumed: the updater runs inside an app whose
+        // lifecycle it has no other reason to know about, and a restart that could not quit would
+        // be a row that did nothing.
+        requestTermination: @escaping () -> Void,
         fetchReleases: (() async throws -> Data)? = nil
     ) {
+        self.requestTermination = requestTermination
         self.bundle = bundle
         self.defaults = defaults
         installedVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
@@ -153,6 +174,21 @@ final class AppUpdateChecker {
         Task { await fetchAndStage(offeredRelease) }
     }
 
+    /// Shows the row as it looks with a checked copy waiting, for a rendered picture.
+    ///
+    /// The real state is reached by downloading a release, which a render cannot do: preview mode
+    /// stops before the updater starts. Without this the one state that carries the button to
+    /// install a waiting version would be the one state no picture can show. Only a render asks
+    /// for it.
+    func enterPreviewStaged(_ version: String) {
+        state = .ready(version: version)
+    }
+
+    /// Puts back the state the render borrowed.
+    func leavePreviewStaged() {
+        state = .idle
+    }
+
     // MARK: - Lifecycle
 
     /// Starts the automatic pass: one check after the app has settled, then one every few hours.
@@ -163,11 +199,31 @@ final class AppUpdateChecker {
         recoverInterruptedSwap(around: stager.target)
         refreshStaged()
         log("checking starts in 20 seconds; running \(installedVersion) (\(installedBuild))")
+        beginSchedule(after: .seconds(20))
+    }
+
+    /// Takes the step the user chose.
+    ///
+    /// The wait that is already running was set for the old step, so it ends here and a new one
+    /// starts: someone who moves the choice from a day to half an hour is asking for a check soon,
+    /// not for one after the day they just walked away from. The check that follows runs two
+    /// seconds after the change, and it is a single request, so the choice confirms itself.
+    func setCheckInterval(_ seconds: TimeInterval) {
+        guard seconds != checkInterval else { return }
+        checkInterval = seconds
+        guard schedule != nil else { return }
+        log("a check now follows every \(Int(seconds / 60)) minutes")
+        beginSchedule(after: .seconds(2))
+    }
+
+    /// The one loop that checks and waits, so nothing else has to know how the wait is spelled.
+    private func beginSchedule(after delay: Duration) {
+        schedule?.cancel()
         schedule = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: delay)
             while !Task.isCancelled {
                 await self?.check()
-                let interval = self?.checkInterval ?? 6 * 60 * 60
+                let interval = self?.checkInterval ?? AppUpdateInterval.default.seconds
                 try? await Task.sleep(for: .seconds(interval))
             }
         }
@@ -213,6 +269,14 @@ final class AppUpdateChecker {
                 guard release.version != heldBackVersion else {
                     state = .available(version: release.version)
                     log("holding back \(release.version) after a rollback")
+                    return
+                }
+                // A release that is already waiting is not fetched again. The check repeats every
+                // few hours, and without this the copy that is waiting would be downloaded,
+                // unpacked, and checked over again at every one of them, while the row that offers
+                // to install it now would read as a download in progress instead.
+                guard pendingVersion != release.version else {
+                    log("release \(release.version) is already waiting to be installed")
                     return
                 }
                 if automaticUpdatesEnabled() {
@@ -299,6 +363,24 @@ final class AppUpdateChecker {
         } catch {
             log("the waiting update could not be installed: \(error.localizedDescription)")
         }
+    }
+
+    /// Installs the copy that is waiting now, and opens the app again.
+    ///
+    /// The swap belongs to the quit, so the open is arranged first and the quit comes second:
+    /// a shell waits for this process to go away and then opens the app, which is the copy that
+    /// was swapped in. When that shell cannot be started, the waiting version is left alone. A
+    /// quit with nothing after it would leave the user with no app running, and the quit is the
+    /// one thing here that cannot be taken back.
+    func restartToApplyStaged() {
+        guard stager != nil, case .ready(let version) = state else { return }
+        guard scheduleRelaunch(bundle.bundleURL, logURL) else {
+            state = .failed(message: AppUpdateError.cannotRelaunch.localizedDescription)
+            log("the app could not be opened again, so \(version) is left waiting for a quit")
+            return
+        }
+        log("installing \(version) now and opening the app again when this process ends")
+        requestTermination()
     }
 
     // MARK: - Files

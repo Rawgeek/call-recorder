@@ -202,7 +202,8 @@ struct GeneralSettingsView: View {
 
             CRSettingsCard(
                 title: "Updates",
-                footnote: "Installed when Call Recorder quits, so the next launch is the new version."
+                footnote: "Installed when Call Recorder quits or restarts, so the next launch is "
+                    + "the new version."
             ) {
                 CRSettingsRow(
                     title: "Version",
@@ -220,7 +221,7 @@ struct GeneralSettingsView: View {
                 CRSettingsRow(
                     title: "Install updates automatically",
                     detail: model.settings.automaticAppUpdatesEnabled
-                        ? "Checked at launch and every six hours."
+                        ? "A newer release is downloaded and checked, then installed at the next quit."
                         : "Checks still run; nothing is downloaded until it is asked for."
                 ) {
                     HStack(spacing: CR.Space.inner) {
@@ -230,6 +231,23 @@ struct GeneralSettingsView: View {
                             .controlSize(.small)
                         CRButton(title: "Check Now") { model.appUpdater.checkNow() }
                     }
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Check for updates",
+                    detail: "Runs at every launch, and on this step while the app stays open.",
+                    info: "A check is one request to the release list. A shorter step notices a "
+                        + "release sooner, and it costs nothing while there is no release: a "
+                        + "download starts only when there is something newer than the copy that "
+                        + "is running."
+                ) {
+                    Picker("", selection: $model.settings.appUpdateCheckInterval) {
+                        ForEach(AppUpdateInterval.allCases) { interval in
+                            Text(interval.title).tag(interval)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 200, alignment: .trailing)
                 }
                 if let kept = model.appUpdater.keptVersion, kept != model.appUpdater.installedVersion {
                     CRSettingsDivider()
@@ -247,6 +265,14 @@ struct GeneralSettingsView: View {
                 }
             }
         }
+    }
+
+    /// Whether a call is being captured right now.
+    ///
+    /// A restart would end the call, and the audio of a call that is still being captured has not
+    /// been finished into a file anything could put back. This is what holds the Restart button.
+    private var isCapturing: Bool {
+        model.recorderState.phase == .recording || model.recorderState.phase == .paused
     }
 
     /// What the app knows about its own version, in one sentence, plus anything it is doing.
@@ -270,9 +296,14 @@ struct GeneralSettingsView: View {
         case .downloading(let version):
             return current + " Downloading version " + version + "…"
         case .ready(let version):
-            return updater.isRestoringOlderVersion
-                ? current + " Version " + version + " is put back when Call Recorder quits."
-                : current + " Version " + version + " is installed when Call Recorder quits."
+            let waiting = updater.isRestoringOlderVersion ? "put back" : "installed"
+            // A call being recorded is the one thing a restart would spoil, and the audio of a
+            // call still being captured is not on disk in a form that could be put back.
+            return isCapturing
+                ? current + " Version " + version + " is " + waiting
+                    + " when this recording ends, or at the next quit."
+                : current + " Version " + version + " is " + waiting
+                    + " when Call Recorder quits, or now if you press Restart."
         case .failed(let message):
             return message
         case .installByHand(let version, _):
@@ -309,10 +340,30 @@ struct GeneralSettingsView: View {
                 CRButton(title: "Cancel") { updater.cancel() }
             }
         case .ready(let version):
-            CRStatusChip(tone: .ready, text: version + " ready")
+            HStack(spacing: CR.Space.inner) {
+                CRStatusChip(tone: .ready, text: version + " ready")
+                CRButton(
+                    title: "Restart",
+                    icon: "arrow.clockwise",
+                    kind: .primary,
+                    help: isCapturing
+                        ? "A call is being recorded, so the new version waits for this recording "
+                            + "to end. It is installed the next time Call Recorder quits."
+                        : "Installs " + version + " and opens Call Recorder again."
+                ) {
+                    updater.restartToApplyStaged()
+                }
+                // The row's other half is a sentence that wraps, and a wrapping sentence takes
+                // width from whatever sits beside it: without this the button drew as "Rest…".
+                .fixedSize()
+                .disabled(isCapturing)
+            }
         case .failed:
             HStack(spacing: CR.Space.inner) {
-                CRStatusChip(tone: .failed, text: "Check failed")
+                // The sentence in the row says what went wrong, and the two things that land here
+                // are a check that could not run and a restart that could not be arranged, so the
+                // chip names neither of them on its own.
+                CRStatusChip(tone: .failed, text: "Update failed")
                 CRButton(title: "Try Again") { updater.checkNow() }
             }
         case .installByHand(_, let page):

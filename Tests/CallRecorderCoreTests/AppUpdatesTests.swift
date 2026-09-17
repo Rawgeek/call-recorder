@@ -109,6 +109,36 @@ struct AppUpdatesTests {
     ]
     """
 
+    @Test("the settings menu offers six steps, and they only get longer")
+    func theCheckStepMenuOffersSixStepsInOrder() {
+        // Given the steps the menu is built from.
+        let steps = AppUpdateInterval.allCases
+
+        // Then there are six of them, in order, and each one is a step further apart than the one
+        // before: a menu of six options is a choice rather than a form to fill in.
+        #expect(steps.count == 6)
+        #expect(steps.map(\.seconds) == steps.map(\.seconds).sorted())
+        #expect(Set(steps.map(\.seconds)).count == 6)
+        #expect(steps.first == .everyThirtyMinutes)
+        #expect(steps.last == .daily)
+        // And the app keeps checking on the step it shipped with, so a Mac that never opens this
+        // setting behaves exactly as it did before the setting existed.
+        #expect(AppUpdateInterval.default == .everySixHours)
+        #expect(AppUpdateInterval.default.seconds == 6 * 60 * 60)
+    }
+
+    @Test("every step says itself as a menu item and inside a sentence")
+    func everyStepHasItsOwnWords() {
+        let steps = AppUpdateInterval.allCases
+        #expect(steps.allSatisfy { !$0.title.isEmpty && !$0.phrase.isEmpty })
+        // The phrase continues a sentence that starts with a small letter, as in "Checked at launch
+        // and every 6 hours."
+        #expect(steps.allSatisfy { $0.phrase.first?.isLowercase == true })
+        #expect(steps.allSatisfy { $0.title.first?.isUppercase == true })
+        #expect(Set(steps.map(\.title)).count == 6)
+        #expect(AppUpdateInterval.everySixHours.phrase == "every 6 hours")
+    }
+
     @Test("a later version reads as later")
     func laterVersionsReadAsLater() {
         #expect(AppVersionOrder.isNewer("0.1.4", than: "0.1.3"))

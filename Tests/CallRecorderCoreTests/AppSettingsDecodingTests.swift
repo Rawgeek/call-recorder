@@ -33,6 +33,38 @@ struct AppSettingsDecodingTests {
         // The reminder is due on a settings blob that has never carried the flag, which is the
         // state a first run is in.
         #expect(decoded.automaticDetectionNoticeDismissed == false)
+        // And the check runs on the step the app shipped with, which is what a blob written before
+        // the step could be chosen has to mean.
+        #expect(decoded.appUpdateCheckInterval == .everySixHours)
+    }
+
+    @Test("the chosen check step is remembered, and one this build cannot read costs only itself")
+    func checkIntervalSurvivesASave() throws {
+        // Given a settings blob with a step that is not the default.
+        var settings = AppSettings.default
+        settings.appUpdateCheckInterval = .everyThirtyMinutes
+
+        // Then the choice comes back, rather than the default overwriting it.
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        #expect(decoded.appUpdateCheckInterval == .everyThirtyMinutes)
+
+        // And a step this build has never heard of — written by a later build, or by a file that
+        // was damaged — falls back on its own. The microphone, the model, and the folder beside it
+        // are the reason: one unreadable value may not cost a person their whole setup.
+        let unknown = """
+        {
+          "selectedMicrophoneID": "Yeti",
+          "selectedWhisperModelID": "medium",
+          "outputDirectory": "/tmp/recordings",
+          "appUpdateCheckInterval": "3m"
+        }
+        """
+        let damaged = try JSONDecoder().decode(AppSettings.self, from: Data(unknown.utf8))
+        #expect(damaged.appUpdateCheckInterval == AppUpdateInterval.default)
+        #expect(damaged.selectedMicrophoneID == "Yeti")
+        #expect(damaged.selectedWhisperModelID == "medium")
+        #expect(damaged.outputDirectory == "/tmp/recordings")
     }
 
     @Test("a dismissed reminder survives a save")

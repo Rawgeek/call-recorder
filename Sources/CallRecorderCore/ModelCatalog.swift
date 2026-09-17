@@ -40,6 +40,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// quits, so the next launch is the new version. Off means the check still runs and says what
     /// is available; nothing is downloaded until it is asked for.
     public var automaticAppUpdatesEnabled: Bool
+    /// How often the app looks for a newer release of itself while it stays open.
+    ///
+    /// Added after the first release. A settings blob written before the choice existed has no
+    /// value here and falls back to the step the app shipped with, which is six hours.
+    public var appUpdateCheckInterval: AppUpdateInterval
     /// Whether a finished call gives up the audio it was recorded from.
     ///
     /// The audio of a finished call is moved out of the way once its transcript and its search
@@ -80,6 +85,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case outputDirectory
         case automaticModelUpdatesEnabled
         case automaticAppUpdatesEnabled
+        case appUpdateCheckInterval
         case removeAudioAfterTranscription
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
@@ -101,6 +107,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
                 .appending(path: "Desktop/Call Recordings", directoryHint: .isDirectory).path,
             automaticModelUpdatesEnabled: true,
             automaticAppUpdatesEnabled: true,
+            appUpdateCheckInterval: .default,
             removeAudioAfterTranscription: true,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
@@ -165,6 +172,14 @@ extension AppSettings {
         automaticAppUpdatesEnabled =
             try container.decodeIfPresent(Bool.self, forKey: .automaticAppUpdatesEnabled)
             ?? fallback.automaticAppUpdatesEnabled
+        // Read as the raw string rather than as the enum: a value this build does not know, written
+        // by a later build or read from a damaged file, must cost the user this one choice instead
+        // of failing the decode of every setting beside it.
+        let storedInterval =
+            (try? container.decodeIfPresent(String.self, forKey: .appUpdateCheckInterval)) ?? nil
+        appUpdateCheckInterval =
+            storedInterval.flatMap(AppUpdateInterval.init(rawValue:))
+            ?? fallback.appUpdateCheckInterval
         // Added after the first release. Absent means the audio is given up, which is what the
         // app did before the option existed.
         removeAudioAfterTranscription =
@@ -751,6 +766,24 @@ extension WhisperModel {
     /// Whether this model is one the settings page shows without being asked, on this Mac.
     public func isPrimary(inMemoryOf bytes: Int64) -> Bool {
         Self.primaryIDs(inMemoryOf: bytes).contains(id)
+    }
+
+    /// The two lists the models page draws: the rows it shows, and the rows behind the fold.
+    ///
+    /// The shown rows are the ones the catalog answers with here, and with them the model a new
+    /// recording would use, even when that model is not one of them. A model chosen from the
+    /// unfolded list is a decision the page has to keep showing: its row is where the file's state
+    /// and its Delete button live, and a choice that is only found by unfolding twenty-nine rows
+    /// reads as though it had been forgotten. Everything else stays folded, in catalog order.
+    public static func listing(
+        from models: [WhisperModel],
+        inMemoryOf bytes: Int64,
+        selectedID: String
+    ) -> (shown: [WhisperModel], folded: [WhisperModel]) {
+        let isShown = { (candidate: WhisperModel) in
+            candidate.isPrimary(inMemoryOf: bytes) || candidate.id == selectedID
+        }
+        return (models.filter(isShown), models.filter { !isShown($0) })
     }
 
     /// The quantization this file is, when it is one: "Q5_1", "Q8_0", or nil for a full file.

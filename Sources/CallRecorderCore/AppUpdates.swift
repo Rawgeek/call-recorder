@@ -70,6 +70,63 @@ public enum AppReleaseDecision: Equatable, Sendable {
     }
 }
 
+/// How often the app looks for a newer release of itself while it stays open.
+///
+/// The check is one request to the release list, so the short steps cost little and are there for
+/// someone who is waiting for a release; the long ones are for a Mac that would rather not hear
+/// about one until it is next opened. Six steps, roughly doubled, are enough to cover both without
+/// asking anyone to type a number.
+public enum AppUpdateInterval: String, CaseIterable, Codable, Sendable, Identifiable {
+    case everyThirtyMinutes = "30m"
+    case hourly = "1h"
+    case everyTwoHours = "2h"
+    case everySixHours = "6h"
+    case everyTwelveHours = "12h"
+    case daily = "24h"
+
+    public var id: String { rawValue }
+
+    /// What the app shipped with, and the step a settings blob written before the choice existed
+    /// lands on.
+    public static let `default` = AppUpdateInterval.everySixHours
+
+    /// The seconds between two checks.
+    public var seconds: TimeInterval {
+        switch self {
+        case .everyThirtyMinutes: 30 * 60
+        case .hourly: 60 * 60
+        case .everyTwoHours: 2 * 60 * 60
+        case .everySixHours: 6 * 60 * 60
+        case .everyTwelveHours: 12 * 60 * 60
+        case .daily: 24 * 60 * 60
+        }
+    }
+
+    /// The menu item, which stands on its own.
+    public var title: String {
+        switch self {
+        case .everyThirtyMinutes: "Every 30 minutes"
+        case .hourly: "Every hour"
+        case .everyTwoHours: "Every 2 hours"
+        case .everySixHours: "Every 6 hours"
+        case .everyTwelveHours: "Every 12 hours"
+        case .daily: "Once a day"
+        }
+    }
+
+    /// The same step inside a sentence: "Checked at launch and every 6 hours."
+    public var phrase: String {
+        switch self {
+        case .everyThirtyMinutes: "every 30 minutes"
+        case .hourly: "every hour"
+        case .everyTwoHours: "every 2 hours"
+        case .everySixHours: "every 6 hours"
+        case .everyTwelveHours: "every 12 hours"
+        case .daily: "once a day"
+        }
+    }
+}
+
 /// Orders the dotted version numbers the app is built with.
 public enum AppVersionOrder {
     /// `v0.1.4` and `0.1.4` both read as `[0, 1, 4]`; anything else reads as nil.
