@@ -111,7 +111,8 @@ publish() {
     cp "dist/Call Recorder $version.zip" "$assets/$archive"
     cp DISTRIBUTION_README.txt "$assets/README.txt"
 
-    gh release create "$tag" --title "Call Recorder $version" --notes-file "$notes" --target main +        "$assets/$archive" "$assets/README.txt"
+    local arguments=(--title "Call Recorder $version" --notes-file "$notes" --target main)
+    gh release create "$tag" "${arguments[@]}" "$assets/$archive" "$assets/README.txt"
 
     verify
 }
