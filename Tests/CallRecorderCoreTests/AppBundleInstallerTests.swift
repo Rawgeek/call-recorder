@@ -156,6 +156,47 @@ struct AppBundleInstallerTests {
         }
     }
 
+    @Test("an archive that wraps the app in a folder is still read")
+    func wrappedArchiveIsRead() throws {
+        let root = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        // Releases were published with the app one level down until 0.1.5, and a copy of the app
+        // that cannot be found there is a download that installs nothing.
+        let wrapper = root.appending(path: "release/Call Recorder 0.1.4", directoryHint: .isDirectory)
+        try makeBundle(at: wrapper.appending(path: "Call Recorder.app"), version: "0.1.4")
+        let archive = root.appending(path: "CallRecorder-0.1.4.zip")
+        let result = try ProcessRunner.run(
+            executable: AppBundleInstaller.ditto,
+            arguments: ["-c", "-k", "--keepParent", wrapper.path, archive.path]
+        )
+        #expect(result.exitCode == 0)
+
+        let extracted = try AppBundleInstaller.extract(
+            archive: archive,
+            into: root.appending(path: "incoming")
+        )
+        #expect(AppBundleMetadata.read(from: extracted)?.version == "0.1.4")
+    }
+
+    @Test("an archive holding two applications is refused")
+    func twoApplicationsAreRefused() throws {
+        let root = makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let wrapper = root.appending(path: "release", directoryHint: .isDirectory)
+        try makeBundle(at: wrapper.appending(path: "One.app"), version: "0.1.4")
+        try makeBundle(at: wrapper.appending(path: "Two.app"), version: "0.1.5")
+        let archive = root.appending(path: "two.zip")
+        let result = try ProcessRunner.run(
+            executable: AppBundleInstaller.ditto,
+            arguments: ["-c", "-k", "--keepParent", wrapper.path, archive.path]
+        )
+        #expect(result.exitCode == 0)
+
+        #expect(throws: AppBundleInstallerError.self) {
+            try AppBundleInstaller.extract(archive: archive, into: root.appending(path: "incoming"))
+        }
+    }
+
     @Test("the staged copy takes the place of the running one")
     func stagedCopyReplacesTheRunningOne() throws {
         let root = makeTemporaryDirectory()

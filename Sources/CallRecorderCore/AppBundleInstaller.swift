@@ -33,6 +33,7 @@ public enum AppBundleInstallerError: LocalizedError, Equatable, Sendable {
     case archiveMissing(String)
     case extractionFailed(String)
     case noApplicationInArchive(String)
+    case severalApplicationsInArchive(String, count: Int)
     case metadataUnreadable(String)
     case identifierMismatch(expected: String, found: String)
     case versionMismatch(expected: String, found: String)
@@ -50,6 +51,8 @@ public enum AppBundleInstallerError: LocalizedError, Equatable, Sendable {
             "The downloaded update could not be unpacked. " + detail
         case .noApplicationInArchive(let path):
             "The downloaded update holds no application bundle at \(path)."
+        case .severalApplicationsInArchive(let path, let count):
+            "The downloaded update holds \(count) application bundles at \(path), and it must hold one."
         case .metadataUnreadable(let path):
             "The application at \(path) does not describe itself."
         case .identifierMismatch(let expected, let found):
@@ -94,12 +97,44 @@ public enum AppBundleInstaller {
         guard result.exitCode == 0 else {
             throw AppBundleInstallerError.extractionFailed(trimmed(result.standardError))
         }
-        let contents = (try? fileManager.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
-        let applications = contents.filter { $0.pathExtension == "app" }
-        guard applications.count == 1, let application = applications.first else {
-            throw AppBundleInstallerError.noApplicationInArchive(directory.path)
+        return try application(in: directory)
+    }
+
+    /// The one application bundle an archive unpacked, at whatever depth it was packed.
+    ///
+    /// Releases have been published both ways: the app at the top of the archive, and the app
+    /// inside a folder named for the version. Both are the same app, so the search walks down
+    /// until it reaches a level that holds one and refuses an archive that holds none or two.
+    static func application(in directory: URL, depth: Int = 3) throws -> URL {
+        let fileManager = FileManager.default
+        var level = [directory]
+        for _ in 0..<depth {
+            var found: [URL] = []
+            var below: [URL] = []
+            for folder in level {
+                let contents = (try? fileManager.contentsOfDirectory(
+                    at: folder,
+                    includingPropertiesForKeys: [.isDirectoryKey]
+                )) ?? []
+                for entry in contents {
+                    if entry.pathExtension == "app" {
+                        found.append(entry)
+                    } else if (try? entry.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true {
+                        below.append(entry)
+                    }
+                }
+            }
+            if found.count == 1 { return found[0] }
+            if found.count > 1 {
+                throw AppBundleInstallerError.severalApplicationsInArchive(
+                    directory.path,
+                    count: found.count
+                )
+            }
+            guard !below.isEmpty else { break }
+            level = below
         }
-        return application
+        throw AppBundleInstallerError.noApplicationInArchive(directory.path)
     }
 
     /// Refuses anything that is not the release it claims to be.

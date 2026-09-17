@@ -4,6 +4,20 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.5] - 2026-09-17
+
+The first release the app installs by itself, and the one that stops an update from fetching the
+runtime again.
+
+### Changed
+- The runtime archive is built deterministically: file times are flattened and the entries are
+  written in sorted order. Every earlier release produced an archive with a new hash even when
+  nothing about the runtime had changed, so the first launch after an update fetched and unpacked
+  all 36 MB again. One tree now always produces the same bytes, so an update that does not touch
+  the runtime reuses the copy already unpacked beside the app.
+- The package script unpacks the archive it built and refuses one whose `bun` did not come out
+  executable, which is the part a sorted archive has to get right.
+
 ## [0.1.4] - 2026-09-17
 
 An updates release. Call Recorder keeps itself current with the releases of its own repository,

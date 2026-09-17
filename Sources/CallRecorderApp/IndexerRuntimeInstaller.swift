@@ -127,11 +127,18 @@ final class IndexerRuntimeInstaller {
 
     /// Downloads the archive unless it is already here, and refuses one that fails its hash.
     private func fetchIfNeeded() async throws {
-        guard !layout.hasArchive else { return }
         guard let remoteURL, let expectedHash else { throw IndexerRuntimeError.nowhereToFetch }
+        let destination = layout.archive
+        // An archive an earlier version left here is still an archive, and only its hash decides
+        // whether it is this version's. Handing a stale one to the shim made the shim refuse the
+        // file and leave the runtime missing until someone retried by hand, which is exactly what
+        // happened after an update that shipped a different runtime.
+        if layout.hasArchive, await Self.archive(destination, matches: expectedHash) {
+            return
+        }
+        try? FileManager.default.removeItem(at: destination)
         var request = URLRequest(url: remoteURL)
         request.setValue("CallRecorder", forHTTPHeaderField: "User-Agent")
-        let destination = layout.archive
         try FileManager.default.createDirectory(
             at: destination.deletingLastPathComponent(),
             withIntermediateDirectories: true
@@ -150,6 +157,16 @@ final class IndexerRuntimeInstaller {
             try? FileManager.default.removeItem(at: destination)
             throw IndexerRuntimeError.hashMismatch
         }
+    }
+
+    /// Whether the archive already on disk is the one this build expects.
+    ///
+    /// The archive is kept between runs, so its presence says nothing about which version it is;
+    /// the hash is what says. Hashing 36 MB takes a fraction of a second and is only done when a
+    /// copy is already there.
+    nonisolated static func archive(_ archive: URL, matches expectedHash: String?) async -> Bool {
+        guard let expectedHash else { return false }
+        return await ModelManager.sha256(of: archive) == expectedHash
     }
 
     /// Hands the archive to the shim, which owns the unpacking and the lock that guards it.

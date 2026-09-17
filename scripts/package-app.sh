@@ -138,7 +138,14 @@ task_onnx_path="$task_runtime/node_modules/onnxruntime-node/bin/napi-v6/darwin/a
 codesign --force --sign - "$task_onnx_path"
 
 task_runtime_archive="$task_temp/runtime.zip"
-(cd "$task_runtime" && ditto -c -k --sequesterRsrc . "$task_runtime_archive")
+# The archive is built from the same tree on every release, and a zip records when each file was
+# written. Those times made two builds of one runtime different bytes, which gave the same runtime
+# a new address at every release and made every app update fetch all 36 MB again. The times are
+# flattened and the entries are written in sorted order instead, so the same tree always produces
+# the same archive, and an update that changes nothing about the runtime reuses what is unpacked.
+/usr/bin/find "$task_runtime" -exec /usr/bin/touch -h -t 202001010000.00 {} +
+(cd "$task_runtime" && /usr/bin/find . -type f -print | LC_ALL=C /usr/bin/sort \
+    | /usr/bin/zip -X -q "$task_runtime_archive" -@)
 task_runtime_hash=$(shasum -a 256 "$task_runtime_archive" | awk '{print $1}')
 task_runtime_short=${task_runtime_hash[1,8]}
 print -n "$task_runtime_hash" > "$task_indexer/runtime.sha256"
@@ -173,6 +180,10 @@ for task_member in \
         exit 1
     fi
 done
+if [[ ! -x "$task_verify/bun" ]]; then
+    print -u2 "the unpacked runtime has no executable bun"
+    exit 1
+fi
 if ! "$task_verify/bun" --version >/dev/null; then
     print -u2 "the runtime archive does not run"
     exit 1
@@ -248,6 +259,9 @@ mkdir -p "${task_output:h}"
 mkdir -p "$task_output"
 ditto "$task_app" "$task_output/Call Recorder.app"
 cp DISTRIBUTION_README.txt "$task_output/README.txt"
-ditto -c -k --sequesterRsrc --keepParent "$task_output" "$task_archive"
+# The archive holds the app itself, not the folder it was staged in. The updater unpacks a
+# release beside the running app and looks for the bundle inside it, and a copy of the app that
+# has to be found one level down is a shape it refused the first time it met one.
+ditto -c -k --sequesterRsrc --keepParent "$task_output/Call Recorder.app" "$task_archive"
 print "$task_archive"
 print "$task_runtime_asset"
