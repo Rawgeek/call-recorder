@@ -5,6 +5,11 @@ import Observation
 import ServiceManagement
 import OSLog
 
+/// Why a recording started by itself, or why one did not.
+extension AppModel {
+    static let automaticLogger = Logger(subsystem: "local.callrecorder.app", category: "automatic")
+}
+
 struct SpeakerAnalysisIssue: Identifiable {
     let callID: CallID
     let startedAt: Date
@@ -359,6 +364,8 @@ final class AppModel {
     private var backgroundDiagnosedFailures: Set<CallID> = []
     private var launchStartConsumed = false
     private var stopGraceTask: Task<Void, Never>?
+    /// The wait between a busy microphone and a recording that starts by itself.
+    private var automaticStartTask: Task<Void, Never>?
     private var recordingLimitTask: Task<Void, Never>?
     private var modelMaintenanceTask: Task<Void, Never>?
     private var speakerReviewRequestTask: Task<Void, Never>?
@@ -2219,13 +2226,36 @@ final class AppModel {
 
     private func microphoneActivityChanged(_ isActive: Bool) {
         stopGraceTask?.cancel()
+        automaticStartTask?.cancel()
         if
             isActive,
             settings.automaticDetectionEnabled,
             recorderState.phase == .idle
         {
-            captureQueue.enqueue { [weak self] in
-                await self?.beginRecording(automatic: true)
+            // A call is two-way and it lasts. A voice message, a voice search, and a dictation
+            // session take the microphone and play nothing, and a microphone that is busy for a
+            // moment is not a meeting: starting on the microphone alone is what made recordings
+            // with one side and no speech in them.
+            automaticStartTask = Task { [weak self] in
+                let window = AutomaticRecordingRails.confirmationSeconds
+                try? await Task.sleep(for: .seconds(window))
+                guard !Task.isCancelled, let self else { return }
+                let who = self.activityMonitor.microphoneHolderBundleID ?? "an unknown app"
+                guard self.activityMonitor.twoWayCallActive else {
+                    Self.automaticLogger.notice(
+                        "not starting: \(who, privacy: .public) holds the microphone and plays nothing"
+                    )
+                    return
+                }
+                guard self.settings.automaticDetectionEnabled, self.recorderState.phase == .idle else {
+                    return
+                }
+                Self.automaticLogger.notice(
+                    "starting by itself: \(who, privacy: .public) held the microphone and played the other side for \(Int(window), privacy: .public) seconds"
+                )
+                self.captureQueue.enqueue { [weak self] in
+                    await self?.beginRecording(automatic: true)
+                }
             }
             return
         }

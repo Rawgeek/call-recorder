@@ -33,4 +33,42 @@ public enum AudioActivityDecision {
             return true
         }
     }
+
+    /// Whether the process holding the microphone is also playing audio.
+    ///
+    /// A call is two-way: the app that takes the microphone is the app that plays the other person.
+    /// An app that takes the microphone and plays nothing is dictation, a voice message, or a voice
+    /// search, and starting a meeting for one of those is how a recording with one side and no
+    /// speech is made. Whether the audio is loud is deliberately not part of this: an app holds the
+    /// output open for as long as the call lasts, talking or not. The microphone answer is unchanged
+    /// and still ends the recording, so a call that goes quiet is recorded to its end.
+    public static func hasTwoWayCall(
+        inputs: [Input],
+        playingOutput: Set<Int32>,
+        ownProcessID: Int32,
+        ignoringNonCallApps: Bool
+    ) -> Bool {
+        inputs.contains { input in
+            if input.processID == ownProcessID { return false }
+            if ignoringNonCallApps, NonCallMicrophoneApps.isIgnored(bundleID: input.bundleID) {
+                return false
+            }
+            return playingOutput.contains(input.processID)
+        }
+    }
+
+    /// The process the microphone answer is about, for a log line that can name it.
+    public static func holder(
+        inputs: [Input],
+        ownProcessID: Int32,
+        ignoringNonCallApps: Bool
+    ) -> Input? {
+        inputs.first { input in
+            if input.processID == ownProcessID { return false }
+            if ignoringNonCallApps, NonCallMicrophoneApps.isIgnored(bundleID: input.bundleID) {
+                return false
+            }
+            return true
+        }
+    }
 }

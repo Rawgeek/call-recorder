@@ -89,6 +89,13 @@ public enum AutomaticRecordingRails {
     /// A rail has one setting rather than a flag beside a number, so the switch and the number can
     /// never disagree about whether the rail is on. Zero is already the documented meaning of "off",
     /// and the settings pane binds its switch to this.
+    /// How long the microphone and the other side have to last before a recording starts by itself.
+    ///
+    /// A call outlives this; a voice message, a voice search, and a dictation session usually do not.
+    /// The cost is the opening seconds of a call that nobody started by hand, which is the trade for
+    /// not recording a room because a microphone was busy for a moment.
+    public static let confirmationSeconds: Double = 5
+
     public static func floorForSwitch(_ isOn: Bool) -> Double {
         isOn ? defaultMinimumSeconds : 0
     }
