@@ -6,7 +6,7 @@ import Testing
 
 @Suite("Audio sample writer")
 struct AudioSampleWriterTests {
-    @Test("PCM sample buffers become one readable AAC source")
+    @Test("PCM sample buffers become one readable AAC source", .enabled(if: TestEnvironment.hasFFmpeg))
     func writesReadableAudioFromSampleBuffers() async throws {
         // Given
         let directory = FileManager.default.temporaryDirectory

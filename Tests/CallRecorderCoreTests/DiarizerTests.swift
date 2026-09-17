@@ -18,7 +18,7 @@ struct DiarizerTests {
         #expect(merged.first?.source == .system)
     }
 
-    @Test("missing model access is a recoverable failure, never empty success")
+    @Test("missing model access is a recoverable failure, never empty success", .enabled(if: TestEnvironment.hasSystemPython))
     func reportsMissingModelAccess() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

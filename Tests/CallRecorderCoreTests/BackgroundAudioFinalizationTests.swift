@@ -54,7 +54,7 @@ struct BackgroundAudioFinalizationTests {
         #expect(state.failures.map(\.job.callID) == [prior.callID, newer.callID])
     }
 
-    @Test("a failed background call stays retained, retryable, and keeps its source files")
+    @Test("a failed background call stays retained, retryable, and keeps its source files", .enabled(if: TestEnvironment.hasFFmpeg))
     func failedCallIsRetainedAndRetryable() async throws {
         // Given
         let root = FileManager.default.temporaryDirectory
@@ -182,7 +182,7 @@ struct BackgroundAudioFinalizationTests {
         #expect(state.pendingCalls.isEmpty)
     }
 
-    @Test("success requires the real pipeline finalize and store commit")
+    @Test("success requires the real pipeline finalize and store commit", .enabled(if: TestEnvironment.hasFFmpeg))
     func successRequiresRealPipelineAndStoreCommit() async throws {
         // Given
         let root = FileManager.default.temporaryDirectory

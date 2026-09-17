@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Media finalizer")
 struct MediaFinalizerTests {
-    @Test("two capture segments become one readable audio file without deleting sources")
+    @Test("two capture segments become one readable audio file without deleting sources", .enabled(if: TestEnvironment.hasFFmpeg))
     func joinsSegmentsAndRetainsSources() async throws {
         // Given
         let directory = FileManager.default.temporaryDirectory
@@ -47,7 +47,7 @@ struct MediaFinalizerTests {
         #expect((Double(probe.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0.3)
     }
 
-    @Test("microphone and system segments remain separate after finalization")
+    @Test("microphone and system segments remain separate after finalization", .enabled(if: TestEnvironment.hasFFmpeg))
     func finalizesIndependentAudioSources() async throws {
         // Given
         let directory = FileManager.default.temporaryDirectory
@@ -109,7 +109,7 @@ struct MediaFinalizerTests {
         }
     }
 
-    @Test("source presentation times remain aligned in finalized audio")
+    @Test("source presentation times remain aligned in finalized audio", .enabled(if: TestEnvironment.hasFFmpeg))
     func preservesSourceTimelineOffsets() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "source-timeline-\(UUID().uuidString)", directoryHint: .isDirectory)
