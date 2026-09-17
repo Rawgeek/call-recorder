@@ -50,6 +50,23 @@ public enum AutomaticRecordingRails {
         guard maximumMinutes > 0 else { return false }
         return recordedSeconds >= maximumMinutes * 60
     }
+
+    // MARK: - What the switches write
+
+    /// The floor, as the switch writes it: the standard floor when it is on, and zero when it is
+    /// off.
+    ///
+    /// A rail has one setting rather than a flag beside a number, so the switch and the number can
+    /// never disagree about whether the rail is on. Zero is already the documented meaning of "off",
+    /// and the settings pane binds its switch to this.
+    public static func floorForSwitch(_ isOn: Bool) -> Double {
+        isOn ? defaultMinimumSeconds : 0
+    }
+
+    /// The ceiling, as the switch writes it, by the same rule.
+    public static func ceilingForSwitch(_ isOn: Bool) -> Double {
+        isOn ? defaultMaximumMinutes : 0
+    }
 }
 
 /// Apps that take the microphone and are not a meeting.

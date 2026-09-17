@@ -22,8 +22,10 @@ limits it was missing.
   itself. The voice recorder, dictation, the system assistant, and the services behind them, which
   are matched by bundle-identifier prefix, no longer start a recording. A recording shorter than
   the floor, 30 seconds by default, is moved to Recently Deleted instead of being transcribed. A
-  recording that reaches the ceiling, 180 minutes by default, is stopped and kept. Both limits can
-  be turned off, and a recording started by hand is outside all three.
+  recording that reaches the ceiling, 180 minutes by default, is stopped and kept. Each of the
+  three has its own switch. A switch and the number beside it are one setting rather than two, so
+  they cannot disagree about whether the rail is on: switching a limit off leaves no limit, and
+  switching it back on starts from the standard. A recording started by hand is outside all three.
 - `docs/pitfalls.md`: the traps this app has already paid for, each with the rule it bought.
 
 ### Changed

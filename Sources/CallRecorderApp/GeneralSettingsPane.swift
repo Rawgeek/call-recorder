@@ -67,16 +67,25 @@ struct GeneralSettingsView: View {
                         + "the library. A recording that short is moved to Recently Deleted, where "
                         + "it stays for a day and can be put back."
                 ) {
-                    Stepper(
-                        value: $model.settings.minimumAutomaticRecordingSeconds,
-                        in: 0...300,
-                        step: 15
-                    ) {
-                        Text(minimumRecordingText)
-                            .monospacedDigit()
-                            .frame(minWidth: 44, alignment: .trailing)
+                    HStack(spacing: CR.Space.inner) {
+                        // The number sits before the switch so that the switch is the last thing on
+                        // every row of the card, and the three of them line up in one column.
+                        Stepper(
+                            value: $model.settings.minimumAutomaticRecordingSeconds,
+                            in: 0...300,
+                            step: 15
+                        ) {
+                            Text(minimumRecordingText)
+                                .monospacedDigit()
+                                .frame(minWidth: 44, alignment: .trailing)
+                        }
+                        .fixedSize()
+                        .disabled(!discardsShortRecordings)
+                        Toggle("", isOn: shortRecordingSwitch)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
                     }
-                    .fixedSize()
                 }
                 CRSettingsDivider()
                 CRSettingsRow(
@@ -89,16 +98,23 @@ struct GeneralSettingsView: View {
                         + "room. One recorded fifteen hours that way. The limit counts recorded "
                         + "time, so a call paused for an hour is judged by what it holds."
                 ) {
-                    Stepper(
-                        value: $model.settings.maximumAutomaticRecordingMinutes,
-                        in: 0...600,
-                        step: 30
-                    ) {
-                        Text(maximumRecordingText)
-                            .monospacedDigit()
-                            .frame(minWidth: 64, alignment: .trailing)
+                    HStack(spacing: CR.Space.inner) {
+                        Stepper(
+                            value: $model.settings.maximumAutomaticRecordingMinutes,
+                            in: 0...600,
+                            step: 30
+                        ) {
+                            Text(maximumRecordingText)
+                                .monospacedDigit()
+                                .frame(minWidth: 64, alignment: .trailing)
+                        }
+                        .fixedSize()
+                        .disabled(!stopsAtCeiling)
+                        Toggle("", isOn: ceilingSwitch)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
                     }
-                    .fixedSize()
                 }
             }
 
@@ -335,6 +351,40 @@ struct GeneralSettingsView: View {
     private var maximumRecordingText: String {
         let minutes = model.settings.maximumAutomaticRecordingMinutes
         return minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
+    }
+
+    /// Whether the floor is in force.
+    ///
+    /// The rail has one setting rather than a switch beside a number, so a switch and its number
+    /// cannot end up disagreeing about whether the rail is on. Zero is what the rules read as "not
+    /// in force", and the switch writes either zero or the standard.
+    private var discardsShortRecordings: Bool {
+        model.settings.minimumAutomaticRecordingSeconds > 0
+    }
+
+    private var shortRecordingSwitch: Binding<Bool> {
+        Binding(
+            get: { discardsShortRecordings },
+            set: {
+                model.settings.minimumAutomaticRecordingSeconds =
+                    AutomaticRecordingRails.floorForSwitch($0)
+            }
+        )
+    }
+
+    /// Whether the ceiling is in force, by the same rule.
+    private var stopsAtCeiling: Bool {
+        model.settings.maximumAutomaticRecordingMinutes > 0
+    }
+
+    private var ceilingSwitch: Binding<Bool> {
+        Binding(
+            get: { stopsAtCeiling },
+            set: {
+                model.settings.maximumAutomaticRecordingMinutes =
+                    AutomaticRecordingRails.ceilingForSwitch($0)
+            }
+        )
     }
 
     private var selectedMicrophone: AudioInputDevice? {

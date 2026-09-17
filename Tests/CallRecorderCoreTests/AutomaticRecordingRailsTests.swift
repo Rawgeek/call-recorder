@@ -58,6 +58,21 @@ struct AutomaticRecordingRailsTests {
         #expect(AppSettings.default.ignoresNonCallApps)
     }
 
+    @Test("each switch writes one setting, so a switch and its number cannot disagree")
+    func switchesWriteTheOneSetting() {
+        // Off is zero, which is what the rules already read as "this rail is not in force", and on
+        // is the standard the app ships with.
+        #expect(AutomaticRecordingRails.floorForSwitch(true) == 30)
+        #expect(AutomaticRecordingRails.floorForSwitch(false) == 0)
+        #expect(AutomaticRecordingRails.ceilingForSwitch(true) == 180)
+        #expect(AutomaticRecordingRails.ceilingForSwitch(false) == 0)
+        // And what the switch writes is what the rules act on.
+        #expect(!AutomaticRecordingRails.isTooShort(recordedSeconds: 1, minimumSeconds: AutomaticRecordingRails.floorForSwitch(false)))
+        #expect(AutomaticRecordingRails.isTooShort(recordedSeconds: 1, minimumSeconds: AutomaticRecordingRails.floorForSwitch(true)))
+        #expect(!AutomaticRecordingRails.hasReachedCeiling(recordedSeconds: 60 * 60 * 24, maximumMinutes: AutomaticRecordingRails.ceilingForSwitch(false)))
+        #expect(AutomaticRecordingRails.hasReachedCeiling(recordedSeconds: 60 * 60 * 24, maximumMinutes: AutomaticRecordingRails.ceilingForSwitch(true)))
+    }
+
     // MARK: - Apps that are not meetings
 
     @Test("the voice recorder, dictation and the assistant never start a recording")
