@@ -33,6 +33,35 @@ Useful during development:
   an empty directory to render against a throwaway library instead.
 - `scripts/package-app.sh <output>` builds the distributable bundle.
 
+## Checks that run themselves
+
+```sh
+scripts/install-hooks.sh
+```
+
+points this clone at the hooks in `.githooks`. They run with every commit and push:
+
+- **pre-commit** requires the documents to match the bundle (the version in `README.md` and
+  `DISTRIBUTION_README.txt`, a changelog entry for it, and every screenshot the README shows) and
+  runs the linters on the lines being committed: swift-format for Swift and Biome for `mcp`. Only
+  changed lines are checked; the tree carries older style findings that are not yours to fix.
+- **pre-push** repeats that check, runs `swift test`, and runs the MCP typecheck, lint, and tests
+  when `mcp/` changed. `git push --no-verify` skips the gate when CI has already answered.
+
+## Releasing
+
+```sh
+scripts/release.sh --check      # what the hooks run
+scripts/release.sh --sync       # write the version into the documents, re-render docs/images
+scripts/release.sh --publish    # test, package, publish, then download the release back and check it
+```
+
+Bump `CFBundleShortVersionString` and `CFBundleVersion` in `Resources/Info.plist` and write the
+changelog entry first. `--sync` generates the version references and the screenshots from the
+bundle; `--publish` refuses a `HEAD` that `origin/main` has not seen, and checks the published
+archive the way the updater reads it: digest, the bundle at the top level of the zip, version,
+build, and signature.
+
 ## Layout
 
 | Path | Contents |

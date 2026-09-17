@@ -2,6 +2,7 @@
 .build/
 dist/
 .venv/
+__pycache__/
 
 # Node dependencies for the MCP server and indexer
 node_modules/

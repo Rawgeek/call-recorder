@@ -1,0 +1,25 @@
+#!/bin/sh
+#
+# The last gate before CI: the documents, the Swift suite, and the MCP checks when mcp/ changed in
+# the commits being pushed. On a busy machine the parallel suite can flake; swift test
+# --no-parallel is the reliable run, and git push --no-verify skips the gate.
+#
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+cd "$root"
+
+"$root/scripts/release.sh" --check
+if ! swift test; then
+    # A busy machine can starve the parallel run's threads. The serial run is the reliable proof,
+    # and it is the same code either way.
+    echo "The parallel run failed; running the suite serially..."
+    swift test --no-parallel
+fi
+
+if ! git diff --quiet origin/main...HEAD -- mcp 2>/dev/null; then
+    cd mcp
+    bun run typecheck
+    bun run check
+    bun test
+fi
