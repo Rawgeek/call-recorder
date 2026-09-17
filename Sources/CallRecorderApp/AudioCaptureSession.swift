@@ -98,6 +98,12 @@ final class AudioCaptureSession {
 
     private var activeCapture: ActiveCapture?
 
+    /// What the capture hears, read by the model while a recording runs.
+    ///
+    /// One meter for the session rather than one per segment: the segments are one recording, and a
+    /// rail that reads it does not care which file the audio is being written to.
+    let levels = AudioLevelMeter()
+
     static func availableMicrophones() -> [AudioInputDevice] {
         captureDevices().map {
             AudioInputDevice(id: $0.uniqueID, name: $0.localizedName)
@@ -230,6 +236,9 @@ final class AudioCaptureSession {
         guard activeCapture == nil else { throw AudioCaptureError.alreadyCapturing }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let paths = CaptureSegment.paths(in: directory, index: index)
+        // Silence is measured from the moment this segment delivers audio, so a pause does not
+        // count as quiet.
+        levels.reset()
 
         let content = try await SCShareableContent.currentProcess
         guard let display = content.displays.first else { throw AudioCaptureError.noDisplay }
@@ -257,7 +266,7 @@ final class AudioCaptureSession {
         ).uniqueID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        let router = AudioCaptureRouter(paths: paths)
+        let router = AudioCaptureRouter(paths: paths, levels: levels)
         try stream.addStreamOutput(
             router,
             type: .audio,

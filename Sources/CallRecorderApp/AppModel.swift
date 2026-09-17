@@ -353,7 +353,7 @@ final class AppModel {
     private var backgroundDiagnosedFailures: Set<CallID> = []
     private var launchStartConsumed = false
     private var stopGraceTask: Task<Void, Never>?
-    private var recordingCeilingTask: Task<Void, Never>?
+    private var recordingLimitTask: Task<Void, Never>?
     private var modelMaintenanceTask: Task<Void, Never>?
     private var speakerReviewRequestTask: Task<Void, Never>?
     private var captureQueue = CaptureCommandQueue()
@@ -2245,41 +2245,71 @@ final class AppModel {
     ///
     /// Only a recording this app started by itself is stopped, and only while the setting is on.
     /// The control that a person presses is not overruled by a timer.
-    private func startRecordingCeiling() {
-        recordingCeilingTask?.cancel()
-        guard settings.maximumAutomaticRecordingMinutes > 0 else {
-            recordingCeilingTask = nil
+    private func startRecordingLimits() {
+        recordingLimitTask?.cancel()
+        guard
+            settings.maximumAutomaticRecordingMinutes > 0 || settings.silenceStopMinutes > 0
+        else {
+            recordingLimitTask = nil
             return
         }
-        recordingCeilingTask = Task { [weak self] in
-            // Fifteen seconds is short enough that a long recording is not much past its ceiling,
-            // and long enough that the check costs nothing while a call runs.
+        recordingLimitTask = Task { [weak self] in
+            // Fifteen seconds is short enough that a long recording is not much past its limit, and
+            // long enough that the check costs nothing while a call runs.
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(15))
                 guard !Task.isCancelled, let self else { return }
                 guard self.recorderState.phase == .recording else { continue }
+
+                let ceiling = self.settings.maximumAutomaticRecordingMinutes
+                let silence = self.settings.silenceStopMinutes
                 let recorded = Self.recordedSeconds(
                     banked: self.recordedSecondsBeforePause,
                     currentRunStartedAt: self.recordingStartedAt,
                     paused: self.recordingPausedAt != nil,
                     at: Date()
                 )
-                let ceiling = self.settings.maximumAutomaticRecordingMinutes
-                guard AutomaticRecordingRails.hasReachedCeiling(
+                if AutomaticRecordingRails.hasReachedCeiling(
                     recordedSeconds: recorded,
                     maximumMinutes: ceiling
-                ) else { continue }
-                Logger(subsystem: "local.callrecorder.app", category: "capture")
-                    .notice(
-                        "stopping an automatic recording at its \(Int(ceiling), privacy: .public) minute ceiling"
-                    )
-                self.errorMessage = "Stopped after " + String(Int(ceiling))
-                    + " minutes. A call app held the microphone longer than the limit allows."
-                _ = self.captureQueue.enqueue { [weak self] in
-                    await self?.stopRecording(automatic: true)
+                ) {
+                    Logger(subsystem: "local.callrecorder.app", category: "capture")
+                        .notice(
+                            "stopping an automatic recording at its \(Int(ceiling), privacy: .public) minute ceiling"
+                        )
+                    self.errorMessage = "Stopped after " + String(Int(ceiling))
+                        + " minutes. A call app held the microphone longer than the limit allows."
+                    self.stopForLimit()
+                    return
                 }
-                return
+
+                // The quiet rail. Its evidence is a measurement: the meter reports nothing until it
+                // has read a buffer, and a rail that cannot measure does nothing rather than stop a
+                // call it cannot hear.
+                if silence > 0,
+                   let silent = self.captureSession.levels.silentSeconds(),
+                   AutomaticRecordingRails.hasBeenSilent(
+                       silentFor: silent,
+                       maximumMinutes: silence
+                   )
+                {
+                    Logger(subsystem: "local.callrecorder.app", category: "capture")
+                        .notice(
+                            "stopping an automatic recording after \(Int(silent), privacy: .public) silent seconds"
+                        )
+                    self.errorMessage = "Stopped after " + String(Int(silence))
+                        + " minutes without speech. The call had ended and its app still held the microphone."
+                    self.stopForLimit()
+                    return
+                }
             }
+        }
+    }
+
+    /// Asks for the stop both limits use, on the queue that owns capture work.
+    private func stopForLimit() {
+        _ = captureQueue.enqueue { [weak self] in
+            await self?.stopRecording(automatic: true)
         }
     }
 
@@ -2317,7 +2347,7 @@ final class AppModel {
             recordingStartedAt = startedAt
             // A recording this app started by itself carries a ceiling, so a call app that holds
             // the microphone open after the meeting ends cannot record a room for hours.
-            if automatic { startRecordingCeiling() }
+            if automatic { startRecordingLimits() }
             // A new call starts its own count, so nothing banked by the call before it is added on.
             recordedSecondsBeforePause = 0
             if automatic {
@@ -2407,8 +2437,8 @@ final class AppModel {
         guard recorderState.phase == .recording || recorderState.phase == .paused else { return }
         guard !captureOperationInFlight else { return }
         stopGraceTask?.cancel()
-        recordingCeilingTask?.cancel()
-        recordingCeilingTask = nil
+        recordingLimitTask?.cancel()
+        recordingLimitTask = nil
         captureOperationInFlight = true
         defer { captureOperationInFlight = false }
         if automatic {
@@ -2453,7 +2483,7 @@ final class AppModel {
                     + " s minimum, so it was discarded."
                 Logger(subsystem: "local.callrecorder.app", category: "capture")
                     .notice(
-                        "discarded an automatic recording of (Int(recorded.rounded()), privacy: .public) seconds"
+                        "discarded an automatic recording of \(Int(recorded.rounded()), privacy: .public) seconds"
                     )
                 return
             }

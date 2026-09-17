@@ -12,10 +12,13 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     let microphoneQueue = DispatchQueue(label: "local.callrecorder.capture.microphone")
     private let systemWriter: AudioSampleWriter
     private let microphoneWriter: AudioSampleWriter
+    /// The level of everything the capture delivers, which is what the silence rail reads.
+    private let levels: AudioLevelMeter
 
-    init(paths: CaptureSourcePaths) {
+    init(paths: CaptureSourcePaths, levels: AudioLevelMeter) {
         systemWriter = AudioSampleWriter(destination: paths.system)
         microphoneWriter = AudioSampleWriter(destination: paths.microphone)
+        self.levels = levels
     }
 
     func stream(
@@ -26,8 +29,10 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
         do {
             switch outputType {
             case .audio:
+                levels.observe(sampleBuffer)
                 try systemWriter.append(sampleBuffer)
             case .microphone:
+                levels.observe(sampleBuffer)
                 try microphoneWriter.append(sampleBuffer)
             case .screen:
                 return

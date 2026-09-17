@@ -27,6 +27,15 @@ public enum AutomaticRecordingRails {
     /// this is a microphone that was left open rather than a call that ran long.
     public static let defaultMaximumMinutes: Double = 180
 
+    /// How long a recording may hold nothing but room tone before it is stopped.
+    ///
+    /// Ten minutes. A conversation has pauses, and a long one is somebody listening, but ten
+    /// minutes of continuous silence on both the microphone and the system audio is a call that
+    /// ended and left its app holding the microphone. The library holds one recording that ran for
+    /// hours on exactly that, so the rule is the backstop under the ceiling rather than a
+    /// convenience.
+    public static let defaultSilenceMinutes: Double = 10
+
     /// Whether a recording that has just stopped is too short to keep.
     ///
     /// A floor of zero turns the rule off, which is what a settings blob from before the rule
@@ -51,6 +60,19 @@ public enum AutomaticRecordingRails {
         return recordedSeconds >= maximumMinutes * 60
     }
 
+    /// Whether a recording has been silent for long enough to be stopped.
+    ///
+    /// A limit of zero turns the rule off. The caller passes the silence it measured itself, and a
+    /// rule with nothing to measure is a rule that does nothing: a measurement that could not be
+    /// taken is not passed here as silence.
+    public static func hasBeenSilent(
+        silentFor: TimeInterval,
+        maximumMinutes: Double
+    ) -> Bool {
+        guard maximumMinutes > 0 else { return false }
+        return silentFor >= maximumMinutes * 60
+    }
+
     // MARK: - What the switches write
 
     /// The floor, as the switch writes it: the standard floor when it is on, and zero when it is
@@ -66,6 +88,11 @@ public enum AutomaticRecordingRails {
     /// The ceiling, as the switch writes it, by the same rule.
     public static func ceilingForSwitch(_ isOn: Bool) -> Double {
         isOn ? defaultMaximumMinutes : 0
+    }
+
+    /// The silence limit, as the switch writes it, by the same rule.
+    public static func silenceForSwitch(_ isOn: Bool) -> Double {
+        isOn ? defaultSilenceMinutes : 0
     }
 }
 

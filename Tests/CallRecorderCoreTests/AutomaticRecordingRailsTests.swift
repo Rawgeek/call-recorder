@@ -50,11 +50,31 @@ struct AutomaticRecordingRailsTests {
         #expect(!AutomaticRecordingRails.hasReachedCeiling(recordedSeconds: 86_400, maximumMinutes: 0))
     }
 
+    // MARK: - The quiet rail
+
+    @Test("a recording that has held nothing but room tone for long enough is stopped")
+    func longSilenceIsStopped() {
+        #expect(AutomaticRecordingRails.hasBeenSilent(silentFor: 600, maximumMinutes: 10))
+        #expect(AutomaticRecordingRails.hasBeenSilent(silentFor: 4_000, maximumMinutes: 10))
+    }
+
+    @Test("a pause in the conversation is not silence")
+    func aPauseIsNotSilence() {
+        #expect(!AutomaticRecordingRails.hasBeenSilent(silentFor: 599, maximumMinutes: 10))
+        #expect(!AutomaticRecordingRails.hasBeenSilent(silentFor: 0, maximumMinutes: 10))
+    }
+
+    @Test("a silence limit of zero stops nothing")
+    func zeroSilenceLimitStopsNothing() {
+        #expect(!AutomaticRecordingRails.hasBeenSilent(silentFor: 86_400, maximumMinutes: 0))
+    }
+
     @Test("the measured times of the two rules are the ones the settings ship with")
     func defaultsAreTheOnesTheSettingsCarry() {
         // The floor and the ceiling are read from the settings, which fall back to these.
         #expect(AppSettings.default.minimumAutomaticRecordingSeconds == 30)
         #expect(AppSettings.default.maximumAutomaticRecordingMinutes == 180)
+        #expect(AppSettings.default.silenceStopMinutes == 10)
         #expect(AppSettings.default.ignoresNonCallApps)
     }
 
@@ -66,11 +86,15 @@ struct AutomaticRecordingRailsTests {
         #expect(AutomaticRecordingRails.floorForSwitch(false) == 0)
         #expect(AutomaticRecordingRails.ceilingForSwitch(true) == 180)
         #expect(AutomaticRecordingRails.ceilingForSwitch(false) == 0)
+        #expect(AutomaticRecordingRails.silenceForSwitch(true) == 10)
+        #expect(AutomaticRecordingRails.silenceForSwitch(false) == 0)
         // And what the switch writes is what the rules act on.
         #expect(!AutomaticRecordingRails.isTooShort(recordedSeconds: 1, minimumSeconds: AutomaticRecordingRails.floorForSwitch(false)))
         #expect(AutomaticRecordingRails.isTooShort(recordedSeconds: 1, minimumSeconds: AutomaticRecordingRails.floorForSwitch(true)))
         #expect(!AutomaticRecordingRails.hasReachedCeiling(recordedSeconds: 60 * 60 * 24, maximumMinutes: AutomaticRecordingRails.ceilingForSwitch(false)))
         #expect(AutomaticRecordingRails.hasReachedCeiling(recordedSeconds: 60 * 60 * 24, maximumMinutes: AutomaticRecordingRails.ceilingForSwitch(true)))
+        #expect(!AutomaticRecordingRails.hasBeenSilent(silentFor: 60 * 60, maximumMinutes: AutomaticRecordingRails.silenceForSwitch(false)))
+        #expect(AutomaticRecordingRails.hasBeenSilent(silentFor: 60 * 60, maximumMinutes: AutomaticRecordingRails.silenceForSwitch(true)))
     }
 
     // MARK: - Apps that are not meetings
@@ -189,6 +213,7 @@ struct AutomaticRecordingRailsTests {
         #expect(decoded.outputDirectory == "/tmp/recordings")
         #expect(decoded.minimumAutomaticRecordingSeconds == 30)
         #expect(decoded.maximumAutomaticRecordingMinutes == 180)
+        #expect(decoded.silenceStopMinutes == 10)
         #expect(decoded.ignoresNonCallApps)
     }
 
@@ -198,6 +223,7 @@ struct AutomaticRecordingRailsTests {
         var settings = AppSettings.default
         settings.minimumAutomaticRecordingSeconds = 0
         settings.maximumAutomaticRecordingMinutes = 0
+        settings.silenceStopMinutes = 0
         settings.ignoresNonCallApps = false
 
         // When
@@ -209,6 +235,7 @@ struct AutomaticRecordingRailsTests {
         // Then: off is a choice, and it must not come back on at the next launch.
         #expect(decoded.minimumAutomaticRecordingSeconds == 0)
         #expect(decoded.maximumAutomaticRecordingMinutes == 0)
+        #expect(decoded.silenceStopMinutes == 0)
         #expect(!decoded.ignoresNonCallApps)
     }
 }

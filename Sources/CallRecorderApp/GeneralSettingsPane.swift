@@ -116,6 +116,39 @@ struct GeneralSettingsView: View {
                             .controlSize(.small)
                     }
                 }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Stop after silence",
+                    detail: model.settings.silenceStopMinutes == 0
+                        ? "Off. A recording runs while both tracks are quiet."
+                        : "Both tracks stay quieter than speech for this long, and the recording stops.",
+                    info: "A meeting that ended can leave its app holding the microphone, and the "
+                        + "recording then holds an empty room. Speech is measured at -50 dBFS, "
+                        + "where zero is the loudest a sample can be: the room tone of a quiet room "
+                        + "sits around -66 and speech reaches -40 and above. The rule asks for a "
+                        + "long silence, it never applies to a recording you started by hand, and "
+                        + "it does nothing at all when the level cannot be measured, because "
+                        + "stopping a call that could not be heard is the one failure it must not "
+                        + "have."
+                ) {
+                    HStack(spacing: CR.Space.inner) {
+                        Stepper(
+                            value: $model.settings.silenceStopMinutes,
+                            in: 0...120,
+                            step: 5
+                        ) {
+                            Text(silenceText)
+                                .monospacedDigit()
+                                .frame(minWidth: 48, alignment: .trailing)
+                        }
+                        .fixedSize()
+                        .disabled(!stopsAfterSilence)
+                        Toggle("", isOn: silenceSwitch)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                    }
+                }
             }
 
             CRSettingsCard(
@@ -383,6 +416,27 @@ struct GeneralSettingsView: View {
             set: {
                 model.settings.maximumAutomaticRecordingMinutes =
                     AutomaticRecordingRails.ceilingForSwitch($0)
+            }
+        )
+    }
+
+    /// The silence limit, as a person reads it: minutes, or off.
+    private var silenceText: String {
+        let minutes = model.settings.silenceStopMinutes
+        return minutes == 0 ? "Off" : String(Int(minutes.rounded())) + " min"
+    }
+
+    /// Whether the quiet rail is in force, by the same rule as the other two.
+    private var stopsAfterSilence: Bool {
+        model.settings.silenceStopMinutes > 0
+    }
+
+    private var silenceSwitch: Binding<Bool> {
+        Binding(
+            get: { stopsAfterSilence },
+            set: {
+                model.settings.silenceStopMinutes =
+                    AutomaticRecordingRails.silenceForSwitch($0)
             }
         )
     }

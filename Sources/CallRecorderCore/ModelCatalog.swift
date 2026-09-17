@@ -19,6 +19,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
     ///
     /// Zero is no ceiling. The rule lives in `AutomaticRecordingRails`.
     public var maximumAutomaticRecordingMinutes: Double
+    /// How long a recording the app started by itself may hold nothing but room tone before it is
+    /// stopped.
+    ///
+    /// Zero is no such rule. See `AutomaticRecordingRails` and `AudioLevels`.
+    public var silenceStopMinutes: Double
     /// Whether the voice recorder, dictation, and the assistant are left out of automatic
     /// detection. The list is `NonCallMicrophoneApps`.
     public var ignoresNonCallApps: Bool
@@ -67,6 +72,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case automaticStopGraceSeconds
         case minimumAutomaticRecordingSeconds
         case maximumAutomaticRecordingMinutes
+        case silenceStopMinutes
         case ignoresNonCallApps
         case selectedMicrophoneID
         case localParticipantID
@@ -86,6 +92,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             automaticStopGraceSeconds: 2,
             minimumAutomaticRecordingSeconds: AutomaticRecordingRails.defaultMinimumSeconds,
             maximumAutomaticRecordingMinutes: AutomaticRecordingRails.defaultMaximumMinutes,
+            silenceStopMinutes: AutomaticRecordingRails.defaultSilenceMinutes,
             ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
             localParticipantID: nil,
@@ -132,6 +139,9 @@ extension AppSettings {
         maximumAutomaticRecordingMinutes =
             try container.decodeIfPresent(Double.self, forKey: .maximumAutomaticRecordingMinutes)
             ?? fallback.maximumAutomaticRecordingMinutes
+        silenceStopMinutes =
+            try container.decodeIfPresent(Double.self, forKey: .silenceStopMinutes)
+            ?? fallback.silenceStopMinutes
         ignoresNonCallApps =
             try container.decodeIfPresent(Bool.self, forKey: .ignoresNonCallApps)
             ?? fallback.ignoresNonCallApps
