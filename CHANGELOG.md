@@ -4,6 +4,45 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.2] - 2026-09-17
+
+A size release. The app bundle is 49 MB instead of 150 MB, and what it does is unchanged.
+
+### Changed
+- The JavaScript runtime ships as one compressed archive and is unpacked into
+  `~/Library/Application Support/CallRecorder/runtime` on first use. The path Codex registers,
+  `Contents/Resources/indexer/bun`, is still the entry point, so an existing MCP registration
+  keeps working. The archive is checked against the hash recorded when the app was built.
+- The Silero VAD filter is now a download of 865 KB from `ggml-org/whisper-vad`, managed like
+  every other model: hashed before install, swapped in, revertible, and listed under
+  Settings > Models > Components. The app fetches it at launch, and a transcription waits for
+  it rather than failing.
+- The packaged dependency tree carries only the files the runtime loads. The image library the
+  embedding model imports at startup is answered by a stand-in that raises if anything ever uses
+  it, the unused browser and CommonJS builds of that library are gone, and the ONNX library is
+  stripped of its symbols. 78 MB of dependencies became 32 MB.
+- Both JavaScript entry points are minified with identifier names kept, so a stack trace in the
+  log still reads as code.
+- `scripts/package-app.sh` can build without the signing key: `CALL_RECORDER_SKIP_SIGNING=1`.
+- The clips the speaker review plays are now the excerpt with its silence removed, cut once and
+  kept, so a turn that opens with seconds of room tone is judged on the words instead. A clip
+  that cannot be cut leaves the recording playing as before.
+
+### Fixed
+- The runtime script treated a folder it could not create as another process holding the lock,
+  and waited three minutes before failing for the wrong reason. It now reports what it could not
+  create.
+- The database client needs `detect-libc` to choose its native binding. The pruned tree keeps
+  it; without it the MCP server stopped at its first query.
+- The clip cutter wrote each part-finished file as `clip.m4a.partial`, a name ffmpeg refuses to
+  choose a format for, so no clip was ever cut. The file keeps the extension it will be read
+  with, and two tests now cut clips from real audio.
+
+### Verified
+- 485 tests pass, including new tests for the unpacking script and for the downloaded filter.
+- The packaged runtime unpacks in under a second, serves all 17 MCP tools, and re-indexes a call
+  against a copy of a real library, storing 256-dimension embeddings.
+
 ## [0.1.1] - 2026-09-17
 
 Security update for the MCP package. Recording, transcription, and speaker behavior is

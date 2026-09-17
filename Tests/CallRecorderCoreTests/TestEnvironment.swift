@@ -14,8 +14,28 @@ enum TestEnvironment {
         return locator.locate("ffmpeg") != nil && locator.locate("ffprobe") != nil
     }()
 
-    /// The bundled Silero VAD model, which the transcriber refuses to run without.
-    static let hasBundledVADModel: Bool = (try? Transcriber.resolvedVADModel()) != nil
+    /// The Silero VAD model, which the transcriber refuses to run without.
+    ///
+    /// The app downloads it now, so a Mac that has transcribed a call has the file and one that
+    /// has never run the app has only the copy this checkout carries. The suite runs against
+    /// whichever is there.
+    static let hasVADModel: Bool =
+        developmentVADModel != nil || (try? Transcriber.resolvedVADModel()) != nil
+
+    /// The copy of the silence filter this checkout carries.
+    ///
+    /// The packaged app has no such file: the model is a download of under a megabyte. Tests that
+    /// need real bytes rather than a recorded hash read this one.
+    static let developmentVADModel: URL? = {
+        let candidate = packageRoot.appending(path: "Resources/ggml-silero-v6.2.0.bin")
+        return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
+    }()
+
+    /// The package this suite was built from, which the scripts it drives live in.
+    static let packageRoot = URL(filePath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
 
     /// Whether the machine is a desktop rather than a CI image.
     ///

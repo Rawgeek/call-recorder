@@ -848,16 +848,24 @@ struct ModelSettingsView: View {
 
             CRSettingsCard(
                 title: "Components",
-                info: "The engine transcription runs on, and the model search runs on. "
-                    + "A download is accepted only when its published hash matches."
+                info: "The engine transcription runs on, and the models transcription and search "
+                    + "read. A download is accepted only when its published hash matches the "
+                    + "publisher's."
             ) {
                 whisperEngineRow
-                CRSettingsDivider()
-                vadRow
+                if let component = silenceFilterComponent {
+                    CRSettingsDivider()
+                    componentRow(component)
+                    componentNotes(component)
+                }
                 if let component = embeddingComponent {
                     CRSettingsDivider()
                     componentRow(component)
                     componentNotes(component)
+                }
+                if let notice = model.indexerRuntimeNotice {
+                    CRSettingsDivider()
+                    CRSettingsNote(icon: "exclamationmark.triangle", text: notice, tone: .failed)
                 }
             }
         }
@@ -882,9 +890,9 @@ struct ModelSettingsView: View {
             }
         } message: { component in
             Text(
-                "The next search downloads it again, which takes a few minutes. "
-                    + "\(component.displayName) works offline until then, and its download is "
-                    + "about \(ModelSizeLabel.file(bytes: component.totalBytes))."
+                "It is downloaded again the next time something needs it, and it is about "
+                    + ModelSizeLabel.file(bytes: component.totalBytes) + ". "
+                    + component.displayName + " works offline until then."
             )
         }
         .confirmationDialog(
@@ -940,25 +948,17 @@ struct ModelSettingsView: View {
             + "Recorder only runs it."
     }
 
-    /// The silence filter, and where it comes from.
+    /// The silence filter, which is a download of under a megabyte.
     ///
-    /// It is not a Homebrew file. whisper.cpp ships no model files at all, which its own formula
-    /// says, and this one is bundled inside Call Recorder so the app works the moment it is
-    /// installed. The note about 6.2.1 is here because the version number invites the question.
-    private var vadRow: some View {
-        CRSettingsRow(
-            title: "Silero VAD 6.2.0",
-            info: "Filters silence on long calls so transcription restarts cleanly. It ships "
-                + "inside Call Recorder, so there is nothing to download and nothing to keep up "
-                + "to date on its own. Upstream v6.2.1 changed only how the ONNX runtime is "
-                + "packaged: the weights are identical and no converted 6.2.1 file is published, "
-                + "so a newer conversion arrives with an app update."
-        ) {
-            CRStatusChip(tone: .ready, text: "Bundled")
-        }
+    /// whisper.cpp ships no model files at all, which its own Homebrew formula says, so this one
+    /// comes from ggml-org/whisper-vad. Version 6.2.1 of the upstream repository changed only how
+    /// the ONNX runtime is packaged: the weights are identical, and no converted 6.2.1 file is
+    /// published, so 6.2.0 is what whisper.cpp loads.
+    private var silenceFilterComponent: SupportingModel? {
+        model.supportingManager.models.first { $0.id == SupportingModel.sileroVADID }
     }
 
-    /// The one supporting model this build has.
+    /// The model that turns text into vectors for search.
     private var embeddingComponent: SupportingModel? {
         model.supportingManager.models.first { $0.id == SupportingModel.embeddingGemmaID }
     }
@@ -1016,7 +1016,9 @@ struct ModelSettingsView: View {
         case .failed:
             return "The download did not finish."
         case .notInstalled:
-            return "Search finds passages by keyword until this is downloaded."
+            return component.id == SupportingModel.sileroVADID
+                ? "Transcription waits for this."
+                : "Search finds passages by keyword until this is downloaded."
         case .installed, .downloading:
             return nil
         }

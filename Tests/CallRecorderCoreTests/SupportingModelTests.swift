@@ -4,13 +4,24 @@ import Testing
 @testable import CallRecorderCore
 
 struct SupportingModelTests {
+    /// The model that turns text into vectors, named rather than indexed, so that adding a model to
+    /// the catalog cannot quietly point these tests at a different one.
+    private static let embeddingModel = SupportingModel.catalog.first {
+        $0.id == SupportingModel.embeddingGemmaID
+    }!
+
+    /// The silence filter whisper.cpp is handed on a long call.
+    private static let silenceFilter = SupportingModel.catalog.first {
+        $0.id == SupportingModel.sileroVADID
+    }!
+
     @Test func theEmbeddingModelIsPinnedFileByFile() {
         // Given / When
         let models = SupportingModel.catalog
 
         // Then
-        #expect(models.map(\.id) == [SupportingModel.embeddingGemmaID])
-        let model = models[0]
+        #expect(models.map(\.id) == [SupportingModel.sileroVADID, SupportingModel.embeddingGemmaID])
+        let model = Self.embeddingModel
         #expect(model.repository == "onnx-community/embeddinggemma-300m-ONNX")
         #expect(model.files.allSatisfy { $0.sha256.count == 64 && $0.bytes > 0 })
         #expect(Set(model.files.map(\.path)).count == model.files.count)
@@ -20,9 +31,23 @@ struct SupportingModelTests {
         #expect(model.totalBytes > 200_000_000)
     }
 
+    @Test func theSilenceFilterIsPinnedToTheBytesWhisperLoads() {
+        // Given / When
+        let model = Self.silenceFilter
+
+        // Then it is one small file from the host that publishes the converted model, and the name
+        // is the one whisper.cpp is handed on the command line.
+        #expect(model.repository == "ggml-org/whisper-vad")
+        #expect(model.files.map(\.path) == [SupportingModel.sileroVADFileName])
+        #expect(model.totalBytes == SupportingModel.sileroVADBytes)
+        #expect(model.files[0].sha256 == SupportingModel.sileroVADSHA256)
+        #expect(model.revision.count == 40)
+        #expect(model.totalBytes < 1_000_000)
+    }
+
     @Test func aFileIsFetchedFromThePinnedRevision() {
         // Given
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
 
         // When
         let address = model.downloadURL(for: "onnx/model_q4.onnx")
@@ -36,7 +61,7 @@ struct SupportingModelTests {
 
     @Test func theInstalledCopyLivesWhereTheRuntimeLooksForIt() {
         // Given
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         let root = URL(filePath: "/Users/someone/Library/Application Support/CallRecorder")
 
         // When
@@ -53,7 +78,7 @@ struct SupportingModelTests {
 
     @Test func aMatchingCopyIsReportedAsCurrent() {
         // Given
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         let installed = installedRecord(for: model, revision: model.revision)
         let remote = remoteMetadata(for: model, revision: model.revision)
 
@@ -72,7 +97,7 @@ struct SupportingModelTests {
 
     @Test func aNewerRevisionOnTheHostIsAnUpdate() {
         // Given
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         let installed = installedRecord(for: model, revision: model.revision)
         let remote = remoteMetadata(for: model, revision: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
@@ -94,7 +119,7 @@ struct SupportingModelTests {
 
     @Test func aCopyThatNoLongerMatchesTheHostIsAnUpdate() {
         // Given the same revision, but a file whose bytes differ from the published ones.
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         var files = model.files.map {
             InstalledSupportingFile(path: $0.path, bytes: $0.bytes, sha256: $0.sha256)
         }
@@ -120,9 +145,9 @@ struct SupportingModelTests {
     @Test func anUnrecordedCopyIsNotCalledCurrent() {
         // Given / When
         let decision = SupportingModelChecker.decision(
-            model: SupportingModel.catalog[0],
+            model: Self.embeddingModel,
             installed: nil,
-            remote: remoteMetadata(for: SupportingModel.catalog[0], revision: "whatever")
+            remote: remoteMetadata(for: Self.embeddingModel, revision: "whatever")
         )
 
         // Then
@@ -132,7 +157,7 @@ struct SupportingModelTests {
 
     @Test func aFileTheHostStopsPublishingIsNotAVerdict() {
         // Given a host answer that is missing one of the files the app needs.
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         let complete = remoteMetadata(for: model, revision: model.revision)
         var files = complete.files
         files["onnx/model_q4.onnx_data"] = nil
@@ -155,7 +180,7 @@ struct SupportingModelTests {
         let root = FileManager.default.temporaryDirectory
             .appending(path: "supporting-manifest-\(UUID().uuidString)", directoryHint: .isDirectory)
         let url = root.appending(path: "components.json")
-        let model = SupportingModel.catalog[0]
+        let model = Self.embeddingModel
         var manifest = SupportingModelManifest()
         manifest.record(installedRecord(for: model, revision: model.revision))
 

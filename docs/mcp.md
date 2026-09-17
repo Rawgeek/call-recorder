@@ -38,6 +38,18 @@ args = ["/Applications/Call Recorder.app/Contents/Resources/indexer/mcp-server.j
 
 The default database is `~/Library/Application Support/CallRecorder/calls.db`.
 
+## The first start
+
+The runtime that serves these tools travels inside the app as one compressed archive. The first
+start unpacks it into `~/Library/Application Support/CallRecorder/runtime`, which takes a few
+seconds and happens once for each app version. Every later start uses that copy, and the path
+above never changes, so an existing registration keeps working.
+
+- A failed unpack is written to `~/Library/Logs/CallRecorder/indexer-runtime.log`, and the app
+  reports it under Settings > Models > Components.
+- To force a fresh unpack, delete the `runtime` folder. Nothing else reads it.
+- `CALL_RECORDER_RUNTIME_DIR` moves the folder, which is what the test suite does.
+
 ## Tools
 
 | Tool | Purpose |
@@ -95,4 +107,3 @@ not part of any response.
 | Tools return "database is locked" | Close the app's Settings window, then retry. The app and the server share one local database. |
 | Semantic search returns nothing | The embedding model has not been downloaded yet. Open the app once and let Models finish, or open a call so the indexer can run. Keyword (`lexical`) search works without it. |
 | A speaker request stays pending | The app must be running to apply queued requests. Start Call Recorder and check again. |
-

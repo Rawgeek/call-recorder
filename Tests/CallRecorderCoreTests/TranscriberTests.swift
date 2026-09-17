@@ -5,7 +5,7 @@ import Testing
 
 @Suite("Transcriber")
 struct TranscriberTests {
-    @Test("a finalized call stores participants and normalized transcript files", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasBundledVADModel))
+    @Test("a finalized call stores participants and normalized transcript files", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel))
     func completesLocalCallPipeline() async throws {
         // Given
         let directory = FileManager.default.temporaryDirectory
@@ -102,7 +102,7 @@ struct TranscriberTests {
         })
     }
 
-    @Test("the glossary and the names are the prompt whisper is given", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasBundledVADModel))
+    @Test("the glossary and the names are the prompt whisper is given", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel))
     func promptCarriesTheGlossaryToWhisper() async throws {
         // The prompt is the only place a term can change what the model hears, so the last link
         // in the chain is worth pinning: the builder can be right and the flag not be sent. This
@@ -148,7 +148,7 @@ struct TranscriberTests {
         #expect(!prompt.contains("Globexx"))
     }
 
-    @Test("independent sources are transcribed and local microphone is attributed", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasBundledVADModel))
+    @Test("independent sources are transcribed and local microphone is attributed", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel))
     func transcribesIndependentSources() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "call-recorder-sources-\(UUID().uuidString)", directoryHint: .isDirectory)
@@ -201,7 +201,7 @@ struct TranscriberTests {
         #expect(first["speakerName"] as? String == "Sam")
     }
 
-    @Test("safe global voice match labels a remote speaker without enrolling it", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasBundledVADModel))
+    @Test("safe global voice match labels a remote speaker without enrolling it", .enabled(if: TestEnvironment.hasFFmpeg), .enabled(if: TestEnvironment.hasVADModel))
     func labelsSafeGlobalVoiceMatch() async throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "call-recorder-identity-\(UUID().uuidString)", directoryHint: .isDirectory)

@@ -110,6 +110,12 @@ final class AppModel {
     /// Calls whose unfinished job has nothing left to work with. Retrying one cannot succeed, so
     /// the Recovery pane offers to remove the row instead of a button that fails again.
     private(set) var unfinishableCallIDs: Set<CallID> = []
+    /// What went wrong the last time the app prepared the transcript indexer's runtime.
+    ///
+    /// The runtime ships as an archive and is unpacked at launch. It is silent while it works and
+    /// carries a sentence here when it does not, because the alternative is an indexing stage that
+    /// stops with nothing on screen to explain it.
+    private(set) var indexerRuntimeNotice: String?
     private(set) var speakerReviews: [SpeakerReviewItem] = []
     private(set) var speakerReviewEvidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
     private(set) var speakerReviewCallDates: [CallID: Date] = [:]
@@ -516,8 +522,31 @@ final class AppModel {
             // that might never come, so they start here instead.
             startFromLaunchArgumentIfNeeded()
             startModelMaintenance()
+            prepareSupportingModels()
+            // The clips the speaker review plays are a cache: the recording is the record, and
+            // anything nobody has listened to for a fortnight can go.
+            speakerSamples?.prune()
             Logger(subsystem: "local.callrecorder.app", category: "models")
                 .notice("launch setup reached the model maintenance step")
+        }
+    }
+
+    /// Gets what the next recording needs out of the way while the app is idle.
+    ///
+    /// Two things are prepared here. The transcript indexer travels inside the app as an archive
+    /// and is unpacked once per build. The silence filter is a download of under a megabyte that
+    /// every transcription waits for. Neither is urgent, and both are worse to hit at the end of a
+    /// call than at launch.
+    private func prepareSupportingModels() {
+        if let indexer {
+            Task { [weak self] in
+                let notice = await indexer.prepareRuntime()
+                guard !Task.isCancelled else { return }
+                await MainActor.run { self?.indexerRuntimeNotice = notice }
+            }
+        }
+        if let vad = supportingManager.models.first(where: { $0.id == SupportingModel.sileroVADID }) {
+            supportingManager.downloadIfNeeded(vad)
         }
     }
 
@@ -2363,6 +2392,72 @@ final class AppModel {
         return try await performProcessingStage(job, cancellation: cancellation)
     }
 
+    /// Cuts the short clips the speaker review plays, without the room tone around the words.
+    ///
+    /// A diarized turn can open with seconds of silence, and a review card is where a person
+    /// decides who a voice is. The clip is cut once and kept, so pressing play again is instant.
+    @ObservationIgnored private lazy var speakerSamples: SpeakerSampleBuilder? = {
+        guard let finalizer = pipeline?.finalizer else { return nil }
+        return SpeakerSampleBuilder(
+            ffmpeg: finalizer.ffmpeg,
+            ffprobe: finalizer.ffprobe,
+            directory: applicationDirectory.appending(
+                path: "Speaker Samples",
+                directoryHint: .isDirectory
+            )
+        )
+    }()
+
+    /// The clip for one review excerpt: the words, with the silence around them removed.
+    ///
+    /// A clip that cannot be cut is not something to read as a failure, so this answers nil and
+    /// the caller plays the recording itself instead.
+    func speakerSample(
+        callID: CallID,
+        startMilliseconds: Int,
+        endMilliseconds: Int,
+        audio: URL
+    ) async -> URL? {
+        guard let speakerSamples else { return nil }
+        return try? await speakerSamples.sample(
+            callID: callID,
+            startMilliseconds: startMilliseconds,
+            endMilliseconds: endMilliseconds,
+            audio: audio
+        )
+    }
+
+    /// The silence filter this transcription runs with, fetched once if it is not installed.
+    ///
+    /// The app downloads it at launch, so a transcription normally finds it ready. A call recorded
+    /// in the first minute after an update does not, and the wait here costs seconds against a
+    /// call that could not be transcribed at all. The wait is bounded, and a failed download ends
+    /// it, because a stage that never returns is worse than one that stops with a reason.
+    private func ensuredVADModel() async throws -> URL {
+        if let installed = try? Transcriber.resolvedVADModel(
+            applicationDirectory: applicationDirectory
+        ) {
+            return installed
+        }
+        guard
+            let vad = supportingManager.models.first(where: {
+                $0.id == SupportingModel.sileroVADID
+            })
+        else { throw TranscriberError.vadModelUnavailable }
+        supportingManager.downloadIfNeeded(vad)
+        let deadline = Date().addingTimeInterval(180)
+        while Date() < deadline {
+            if let installed = try? Transcriber.resolvedVADModel(
+                applicationDirectory: applicationDirectory
+            ) {
+                return installed
+            }
+            if supportingManager.failure(for: vad) != nil { break }
+            try await Task.sleep(for: .seconds(2))
+        }
+        throw TranscriberError.vadModelUnavailable
+    }
+
     private func performProcessingStage(
         _ job: ProcessingJob,
         cancellation: ProcessCancellation
@@ -2404,7 +2499,7 @@ final class AppModel {
                 using: Transcriber(
                     ffmpeg: pipeline.finalizer.ffmpeg,
                     whisperCLI: whisperCLI,
-                    vadModel: try Transcriber.resolvedVADModel(),
+                    vadModel: try await ensuredVADModel(),
                     cancellation: cancellation
                 )
             )

@@ -73,6 +73,11 @@ public struct SupportingModelManifest: Codable, Equatable, Sendable {
 
     /// Reads a manifest, treating a missing or unreadable file as empty rather than failing.
     /// A check must still work on a Mac whose manifest was never written.
+    /// The one place the manifest lives, so a reader that is not the manager can find it.
+    public static func defaultURL(in applicationDirectory: URL) -> URL {
+        applicationDirectory.appending(path: "models/components.json")
+    }
+
     public static func load(from url: URL) -> SupportingModelManifest {
         guard let data = try? Data(contentsOf: url) else { return SupportingModelManifest() }
         let decoder = JSONDecoder()

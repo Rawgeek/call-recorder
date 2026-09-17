@@ -64,7 +64,7 @@ final class SupportingModelManager {
     }
 
     static func manifestURL(_ applicationDirectory: URL) -> URL {
-        applicationDirectory.appending(path: "models/components.json")
+        SupportingModelManifest.defaultURL(in: applicationDirectory)
     }
 
     // MARK: - Reading state
@@ -151,6 +151,16 @@ final class SupportingModelManager {
     func download(_ model: SupportingModel) {
         guard downloads[model.id] == nil, !state(for: model).isInstalled else { return }
         start(model, revision: model.revision, files: model.files, previousRevision: nil)
+    }
+
+    /// Starts a download only when the copy on disk is not usable.
+    ///
+    /// The silence filter is a dependency of every transcription and 865 KB, so the app fetches it
+    /// without asking. Calling this while one is already running, or after it finished, does
+    /// nothing.
+    func downloadIfNeeded(_ model: SupportingModel) {
+        guard !state(for: model).isInstalled else { return }
+        download(model)
     }
 
     func cancel(_ model: SupportingModel) {

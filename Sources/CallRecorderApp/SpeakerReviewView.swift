@@ -796,18 +796,51 @@ struct SpeakerReviewView: View {
             return
         }
         stopPlayback()
+        // The clip is cut out of the recording with its silence removed, once, and kept. Preparing
+        // it takes a moment on the first press, so the card shows the excerpt as playing while it
+        // does, and a second press stops it. A clip that cannot be cut leaves the recording, and
+        // the excerpt inside it, as the thing that plays.
+        playingClusterID = review.clusterID
+        playingSampleStart = excerpt.startMs
+        playbackStopTask = Task { @MainActor in
+            let clip = await model.speakerSample(
+                callID: review.callID,
+                startMilliseconds: excerpt.startMs,
+                endMilliseconds: excerpt.endMs,
+                audio: audioURL
+            )
+            guard !Task.isCancelled, playingClusterID == review.clusterID else { return }
+            startPlayback(
+                clip ?? audioURL,
+                review: review,
+                excerpt: clip == nil ? excerpt : nil
+            )
+        }
+    }
+
+    /// Plays one prepared clip from its start, and stops the row when it ends.
+    ///
+    /// - Parameter excerpt: The part of a longer recording to play, or nil when the file is
+    ///   already the excerpt.
+    private func startPlayback(
+        _ clip: URL,
+        review: SpeakerReviewItem,
+        excerpt: SpeakerReviewPlayback.Excerpt?
+    ) {
         do {
-            let player = try AVAudioPlayer(contentsOf: audioURL)
-            let range = excerpt.playbackRange(duration: player.duration)
-            guard range.stop > range.start else { return }
-            player.currentTime = range.start
+            let player = try AVAudioPlayer(contentsOf: clip)
+            var duration = player.duration
+            if let excerpt {
+                let range = excerpt.playbackRange(duration: player.duration)
+                guard range.stop > range.start else { return }
+                player.currentTime = range.start
+                duration = range.stop - range.start
+            }
             player.prepareToPlay()
             player.play()
             audioPlayer = player
-            playingClusterID = review.clusterID
-            playingSampleStart = excerpt.startMs
             playbackStopTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(range.stop - range.start))
+                try? await Task.sleep(for: .seconds(duration))
                 guard !Task.isCancelled, playingClusterID == review.clusterID else { return }
                 stopPlayback()
             }

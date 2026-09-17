@@ -74,6 +74,18 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
     /// a message.
     public static let installedMarkerName = "installed.json"
 
+    /// The silence filter whisper.cpp runs when it is handed a long call.
+    ///
+    /// It used to travel inside the app. It is 865 KB and needs no setup, so bundling it looked
+    /// free, but every model the app downloads instead of carrying is a model that can be fixed
+    /// without a new build. The host publishes the same bytes it always did:
+    /// ggml-org/whisper-vad carries the converted 6.2.0 file, which is the one whisper.cpp loads.
+    public static let sileroVADID = "silero-vad"
+    public static let sileroVADFileName = "ggml-silero-v6.2.0.bin"
+    public static let sileroVADBytes: Int64 = 885_098
+    public static let sileroVADSHA256 =
+        "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+
     /// The models this build needs beyond Whisper.
     ///
     /// The hashes and the sizes are the bytes the host serves at the revision named here. The
@@ -81,6 +93,23 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
     /// publishes a hash only for files it stores through its large-file service. Pinning them
     /// here is the same guarantee: a substituted file is refused instead of installed.
     public static let catalog: [SupportingModel] = [
+        SupportingModel(
+            id: sileroVADID,
+            displayName: "Silero VAD 6.2.0",
+            detail: "Filters silence so a long call transcribes in segments instead of one pass "
+                + "that can lose its place. Downloaded once, then used offline.",
+            repository: "ggml-org/whisper-vad",
+            revision: "9ffd54a1e1ee413ddf265af9913beaf518d1639b",
+            installPath: "models/vad",
+            versionLabel: "6.2.0, ggml",
+            files: [
+                SupportingModelFile(
+                    path: sileroVADFileName,
+                    bytes: sileroVADBytes,
+                    sha256: sileroVADSHA256
+                )
+            ]
+        ),
         SupportingModel(
             id: embeddingGemmaID,
             displayName: "EmbeddingGemma 300M",

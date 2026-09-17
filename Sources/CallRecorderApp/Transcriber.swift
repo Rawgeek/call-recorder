@@ -15,7 +15,7 @@ enum TranscriberError: LocalizedError {
         case .missingWhisperOutput:
             "Whisper did not create a transcript."
         case .vadModelUnavailable:
-            "The bundled Silero VAD model is missing or invalid."
+            "The Silero VAD model is not installed. Download it in Settings, Models, Components."
         case .repetitiveTranscript:
             "The transcript looks repetitive and was not saved."
         }
@@ -41,7 +41,19 @@ struct Transcriber: Sendable {
         self.cancellation = cancellation
     }
 
-    static func resolvedVADModel() throws -> URL {
+    /// The silence filter, at the revision the app last verified.
+    ///
+    /// The model is a download now, so the file is found the way any other downloaded model is:
+    /// the manifest names the revision, and the bytes are checked before whisper.cpp is handed the
+    /// path. A development checkout can still fall back to the copy in Resources, which is what a
+    /// test run uses.
+    ///
+    /// - Parameter applicationDirectory: The folder models are installed into, or nil to look only
+    ///   in the package.
+    static func resolvedVADModel(applicationDirectory: URL? = nil) throws -> URL {
+        if let applicationDirectory, let installed = installedVADModel(applicationDirectory: applicationDirectory) {
+            return installed
+        }
         // Development candidate: the executable lives in .build/<triple>/<config>,
         // so walking up four components from it reaches the package root. Computed
         // at runtime so the packaged binary never embeds the workspace path.
@@ -50,26 +62,52 @@ struct Transcriber: Sendable {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
+        // A test run and a command-line pass run from the package, which is where the copy this
+        // checkout carries is. The same two places the indexer looks in, for the same reason.
+        let configuredRoot = ProcessInfo.processInfo.environment["CALL_RECORDER_SOURCE_ROOT"]
+            .map { URL(filePath: $0, directoryHint: .isDirectory) }
+        let sourceRoots = [configuredRoot, URL(filePath: FileManager.default.currentDirectoryPath)]
+            .compactMap { $0 }
         let candidates: [URL?] = [
             Bundle.main.url(forResource: "ggml-silero-v6.2.0", withExtension: "bin"),
-            FileManager.default.homeDirectoryForCurrentUser.appending(
-                path: "Library/Application Support/CallRecorder/models/vad/ggml-silero-v6.2.0.bin"
-            ),
             developmentRoot?.appending(path: "Resources/ggml-silero-v6.2.0.bin"),
-        ]
+        ] + sourceRoots.map { $0.appending(path: "Resources/ggml-silero-v6.2.0.bin") }
         for candidate in candidates.compactMap({ $0 })
             where FileManager.default.fileExists(atPath: candidate.path) {
             if
                 try ModelFileVerifier.verify(
                     fileAt: candidate,
-                    expectedBytes: 885_098,
-                    sha256: "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+                    expectedBytes: SupportingModel.sileroVADBytes,
+                    sha256: SupportingModel.sileroVADSHA256
                 )
             {
                 return candidate
             }
         }
         throw TranscriberError.vadModelUnavailable
+    }
+
+    /// The installed copy, when the manifest names one and its bytes still match.
+    static func installedVADModel(applicationDirectory: URL) -> URL? {
+        guard
+            let model = SupportingModel.catalog.first(where: { $0.id == SupportingModel.sileroVADID }),
+            let file = model.files.first
+        else { return nil }
+        let manifest = SupportingModelManifest.load(
+            from: SupportingModelManifest.defaultURL(in: applicationDirectory)
+        )
+        guard let record = manifest.record(for: model.id) else { return nil }
+        let candidate = model
+            .directory(in: applicationDirectory, revision: record.revision)
+            .appending(path: file.path)
+        guard
+            (try? ModelFileVerifier.verify(
+                fileAt: candidate,
+                expectedBytes: file.bytes,
+                sha256: file.sha256
+            )) == true
+        else { return nil }
+        return candidate
     }
 
     func transcribe(

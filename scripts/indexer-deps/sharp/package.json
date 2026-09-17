@@ -1,0 +1,6 @@
+{
+  "name": "sharp",
+  "version": "0.0.0-pruned",
+  "private": true,
+  "main": "index.js"
+}

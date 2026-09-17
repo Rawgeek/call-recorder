@@ -137,8 +137,9 @@ A model installed before this feature existed has no recorded hash. Call Recorde
 stores the result, and reports it as "not verified yet" until then rather than claiming it is
 current. Settings > Models shows the state of each model and a Check Now button.
 
-The same tracking covers the bundled Silero VAD and the local EmbeddingGemma model that powers
-meaning-based transcript search.
+The same tracking covers the Silero VAD filter and the local EmbeddingGemma model that powers
+meaning-based transcript search. Both are downloads: the filter is about 865 KB and arrives
+without being asked for, and the embedding model is downloaded from Settings > Models.
 
 If the local embedding model changes, the vectors stored for existing transcripts are no longer
 comparable with new query vectors. Search only ranks vectors produced by the model in use, and
@@ -199,7 +200,7 @@ The full guide, with configuration and example prompts, is in docs/mcp.md.
 
 Safety properties worth knowing:
 
-- Search and inference run locally. The embedding model is bundled and used offline.
+- Search and inference run locally. The embedding model is downloaded once and used offline.
 - Recording controls are not exposed over MCP, and no recording or transcript can be deleted
   through it. What can be removed is vocabulary and saved people: a glossary term, or a duplicate
   person folded into the one you keep. Neither carries audio, and neither touches a transcript's
@@ -216,7 +217,7 @@ Safety properties worth knowing:
 
 To produce a distributable app bundle:
 
-    scripts/package-app.sh "dist/releases/Call Recorder 0.1.1"
+    scripts/package-app.sh "dist/releases/Call Recorder 0.1.2"
 
 Packaging needs bun on PATH (or CALL_RECORDER_BUN) and a code-signing identity
 (CALL_RECORDER_SIGNING_IDENTITY, default "Call Recorder Local Development"). To package

@@ -1,4 +1,9 @@
 #!/bin/zsh
+# Builds the app bundle that is handed to someone else.
+#
+# Set CALL_RECORDER_SKIP_SIGNING=1 to build the same bundle without touching the signing key. That
+# is for measuring and inspecting a build on a machine where nobody is sitting in front of it. The
+# result cannot be shared: macOS refuses an unsigned copy of an app it did not build.
 set -euo pipefail
 
 task_root=${0:A:h:h}
@@ -12,6 +17,7 @@ if [[ ! -x "$task_bun" ]]; then
 fi
 
 task_identity=${CALL_RECORDER_SIGNING_IDENTITY:-Call Recorder Local Development}
+task_skip_signing=${CALL_RECORDER_SKIP_SIGNING:-0}
 task_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$task_root/Resources/Info.plist")
 task_output=${1:-"$task_root/dist/Call Recorder $task_version"}
 task_archive="$task_output.zip"
@@ -23,77 +29,140 @@ trap 'rm -rf -- "$task_temp"' EXIT
 task_app="$task_temp/Call Recorder.app"
 task_contents="$task_app/Contents"
 task_indexer="$task_contents/Resources/indexer"
-task_modules="$task_indexer/node_modules"
+# The JavaScript runtime is built here and shipped as one archive. Unpacked it is about 95 MB,
+# which is most of the app; archived it is about 35 MB, and the app unpacks it once into
+# Application Support. scripts/indexer-runtime-shim.sh does that, and stays the path Codex
+# registers, so an existing registration keeps working.
+task_runtime="$task_temp/runtime"
+task_verify="$task_temp/verify-runtime"
 task_packages="$task_root/mcp/node_modules/.pnpm"
+task_onnx_dylib="libonnxruntime.1.24.3.dylib"
 
 task_signing_probe="$task_temp/signing-probe"
 task_signing_error="$task_temp/signing-error.txt"
-cp /usr/bin/true "$task_signing_probe"
-if ! codesign --force --sign "$task_identity" "$task_signing_probe" 2>"$task_signing_error"; then
-    print -u2 "Code-signing key is unavailable; build not started."
-    command cat "$task_signing_error" >&2
-    print -u2 "Unlock once, then rerun: security unlock-keychain ~/Library/Keychains/login.keychain-db"
-    exit 1
+if [[ "$task_skip_signing" == "1" ]]; then
+    print -u2 "Building without a signature: the copy this writes cannot be shared."
+else
+    cp /usr/bin/true "$task_signing_probe"
+    if ! codesign --force --sign "$task_identity" "$task_signing_probe" 2>"$task_signing_error"; then
+        print -u2 "Code-signing key is unavailable; build not started."
+        command cat "$task_signing_error" >&2
+        print -u2 "Unlock once, then rerun: security unlock-keychain ~/Library/Keychains/login.keychain-db"
+        exit 1
+    fi
 fi
 
 cd "$task_root"
 swift build -c release
 mkdir -p \
     "$task_contents/MacOS" \
-    "$task_modules/@libsql" \
-    "$task_modules/@huggingface" \
-    "$task_modules/@img" \
-    "$task_modules/@neon-rs" \
-    "$task_modules/onnxruntime-node/bin/napi-v6/darwin/arm64"
+    "$task_indexer" \
+    "$task_runtime/node_modules/@huggingface/transformers/dist" \
+    "$task_runtime/node_modules/onnxruntime-node/dist" \
+    "$task_runtime/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64" \
+    "$task_runtime/node_modules/@libsql/darwin-arm64" \
+    "$task_runtime/node_modules/@neon-rs/load" \
+    "$task_runtime/node_modules/detect-libc" \
+    "$task_runtime/node_modules/sharp"
 cp .build/release/CallRecorder "$task_contents/MacOS/CallRecorder"
 cp Resources/Info.plist "$task_contents/Info.plist"
 cp Resources/AppIcon.icns "$task_contents/Resources/AppIcon.icns"
 cp Sources/CallRecorderApp/diarize.py "$task_contents/Resources/diarize.py"
-cp Resources/ggml-silero-v6.2.0.bin "$task_contents/Resources/ggml-silero-v6.2.0.bin"
-cp "$task_bun" "$task_indexer/bun"
-chmod 755 "$task_contents/MacOS/CallRecorder" "$task_indexer/bun"
+chmod 755 "$task_contents/MacOS/CallRecorder"
 /usr/bin/strip -S "$task_contents/MacOS/CallRecorder"
 
-"$task_bun" build --target bun \
+# The two entry points. Minifying syntax and whitespace takes a quarter off both files; identifier
+# names are kept, so a stack trace in the log still reads as code.
+"$task_bun" build --target bun --minify-syntax --minify-whitespace \
     --external libsql \
     --external @huggingface/transformers \
     --external onnxruntime-node \
     --external sharp \
     --external @libsql/darwin-arm64 \
     mcp/src/index-call.ts \
-    --outfile "$task_indexer/indexer.js"
-"$task_bun" build --target bun \
+    --outfile "$task_runtime/indexer.js"
+"$task_bun" build --target bun --minify-syntax --minify-whitespace \
     --external libsql \
     --external @huggingface/transformers \
     --external onnxruntime-node \
     --external sharp \
     --external @libsql/darwin-arm64 \
     mcp/src/server.ts \
-    --outfile "$task_indexer/mcp-server.js"
+    --outfile "$task_runtime/mcp-server.js"
+cp "$task_bun" "$task_runtime/bun"
+chmod 755 "$task_runtime/bun"
 
-ditto "$task_packages/@libsql+darwin-arm64@0.5.29/node_modules/@libsql/darwin-arm64" "$task_modules/@libsql/darwin-arm64"
-ditto "$task_packages/libsql@0.5.29/node_modules/libsql" "$task_modules/libsql"
-ditto "$task_packages/@neon-rs+load@0.0.4/node_modules/@neon-rs/load" "$task_modules/@neon-rs/load"
-ditto "$task_packages/@huggingface+transformers@4.2.0/node_modules/@huggingface/transformers" "$task_modules/@huggingface/transformers"
-cp "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/package.json" "$task_modules/onnxruntime-node/package.json"
-ditto "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/dist" "$task_modules/onnxruntime-node/dist"
-ditto "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64" "$task_modules/onnxruntime-node/bin/napi-v6/darwin/arm64"
-ditto "$task_packages/onnxruntime-common@1.24.3/node_modules/onnxruntime-common" "$task_modules/onnxruntime-common"
-ditto "$task_packages/sharp@0.35.4/node_modules/sharp" "$task_modules/sharp"
-ditto "$task_packages/detect-libc@2.1.2/node_modules/detect-libc" "$task_modules/detect-libc"
-ditto "$task_packages/semver@7.8.5/node_modules/semver" "$task_modules/semver"
-ditto "$task_packages/@img+colour@1.1.0/node_modules/@img/colour" "$task_modules/@img/colour"
-ditto "$task_packages/@img+sharp-darwin-arm64@0.35.4/node_modules/@img/sharp-darwin-arm64" "$task_modules/@img/sharp-darwin-arm64"
-ditto "$task_packages/@img+sharp-libvips-darwin-arm64@1.3.3/node_modules/@img/sharp-libvips-darwin-arm64" "$task_modules/@img/sharp-libvips-darwin-arm64"
+# Only the files the entry points load, and only the files this Mac runs.
+#
+# The unpruned dependency tree is 78 MB. What is left here is 32 MB, and every folder removed is
+# one nothing in the runtime reads:
+# - sharp and libvips (15 MB): the image library the embedding model imports at startup for image
+#   input. A stand-in in scripts/indexer-deps answers that import, so nothing else needs it.
+# - the browser, CommonJS, and minified builds of the embedding library, and its types and
+#   sources (7 MB): the runtime imports one file, dist/transformers.node.mjs.
+# - the source maps and type declarations of the ONNX runtime: nothing reads them at run time.
+ditto "$task_packages/@huggingface+transformers@4.2.0/node_modules/@huggingface/transformers/package.json" \
+    "$task_runtime/node_modules/@huggingface/transformers/package.json"
+ditto "$task_packages/@huggingface+transformers@4.2.0/node_modules/@huggingface/transformers/dist/transformers.node.mjs" \
+    "$task_runtime/node_modules/@huggingface/transformers/dist/transformers.node.mjs"
+ditto "$task_packages/libsql@0.5.29/node_modules/libsql" "$task_runtime/node_modules/libsql"
+ditto "$task_packages/@libsql+darwin-arm64@0.5.29/node_modules/@libsql/darwin-arm64" \
+    "$task_runtime/node_modules/@libsql/darwin-arm64"
+ditto "$task_packages/@neon-rs+load@0.0.4/node_modules/@neon-rs/load" "$task_runtime/node_modules/@neon-rs/load"
+# The database client reads this to pick the right binding for the platform.
+ditto "$task_packages/detect-libc@2.1.2/node_modules/detect-libc" "$task_runtime/node_modules/detect-libc"
+ditto "$task_packages/onnxruntime-common@1.24.3/node_modules/onnxruntime-common" \
+    "$task_runtime/node_modules/onnxruntime-common"
+cp "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/package.json" \
+    "$task_runtime/node_modules/onnxruntime-node/package.json"
+for task_script in index.js backend.js binding.js version.js; do
+    cp "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/dist/$task_script" \
+        "$task_runtime/node_modules/onnxruntime-node/dist/$task_script"
+done
+ditto "$task_packages/onnxruntime-node@1.24.3/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64" \
+    "$task_runtime/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64"
+cp scripts/indexer-deps/sharp/package.json "$task_runtime/node_modules/sharp/package.json"
+cp scripts/indexer-deps/sharp/index.js "$task_runtime/node_modules/sharp/index.js"
+
+# The largest file in the runtime is the ONNX library that runs the embedding model. Its symbols
+# are not needed to load it: strip takes 36 MB down to 23 MB, and the ad-hoc signature replaces
+# the one stripping invalidates.
+task_onnx_path="$task_runtime/node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/$task_onnx_dylib"
+/usr/bin/strip -x -S "$task_onnx_path"
+codesign --force --sign - "$task_onnx_path"
+
+(cd "$task_runtime" && ditto -c -k --sequesterRsrc . "$task_indexer/runtime.zip")
+shasum -a 256 "$task_indexer/runtime.zip" | awk '{print $1}' > "$task_indexer/runtime.sha256"
+cp scripts/indexer-runtime-shim.sh "$task_indexer/bun"
+chmod 755 "$task_indexer/bun"
+
+# Unpack the archive here, so a build that would fail on the first recording fails now instead.
+mkdir -p "$task_verify"
+ditto -x -k "$task_indexer/runtime.zip" "$task_verify"
+for task_member in \
+    bun \
+    indexer.js \
+    mcp-server.js \
+    "node_modules/@huggingface/transformers/dist/transformers.node.mjs" \
+    "node_modules/@libsql/darwin-arm64/index.node" \
+    "node_modules/onnxruntime-node/bin/napi-v6/darwin/arm64/$task_onnx_dylib"; do
+    if [[ ! -s "$task_verify/$task_member" ]]; then
+        print -u2 "the runtime archive is missing $task_member"
+        exit 1
+    fi
+done
+if ! "$task_verify/bun" --version >/dev/null; then
+    print -u2 "the runtime archive does not run"
+    exit 1
+fi
 
 task_required=(
     "$task_contents/MacOS/CallRecorder"
     "$task_contents/Info.plist"
     "$task_contents/Resources/diarize.py"
-    "$task_contents/Resources/ggml-silero-v6.2.0.bin"
     "$task_indexer/bun"
-    "$task_indexer/indexer.js"
-    "$task_indexer/mcp-server.js"
+    "$task_indexer/runtime.zip"
+    "$task_indexer/runtime.sha256"
 )
 for task_file in "${task_required[@]}"; do
     if [[ ! -s "$task_file" ]]; then
@@ -101,13 +170,14 @@ for task_file in "${task_required[@]}"; do
         exit 1
     fi
 done
-task_vad="$task_contents/Resources/ggml-silero-v6.2.0.bin"
-if [[ "$(stat -f%z "$task_vad")" != "885098" ]]; then
-    print -u2 "Silero VAD model has the wrong size"
+# The Silero VAD model is a download now, and the runtime is an archive. A copy inside the bundle
+# is the mistake this guards against: it is what made the app 150 MB.
+if rg --files "$task_app" | rg -q 'ggml-silero'; then
+    print -u2 "the Silero VAD model must be downloaded, not bundled"
     exit 1
 fi
-if [[ "$(shasum -a 256 "$task_vad" | awk '{print $1}')" != "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987" ]]; then
-    print -u2 "Silero VAD model failed integrity verification"
+if rg --files "$task_app" | rg -q 'Resources/indexer/node_modules/'; then
+    print -u2 "the indexer runtime must ship as an archive, not unpacked"
     exit 1
 fi
 plutil -lint "$task_contents/Info.plist" >/dev/null
@@ -132,11 +202,15 @@ if rg -a -F -q '/.venv/bin/python3' "$task_app"; then
     exit 1
 fi
 
-codesign --force --deep --options runtime \
-    --sign "$task_identity" \
-    --entitlements Resources/CallRecorder.entitlements \
-    "$task_app"
-codesign --verify --deep --strict --verbose=2 "$task_app"
+if [[ "$task_skip_signing" == "1" ]]; then
+    print -u2 "Skipping the signature on the app bundle."
+else
+    codesign --force --deep --options runtime \
+        --sign "$task_identity" \
+        --entitlements Resources/CallRecorder.entitlements \
+        "$task_app"
+    codesign --verify --deep --strict --verbose=2 "$task_app"
+fi
 
 if [[ -e "$task_output" ]]; then
     mv "$task_output" "$task_output.previous-$task_stamp"

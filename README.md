@@ -46,9 +46,10 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 **Library and Codex**
 
 - Every transcript is indexed into a local Turso/libsql database with FTS5 (BM25) ranking and
-  256-dimension vector embeddings from a bundled local model. Search is hybrid by default.
-- The bundled MCP server exposes 17 tools for calls, transcripts, participants, glossary, and
-  speaker review. See [docs/mcp.md](docs/mcp.md).
+  256-dimension vector embeddings from a local model that is downloaded once. Search is hybrid
+  by default.
+- The MCP server ships with the app and exposes 17 tools for calls, transcripts, participants,
+  glossary, and speaker review. See [docs/mcp.md](docs/mcp.md).
 
 **Operations**
 
@@ -79,7 +80,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.1.zip` from the
+1. Download `CallRecorder-0.1.2.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -89,7 +90,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
    second permission is what records the other side of the call.
 5. Open the menu-bar icon and choose **Settings**:
    - **Models**: download a Whisper model. `medium` is a good default; larger models are more
-     accurate and slower. Everything runs locally.
+     accurate and slower. The silence filter, about 865 KB, downloads on its own. Everything
+     runs locally.
    - **General**: choose the microphone, the recordings folder (default
      `~/Desktop/Call Recordings`), and whether recording starts when another app opens the
      microphone.
@@ -108,12 +110,17 @@ swift build -c release
 Run it directly with `swift run CallRecorder`, or build a distributable bundle:
 
 ```sh
-scripts/package-app.sh "dist/Call Recorder 0.1.1"
+scripts/package-app.sh "dist/Call Recorder 0.1.2"
 ```
 
 Packaging needs `bun` on `PATH` (or `CALL_RECORDER_BUN`) and a code-signing identity
 (`CALL_RECORDER_SIGNING_IDENTITY`, default `Call Recorder Local Development`). To package
-without a certificate, use `CALL_RECORDER_SIGNING_IDENTITY=-` for an ad-hoc signature.
+without a certificate, use `CALL_RECORDER_SIGNING_IDENTITY=-` for an ad-hoc signature, or set
+`CALL_RECORDER_SKIP_SIGNING=1` to skip the signature step while measuring a build.
+
+The app carries its JavaScript runtime, `bun` and the search dependencies, as one compressed
+archive and unpacks it into Application Support on first use. That keeps the bundle near 50 MB
+rather than 150 MB, and the path Codex registers does not change.
 
 ### Speaker identification (optional)
 
@@ -157,7 +164,9 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 | `~/Desktop/Call Recordings` | Transcripts (`<date-time>.md`) and a small metadata file per call. The folder is configurable. |
 | `~/Library/Application Support/CallRecorder/calls.db` | The local library: calls, participants, glossary, transcripts, search index. |
 | `~/Library/Application Support/CallRecorder/models` | Downloaded Whisper, VAD, and embedding models. |
+| `~/Library/Application Support/CallRecorder/runtime` | The JavaScript runtime the search index and the MCP server run on, unpacked from the app once per version. |
 | `~/Library/Application Support/CallRecorder/Recently Deleted` | Working folders kept for 24 hours after a call is finished or discarded. |
+| `~/Library/Application Support/CallRecorder/Speaker Samples` | Short clips cut for speaker review, with the silence removed. Kept for a fortnight. |
 | macOS Keychain | The encryption key for voice profiles. |
 
 ## Privacy

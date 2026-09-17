@@ -59,6 +59,38 @@ struct IndexerClient: Sendable {
         )
     }
 
+    /// Whether this build ships the runtime as an archive the shim unpacks.
+    ///
+    /// A source checkout has neither the archive nor the shim, and runs the entry point directly,
+    /// so there is nothing to prepare.
+    var hasArchivedRuntime: Bool {
+        Bundle.main.url(forResource: "runtime", withExtension: "zip", subdirectory: "indexer") != nil
+    }
+
+    /// Unpacks the JavaScript runtime into Application Support when it is not there yet.
+    ///
+    /// The first indexing run or MCP start would do this anyway. Doing it at launch moves the wait
+    /// to a quiet moment, and turns a failure into a sentence the app can show instead of a call
+    /// that stops at the indexing stage.
+    ///
+    /// - Returns: A message naming the fault, or nil when the runtime is ready.
+    func prepareRuntime() async -> String? {
+        guard hasArchivedRuntime else { return nil }
+        do {
+            try await Task.detached {
+                _ = try ProcessRunner.runChecked(
+                    executable: executable,
+                    arguments: ["--ensure-runtime"],
+                    cancellation: nil
+                )
+            }.value
+            return nil
+        } catch {
+            return "The transcript indexer could not prepare its runtime. "
+                + error.localizedDescription
+        }
+    }
+
     func arguments(for callID: CallID) -> [String] {
         argumentPrefix + [
             "index",
