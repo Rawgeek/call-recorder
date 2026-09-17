@@ -755,6 +755,8 @@ struct ModelSettingsView: View {
     @Bindable var model: AppModel
     @State private var pendingDeletion: WhisperModel?
     @State private var pendingComponentDeletion: SupportingModel?
+    /// Whether the models outside the four the card shows by default are unfolded.
+    @State private var showsAllModels = false
 
     var body: some View {
         SettingsPane(
@@ -803,9 +805,30 @@ struct ModelSettingsView: View {
                 if let selected = selectedModel {
                     selectedModelStatus(selected)
                 }
-                ForEach(Array(model.modelManager.models.enumerated()), id: \.element.id) { index, whisperModel in
+                ForEach(listedModels) { whisperModel in
                     CRSettingsDivider()
                     modelRow(whisperModel)
+                }
+                if !advancedModels.isEmpty {
+                    CRSettingsDivider()
+                    CRSettingsRow(
+                        title: "Advanced",
+                        info: "The English-only files transcribe one language a little better than "
+                            + "their twin, and the older large models stay for a Mac that already "
+                            + "downloaded one."
+                    ) {
+                        CRButton(
+                            title: showsAllModels ? "Hide" : "Show \(advancedModels.count) more"
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.15)) { showsAllModels.toggle() }
+                        }
+                    }
+                }
+                if showsAllModels {
+                    ForEach(advancedModels) { whisperModel in
+                        CRSettingsDivider()
+                        modelRow(whisperModel)
+                    }
                 }
                 if model.modelManager.installedBytes > 0 {
                     CRSettingsDivider()
@@ -1229,7 +1252,11 @@ struct ModelSettingsView: View {
             warning: fit != .comfortable
         ) {
             HStack(spacing: CR.Space.inner) {
-                CRStatusChip(tone: fitTone(fit), text: fitLabel(whisperModel, fit: fit))
+                // A model that is simply fine carries nothing. The page marks the one in use, the
+                // picks, and the problems, and leaves the rest of the list as names.
+                let isSelected = whisperModel.id == model.settings.selectedWhisperModelID
+                if isSelected { CRStatusChip(tone: .working, text: "Selected") }
+                if let chip = fitChip(whisperModel, fit: fit, isSelected: isSelected) { chip }
                 switch model.modelManager.state(for: whisperModel) {
                 case .notInstalled:
                     CRButton(title: "Download", kind: .primary) {
@@ -1258,19 +1285,22 @@ struct ModelSettingsView: View {
         }
     }
 
-    private func fitTone(_ fit: WhisperModelMemoryFit) -> CR.Tone {
+    /// The chip a row earns, if it earns one.
+    private func fitChip(
+        _ whisperModel: WhisperModel,
+        fit: WhisperModelMemoryFit,
+        isSelected: Bool
+    ) -> CRStatusChip? {
         switch fit {
-        case .comfortable: .ready
-        case .tight: .waiting
-        case .insufficient: .failed
-        }
-    }
-
-    private func fitLabel(_ whisperModel: WhisperModel, fit: WhisperModelMemoryFit) -> String {
-        switch fit {
-        case .comfortable: whisperModel.isRecommended ? "Recommended" : "Fits"
-        case .tight: "Tight"
-        case .insufficient: "Too large"
+        case .comfortable:
+            // The blue chip already says which model is in use, so the green one would repeat it.
+            return whisperModel.isRecommended && !isSelected
+                ? CRStatusChip(tone: .ready, text: "Recommended")
+                : nil
+        case .tight:
+            return CRStatusChip(tone: .waiting, text: "Tight")
+        case .insufficient:
+            return CRStatusChip(tone: .failed, text: "Too large")
         }
     }
 
@@ -1312,6 +1342,24 @@ struct ModelSettingsView: View {
 
     private var multilingualModels: [WhisperModel] {
         model.modelManager.models.filter { !$0.englishOnly }
+    }
+
+    /// The model rows the card shows before anything is unfolded.
+    ///
+    /// Anything installed, and anything a new recording would use, is shown whatever else is
+    /// hidden. A row that holds the delete button for the file in use cannot be behind a fold.
+    private var listedModels: [WhisperModel] {
+        model.modelManager.models.filter { alwaysListed($0) }
+    }
+
+    private var advancedModels: [WhisperModel] {
+        model.modelManager.models.filter { !alwaysListed($0) }
+    }
+
+    private func alwaysListed(_ whisperModel: WhisperModel) -> Bool {
+        whisperModel.isPrimary
+            || whisperModel.id == model.settings.selectedWhisperModelID
+            || model.modelManager.state(for: whisperModel).isInstalled
     }
 
     private var englishOnlyModels: [WhisperModel] {

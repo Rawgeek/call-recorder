@@ -377,6 +377,17 @@ extension WhisperModel {
     public var isRecommended: Bool {
         id == "small" || id == "large-v3-turbo"
     }
+
+    /// Whether this model is one of the four the settings page shows without being asked.
+    ///
+    /// These are one answer per kind of decision: the quickest file worth using, the balanced one,
+    /// the accurate one, and the one that is accurate and fast. The rest are variations on them —
+    /// an English-only twin, an older large file — and they are worth a fold rather than a page.
+    public var isPrimary: Bool {
+        Self.primaryIDs.contains(id)
+    }
+
+    public static let primaryIDs = ["base", "small", "medium", "large-v3-turbo"]
 }
 
 public enum WhisperModelMemoryFit: Equatable, Sendable {
