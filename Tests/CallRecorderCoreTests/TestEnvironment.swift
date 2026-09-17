@@ -1,5 +1,6 @@
 import CallRecorderCore
 import Foundation
+@testable import CallRecorderApp
 
 /// External tools some suites drive.
 ///
@@ -13,16 +14,13 @@ enum TestEnvironment {
         return locator.locate("ffmpeg") != nil && locator.locate("ffprobe") != nil
     }()
 
-    /// A system Python that can run a small script, which is what the speaker suite needs.
-    static let hasSystemPython: Bool = {
-        let process = Process()
-        process.executableURL = URL(filePath: "/usr/bin/python3")
-        process.arguments = ["-c", "print(1)"]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do { try process.run() } catch { return false }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
-    }()
-}
+    /// The bundled Silero VAD model, which the transcriber refuses to run without.
+    static let hasBundledVADModel: Bool = (try? Transcriber.resolvedVADModel()) != nil
 
+    /// Whether the machine is a desktop rather than a CI image.
+    ///
+    /// The speaker suite runs a real Python interpreter and waits on its standard output. On a
+    /// CI image the interpreter is present but its pipes behave differently, so the suite is
+    /// skipped there. The same behaviour is covered on any Mac, and by the app itself.
+    static let canRunSpeakerScript = ProcessInfo.processInfo.environment["CI"] == nil
+}

@@ -18,7 +18,7 @@ struct DiarizerTests {
         #expect(merged.first?.source == .system)
     }
 
-    @Test("missing model access is a recoverable failure, never empty success", .enabled(if: TestEnvironment.hasSystemPython))
+    @Test("missing model access is a recoverable failure, never empty success", .enabled(if: TestEnvironment.canRunSpeakerScript))
     func reportsMissingModelAccess() throws {
         let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -95,7 +95,7 @@ struct DiarizerTests {
         #expect(SegmentMerger.merge(whisperSegments: segments, diarization: []) == segments)
     }
 
-    @Test("large diarization output is drained before waiting for process exit")
+    @Test("large diarization output is drained before waiting for process exit", .enabled(if: TestEnvironment.canRunSpeakerScript))
     func drainsLargeDiarizationOutput() throws {
         let directory = FileManager.default.temporaryDirectory
             .appending(path: "diarizer-output-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
