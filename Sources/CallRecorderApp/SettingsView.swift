@@ -769,8 +769,17 @@ struct ModelSettingsView: View {
                     detail: "Larger models transcribe more accurately and take longer to run."
                 ) {
                     Picker("", selection: $model.settings.selectedWhisperModelID) {
-                        ForEach(model.modelManager.models) { whisperModel in
-                            Text(whisperModel.displayName).tag(whisperModel.id)
+                        // Two groups, because the choice between them is the one a reader has to
+                        // make first: the English-only files cannot transcribe anything else.
+                        Section("Multilingual") {
+                            ForEach(multilingualModels) { whisperModel in
+                                Text(whisperModel.displayName).tag(whisperModel.id)
+                            }
+                        }
+                        Section("English only") {
+                            ForEach(englishOnlyModels) { whisperModel in
+                                Text(whisperModel.displayName).tag(whisperModel.id)
+                            }
                         }
                     }
                     .labelsHidden()
@@ -787,6 +796,8 @@ struct ModelSettingsView: View {
                 }
             }
 
+            guidanceCard
+
             CRSettingsCard(
                 title: "Whisper models",
                 footnote: "Downloaded once and kept in Application Support."
@@ -801,10 +812,7 @@ struct ModelSettingsView: View {
                         title: "On disk",
                         detail: "Total size of the models installed on this Mac."
                     ) {
-                        Text(ByteCountFormatter.string(
-                            fromByteCount: model.modelManager.installedBytes,
-                            countStyle: .file
-                        ))
+                        Text(ModelSizeLabel.file(bytes: model.modelManager.installedBytes))
                         .font(CR.Font.body)
                         .foregroundStyle(CR.Ink.readable)
                         .monospacedDigit()
@@ -862,6 +870,16 @@ struct ModelSettingsView: View {
 
     @ViewBuilder
     private func selectedModelStatus(_ whisperModel: WhisperModel) -> some View {
+        // Said before the download and before the next recording, because a model that does not
+        // fit shows up as a transcription that crawls or fails, not as a message of its own.
+        if !whisperModel.fits(inMemoryOf: physicalMemoryBytes) {
+            CRSettingsNote(
+                icon: "exclamationmark.triangle",
+                text: "\(whisperModel.displayName) asks for about \(ModelSizeLabel.memory(bytes: whisperModel.recommendedMemoryBytes)) of memory with the app's headroom, and this Mac has \(ModelSizeLabel.memory(bytes: physicalMemoryBytes)). Transcription can slow down sharply or fail; a smaller model is the safe choice.",
+                tone: .waiting
+            )
+            CRSettingsDivider()
+        }
         switch model.modelManager.state(for: whisperModel) {
         case .installed:
             CRSettingsNote(
@@ -1003,7 +1021,8 @@ struct ModelSettingsView: View {
     private func modelRow(_ whisperModel: WhisperModel) -> some View {
         CRSettingsRow(
             title: whisperModel.displayName,
-            detail: "\(whisperModel.detail) · \(formattedSize(whisperModel.expectedBytes))"
+            detail: specLine(whisperModel),
+            warning: !whisperModel.fits(inMemoryOf: physicalMemoryBytes)
         ) {
             switch model.modelManager.state(for: whisperModel) {
             case .notInstalled:
@@ -1043,8 +1062,149 @@ struct ModelSettingsView: View {
     }
 
 
-    private func formattedSize(_ bytes: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    // MARK: - Model guidance
+
+    /// The Mac's memory, which is what the fit warning compares a model against.
+    private var physicalMemoryBytes: Int64 {
+        // A design preview can stand in for a smaller Mac, because the warning it draws is the one
+        // thing about this pane a large machine never shows. The app itself never sets this.
+        if
+            let raw = ProcessInfo.processInfo.environment["CALL_RECORDER_PREVIEW_MEMORY_GB"],
+            let gigabytes = Int64(raw), gigabytes > 0
+        {
+            return gigabytes * 1_000_000_000
+        }
+        return Int64(ProcessInfo.processInfo.physicalMemory)
+    }
+
+    private var multilingualModels: [WhisperModel] {
+        model.modelManager.models.filter { !$0.englishOnly }
+    }
+
+    private var englishOnlyModels: [WhisperModel] {
+        model.modelManager.models.filter(\.englishOnly)
+    }
+
+    /// Models this Mac cannot hold with the headroom the app keeps in reserve.
+    private var modelsThatDoNotFit: [WhisperModel] {
+        model.modelManager.models.filter { !$0.fits(inMemoryOf: physicalMemoryBytes) }
+    }
+
+    /// One row's figures, in the order a person chooses by: what it is for, then what it costs.
+    private func specLine(_ whisperModel: WhisperModel) -> String {
+        var parts = [
+            whisperModel.detail,
+            "\(whisperModel.parameters) params",
+            "\(ModelSizeLabel.file(bytes: whisperModel.expectedBytes)) download",
+            "\(ModelSizeLabel.memory(bytes: whisperModel.memoryBytes)) RAM",
+            "\(whisperModel.speed) vs Large",
+        ]
+        if let english = whisperModel.englishWordErrorRate {
+            parts.append("English WER \(english)")
+        }
+        if let multilingual = whisperModel.multilingualWordErrorRate {
+            parts.append("other languages \(multilingual)")
+        }
+        if !whisperModel.fits(inMemoryOf: physicalMemoryBytes) {
+            parts.append("needs more memory than this Mac has with headroom")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The model table, so the choice is made from numbers rather than from a hunch.
+    ///
+    /// The columns are the ones the model vendor publishes: parameters, the working memory
+    /// whisper.cpp needs, the VRAM a GPU build asks for, speed relative to Large, and word error
+    /// rate on read speech. A model this Mac cannot hold with the app's headroom is marked, which
+    /// is the warning worth having before a three-gigabyte download.
+    private var guidanceCard: some View {
+        CRSettingsCard(
+            title: "Which model should I choose?",
+            footnote: "Word error rate is measured on read speech; lower is better. Speed is relative to Large v3. Memory is whisper.cpp's working set, and Call Recorder keeps thirty percent in reserve before it warns."
+        ) {
+            VStack(alignment: .leading, spacing: CR.Space.item) {
+                CRSettingsNote(
+                    icon: "checkmark.seal",
+                    text: "Small is the pick for everyday calls: the best balance of speed and accuracy."
+                )
+                CRSettingsNote(
+                    icon: "hare",
+                    text: "Large v3 Turbo is nearly as accurate as Large v3 and about eight times faster."
+                )
+                CRSettingsNote(
+                    icon: modelsThatDoNotFit.isEmpty ? "memorychip" : "exclamationmark.triangle",
+                    text: memorySummary,
+                    tone: modelsThatDoNotFit.isEmpty ? .muted : .waiting
+                )
+                comparisonTable
+                    .padding(.horizontal, CR.Space.section)
+            }
+            .padding(.vertical, CR.Space.tight)
+        }
+    }
+
+    private var memorySummary: String {
+        let memory = ModelSizeLabel.memory(bytes: physicalMemoryBytes)
+        guard !modelsThatDoNotFit.isEmpty else {
+            return "This Mac has \(memory) of memory, which fits every model here with headroom to spare."
+        }
+        return "This Mac has \(memory) of memory. \(names(of: modelsThatDoNotFit)) need more than that with headroom and will swap heavily."
+    }
+
+    private func names(of models: [WhisperModel]) -> String {
+        let names = models.map(\.displayName)
+        guard let last = names.last else { return "" }
+        guard names.count > 1 else { return last }
+        return names.dropLast().joined(separator: ", ") + " and " + last
+    }
+
+    private var comparisonTable: some View {
+        Grid(alignment: .leading, horizontalSpacing: CR.Space.item, verticalSpacing: CR.Space.snug) {
+            GridRow {
+                tableCell("Model", header: true, alignment: .leading)
+                tableCell("Params", header: true)
+                tableCell("Download", header: true)
+                tableCell("RAM", header: true)
+                tableCell("VRAM", header: true)
+                tableCell("Speed", header: true)
+                tableCell("English WER", header: true)
+                tableCell("Multilingual WER", header: true)
+            }
+            ForEach(model.modelManager.models) { whisperModel in
+                GridRow {
+                    HStack(spacing: CR.Space.tight) {
+                        if !whisperModel.fits(inMemoryOf: physicalMemoryBytes) {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 9))
+                                .foregroundStyle(CR.Tone.waiting.ink)
+                                .help("Needs more memory than this Mac has with headroom")
+                        }
+                        Text(whisperModel.displayName)
+                            .font(CR.Font.caption)
+                    }
+                    .gridColumnAlignment(.leading)
+                    tableCell(whisperModel.parameters)
+                    tableCell(ModelSizeLabel.file(bytes: whisperModel.expectedBytes))
+                    tableCell(ModelSizeLabel.memory(bytes: whisperModel.memoryBytes))
+                    tableCell(whisperModel.requiredVRAM)
+                    tableCell(whisperModel.speed)
+                    tableCell(whisperModel.englishWordErrorRate ?? "—")
+                    tableCell(whisperModel.multilingualWordErrorRate ?? "—")
+                }
+            }
+        }
+    }
+
+    private func tableCell(
+        _ text: String,
+        header: Bool = false,
+        alignment: HorizontalAlignment = .trailing
+    ) -> some View {
+        Text(text)
+            .font(header ? CR.Font.caption.weight(.semibold) : CR.Font.caption)
+            .foregroundStyle(CR.Ink.readable)
+            .monospacedDigit()
+            .gridColumnAlignment(alignment)
     }
 }
 

@@ -14,15 +14,72 @@ struct ModelCatalogTests {
         #expect(settings.outputDirectory.hasSuffix("/Desktop/Call Recordings"))
     }
 
-    @Test func catalogContainsOnlyPinnedMultilingualModels() {
+    @Test func catalogCoversEveryWhisperModelIncludingLargeAndTurbo() {
         // Given / When
         let models = WhisperModel.catalog
 
         // Then
-        #expect(models.map(\.id) == ["tiny", "base", "small", "medium"])
-        #expect(models.allSatisfy { !$0.fileName.contains(".en.") })
+        #expect(
+            models.map(\.id) == [
+                "tiny", "tiny.en", "base", "base.en", "small", "small.en",
+                "medium", "medium.en", "large-v2", "large-v3", "large-v3-turbo",
+            ]
+        )
+        #expect(models.contains { $0.id == "large-v3-turbo" })
         #expect(models.allSatisfy { $0.sha256.count == 64 && $0.expectedBytes > 0 })
         #expect(Set(models.map(\.downloadURL)).count == models.count)
+        #expect(models.allSatisfy { $0.downloadURL.path.contains(WhisperModel.pinnedRevision) })
+    }
+
+    @Test func everyModelCarriesTheGuidanceTheModelsPageShows() {
+        // Given
+        let models = WhisperModel.catalog
+
+        // Then every row has the figures the comparison table prints.
+        for model in models {
+            #expect(!model.parameters.isEmpty)
+            #expect(model.memoryBytes > 0)
+            #expect(!model.requiredVRAM.isEmpty)
+            #expect(!model.speed.isEmpty)
+            #expect(model.englishWordErrorRate != nil)
+        }
+        // English-only files say so in the name, and they are the ones without a multilingual
+        // score. A multilingual model names the English-only twin a reader can choose instead.
+        for model in models where model.englishOnly {
+            #expect(model.fileName.contains(".en.bin"))
+            #expect(model.multilingualWordErrorRate == nil)
+            #expect(model.englishTwinID == nil)
+        }
+        for model in models where !model.englishOnly {
+            #expect(model.multilingualWordErrorRate != nil)
+            // Only the smaller sizes have an English-only file to point at; OpenAI publishes
+            // no English-only large or turbo model.
+            if let twinID = model.englishTwinID {
+                #expect(models.first { $0.id == twinID }?.englishOnly == true)
+            } else {
+                #expect(model.id.hasPrefix("large"))
+            }
+        }
+    }
+
+    @Test func theMemoryWarningKeepsThirtyPercentInReserve() throws {
+        // Given
+        let tiny = try #require(WhisperModel.catalog.first { $0.id == "tiny" })
+        let large = try #require(WhisperModel.catalog.first { $0.id == "large-v3" })
+
+        // Then the recommendation is the published working set plus thirty percent.
+        #expect(tiny.recommendedMemoryBytes == tiny.memoryBytes * 13 / 10)
+        #expect(tiny.fits(inMemoryOf: 8_000_000_000))
+        // Large v3 needs 3.9 GB of working set, so 4 GB of memory is not enough with headroom.
+        #expect(!large.fits(inMemoryOf: 4_000_000_000))
+        #expect(large.fits(inMemoryOf: 16_000_000_000))
+    }
+
+    @Test func sizeLabelsStateFileAndMemorySizesTheWayTheModelTableDoes() {
+        #expect(ModelSizeLabel.file(bytes: 487_601_967) == "465 MiB")
+        #expect(ModelSizeLabel.file(bytes: 3_095_033_483) == "2.9 GiB")
+        #expect(ModelSizeLabel.memory(bytes: 852_000_000) == "852 MB")
+        #expect(ModelSizeLabel.memory(bytes: 2_100_000_000) == "2.1 GB")
     }
 
     @Test func olderSettingsRemainDecodableWithoutAMicrophoneSelection() throws {

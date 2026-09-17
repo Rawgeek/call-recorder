@@ -148,9 +148,10 @@ struct ModelUpdateTests {
         }
     }
 
-    /// The body Hugging Face returned for ggerganov/whisper.cpp, captured on 2026-09-16 and cut
-    /// down to the five entries that matter here. Kept verbatim so a change to the host response
-    /// shape shows up as a failure instead of a silently missing update.
+    /// The body Hugging Face returned for ggerganov/whisper.cpp, captured on 2026-09-17 and cut
+    /// down to the entries that matter here: the README plus every model file this build offers.
+    /// Each entry is kept verbatim so a change to the host response shape shows up as a failure
+    /// instead of a silently missing update.
     private let capturedWhisperResponse = """
     {
       "sha": "5359861c739e955e79d9a303bcbc70fb988958b1",
@@ -199,6 +200,76 @@ struct ModelUpdateTests {
             "size": 77691713,
             "pointerSize": 133
           }
+        },
+        {
+          "rfilename": "ggml-tiny.en.bin",
+          "blobId": "17ad750438d1d42162fe06ab4b21aef2389d2137",
+          "size": 77704715,
+          "lfs": {
+            "sha256": "921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f",
+            "size": 77704715,
+            "pointerSize": 133
+          }
+        },
+        {
+          "rfilename": "ggml-base.en.bin",
+          "blobId": "87c664c563ef3ff52424dd4fa925cf95b306dba6",
+          "size": 147964211,
+          "lfs": {
+            "sha256": "a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002",
+            "size": 147964211,
+            "pointerSize": 134
+          }
+        },
+        {
+          "rfilename": "ggml-small.en.bin",
+          "blobId": "eaeeb6d63378cf6515ff2c1cb4e33486ae6bcc2f",
+          "size": 487614201,
+          "lfs": {
+            "sha256": "c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d",
+            "size": 487614201,
+            "pointerSize": 134
+          }
+        },
+        {
+          "rfilename": "ggml-medium.en.bin",
+          "blobId": "f8d7f988b60916d7f7e7feee9897c037a09b2f85",
+          "size": 1533774781,
+          "lfs": {
+            "sha256": "cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356",
+            "size": 1533774781,
+            "pointerSize": 135
+          }
+        },
+        {
+          "rfilename": "ggml-large-v2.bin",
+          "blobId": "649aafd67e30021d0140c24342ee2ffb947f4bde",
+          "size": 3094623691,
+          "lfs": {
+            "sha256": "9a423fe4d40c82774b6af34115b8b935f34152246eb19e80e376071d3f999487",
+            "size": 3094623691,
+            "pointerSize": 135
+          }
+        },
+        {
+          "rfilename": "ggml-large-v3.bin",
+          "blobId": "30488f6b9eeae93e026c978ac7a3190274732ea2",
+          "size": 3095033483,
+          "lfs": {
+            "sha256": "64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2",
+            "size": 3095033483,
+            "pointerSize": 135
+          }
+        },
+        {
+          "rfilename": "ggml-large-v3-turbo.bin",
+          "blobId": "819841c70bdf4488c4ff778f8becdcb37df43969",
+          "size": 1624555275,
+          "lfs": {
+            "sha256": "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69",
+            "size": 1624555275,
+            "pointerSize": 135
+          }
         }
       ]
     }
@@ -208,8 +279,8 @@ struct ModelUpdateTests {
     func realHostResponseParses() throws {
         let metadata = try ModelHostMetadata.parse(Data(capturedWhisperResponse.utf8))
         #expect(metadata.revision == "5359861c739e955e79d9a303bcbc70fb988958b1")
-        // Four model files carry a hash; the README does not and is left out.
-        #expect(metadata.files.count == 4)
+        // Eleven model files carry a hash; the README does not and is left out.
+        #expect(metadata.files.count == 11)
         #expect(metadata.files["README.md"] == nil)
         #expect(metadata.files["ggml-medium.bin"]?.bytes == 1_533_763_059)
     }
