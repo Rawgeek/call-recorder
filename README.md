@@ -231,7 +231,8 @@ The repository layout:
 See [INSTALL.md](INSTALL.md#10-troubleshooting) for the common failures: missing ffmpeg, no
 system audio, a stuck transcription, an unavailable speaker environment, and database
 recovery. Every error surface in the app also offers **Copy Error Details**, which is the most
-useful thing to include in an issue.
+useful thing to include in an issue. The [wiki](https://github.com/Rawgeek/call-recorder/wiki)
+carries the same material in shorter form, with the install and MCP steps.
 
 ## Contributing
 
