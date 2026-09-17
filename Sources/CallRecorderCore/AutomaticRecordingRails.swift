@@ -56,8 +56,7 @@ public enum AutomaticRecordingRails {
         recordedSeconds: TimeInterval,
         maximumMinutes: Double
     ) -> Bool {
-        guard maximumMinutes > 0 else { return false }
-        return recordedSeconds >= maximumMinutes * 60
+        hasReached(recordedSeconds, minutes: maximumMinutes)
     }
 
     /// Whether a recording has been silent for long enough to be stopped.
@@ -69,8 +68,17 @@ public enum AutomaticRecordingRails {
         silentFor: TimeInterval,
         maximumMinutes: Double
     ) -> Bool {
-        guard maximumMinutes > 0 else { return false }
-        return silentFor >= maximumMinutes * 60
+        hasReached(silentFor, minutes: maximumMinutes)
+    }
+
+    /// Whether a measurement has reached a limit given in minutes.
+    ///
+    /// A limit of zero is not in force, which is what a settings blob from before a rail existed
+    /// means and what a person who turned a rail off asks for. The ceiling and the silence rule
+    /// read this, so "off" has one meaning rather than two.
+    private static func hasReached(_ value: TimeInterval, minutes: Double) -> Bool {
+        guard minutes > 0 else { return false }
+        return value >= minutes * 60
     }
 
     // MARK: - What the switches write
