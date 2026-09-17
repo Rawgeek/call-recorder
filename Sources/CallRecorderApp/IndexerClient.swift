@@ -1,6 +1,50 @@
 import CallRecorderCore
 import Foundation
 
+/// How the indexer's entry point is addressed inside an app bundle.
+///
+/// The runtime travels as one archive now, and the file it holds is unpacked into Application
+/// Support on first use. The entry point is then named rather than addressed, because there is no
+/// copy of it beside the shim to point at. An older bundle, and a source checkout, still have the
+/// file where they can name it.
+enum IndexerBundleLayout: Equatable, Sendable {
+    /// The archive is unpacked by the shim at the path it is started from, and the entry point is
+    /// asked for by name.
+    case archivedRuntime
+    /// The entry point sits beside the runtime, which is what a build before the archive had.
+    case unpackedRuntime(script: URL)
+    /// Nothing in this bundle can index: the app falls back to the tools on the machine.
+    case unavailable
+
+    /// Decides the layout from what the bundle holds.
+    ///
+    /// - Parameters:
+    ///   - bundledRuntime: The `bun` inside the bundle, which is the shim when there is one.
+    ///   - canExecute: Whether a file is a runnable program.
+    ///   - archive: The archived runtime, when this build ships one.
+    ///   - script: The unpacked entry point, when this build carries one.
+    static func resolve(
+        bundledRuntime: URL?,
+        canExecute: (URL) -> Bool,
+        archive: URL?,
+        script: URL?
+    ) -> IndexerBundleLayout {
+        guard let bundledRuntime, canExecute(bundledRuntime) else { return .unavailable }
+        if archive != nil { return .archivedRuntime }
+        if let script { return .unpackedRuntime(script: script) }
+        return .unavailable
+    }
+
+    /// The arguments that come before the command, for whichever layout this is.
+    var argumentPrefix: [String] {
+        switch self {
+        case .archivedRuntime: ["indexer.js"]
+        case .unpackedRuntime(let script): [script.path]
+        case .unavailable: []
+        }
+    }
+}
+
 struct IndexerClient: Sendable {
     let executable: URL
     let argumentPrefix: [String]
@@ -10,22 +54,29 @@ struct IndexerClient: Sendable {
     static func standard(applicationDirectory: URL) -> IndexerClient? {
         let database = applicationDirectory.appending(path: "calls.db")
         let cache = applicationDirectory.appending(path: "models/embeddinggemma")
-        if
-            let bundledBun = Bundle.main.url(
-                forResource: "bun",
-                withExtension: nil,
+        let bundledRuntime = Bundle.main.url(
+            forResource: "bun",
+            withExtension: nil,
+            subdirectory: "indexer"
+        )
+        let layout = IndexerBundleLayout.resolve(
+            bundledRuntime: bundledRuntime,
+            canExecute: { FileManager.default.isExecutableFile(atPath: $0.path) },
+            archive: Bundle.main.url(
+                forResource: "runtime",
+                withExtension: "zip",
                 subdirectory: "indexer"
             ),
-            let bundledScript = Bundle.main.url(
+            script: Bundle.main.url(
                 forResource: "indexer",
                 withExtension: "js",
                 subdirectory: "indexer"
-            ),
-            FileManager.default.isExecutableFile(atPath: bundledBun.path)
-        {
+            )
+        )
+        if let bundledRuntime, layout != .unavailable {
             return IndexerClient(
-                executable: bundledBun,
-                argumentPrefix: [bundledScript.path],
+                executable: bundledRuntime,
+                argumentPrefix: layout.argumentPrefix,
                 database: database,
                 cache: cache
             )

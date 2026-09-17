@@ -30,7 +30,10 @@ mkdir -p "$(dirname "$runtime_root")" || {
 }
 
 report() {
-    printf 'call-recorder indexer runtime: %s\n' "$1" | tee -a "$log_file" >&2
+    # Every line is stamped. A log without one made a failure from an hour ago read like the
+    # failure that had just happened.
+    printf '%s call-recorder indexer runtime: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" \
+        | tee -a "$log_file" >&2
 }
 
 fail() {

@@ -5,6 +5,50 @@ import Testing
 
 @Suite("Indexer client")
 struct IndexerClientTests {
+    @Test func anArchivedRuntimeNamesItsEntryPointInsteadOfAddressingIt() {
+        // Given a bundle that ships the runtime as an archive: the entry point is inside it, and
+        // there is no copy beside the shim. Naming it is the only way to ask for it.
+        let layout = IndexerBundleLayout.resolve(
+            bundledRuntime: URL(filePath: "/Applications/Call Recorder.app/Contents/Resources/indexer/bun"),
+            canExecute: { _ in true },
+            archive: URL(filePath: "/Applications/Call Recorder.app/Contents/Resources/indexer/runtime.zip"),
+            script: nil
+        )
+
+        // Then
+        #expect(layout == .archivedRuntime)
+        #expect(layout.argumentPrefix == ["indexer.js"])
+    }
+
+    @Test func aBundleWithoutTheArchiveAddressesItsEntryPoint() {
+        // Given a build from before the archive, where the file sits beside the runtime.
+        let script = URL(filePath: "/Applications/old.app/Contents/Resources/indexer/indexer.js")
+        let layout = IndexerBundleLayout.resolve(
+            bundledRuntime: URL(filePath: "/Applications/old.app/Contents/Resources/indexer/bun"),
+            canExecute: { _ in true },
+            archive: nil,
+            script: script
+        )
+
+        // Then
+        #expect(layout == .unpackedRuntime(script: script))
+        #expect(layout.argumentPrefix == [script.path])
+    }
+
+    @Test func aBundleThatCannotRunAnythingFallsBackToTheMachine() {
+        // Given a runtime that is not executable, and no entry point at all.
+        let layout = IndexerBundleLayout.resolve(
+            bundledRuntime: URL(filePath: "/Applications/broken.app/indexer/bun"),
+            canExecute: { _ in false },
+            archive: nil,
+            script: nil
+        )
+
+        // Then
+        #expect(layout == .unavailable)
+        #expect(layout.argumentPrefix.isEmpty)
+    }
+
     @Test("a successful index process synchronizes index_jobs ready through the same store")
     func successfulIndexSynchronizesStoreReadiness() async throws {
         // Given: a call whose index_jobs row is still pending in the long-lived store.
