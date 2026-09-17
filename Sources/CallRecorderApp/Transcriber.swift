@@ -265,6 +265,25 @@ struct Transcriber: Sendable {
                 )
         }
 
+        // Then the speech the recorder wrote down twice.
+        //
+        // The chunks overlap and the microphone hears the speakers, so a sentence can arrive at the
+        // model more than once. Both copies were transcribed, and both were kept, which is how one
+        // call in the library came to hold 473 repeated runs. Removing them here means the file
+        // that is saved, the text the search index is built from, and every later reading of the
+        // call are the same words once.
+        let duplicates = TranscriptDeduplicator.deduplicate(segments: transcript.segments)
+        if duplicates.didChange {
+            transcript = WhisperTranscript(
+                language: transcript.language,
+                segments: duplicates.segments
+            )
+            Logger(subsystem: "local.callrecorder.app", category: "transcription")
+                .notice(
+                    "removed \(duplicates.removedWords, privacy: .public) repeated words in \(duplicates.removedRuns, privacy: .public) runs"
+                )
+        }
+
         guard !TranscriptQualityValidator.isRepetitive(transcript) else {
             throw TranscriberError.repetitiveTranscript
         }

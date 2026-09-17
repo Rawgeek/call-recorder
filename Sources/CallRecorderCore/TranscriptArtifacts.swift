@@ -31,7 +31,11 @@ public enum TranscriptArtifacts {
     /// paragraph by ``TranscriptRenderer/foldingSpeakerTurns(_:maximumParagraphCharacters:)``.
     /// It is a layout rule rather than a cleaning rule, and it is counted by this version for the
     /// same reason: a library that has not been folded should be folded once, without a button.
-    public static let ruleVersion = 4
+    /// Five adds the repeated-speech rule, which is not a not-speech rule at all: it removes words
+    /// that were said twice, because a chunk seam and a room echo write the same sentence into a
+    /// transcript once per copy. It travels with this version because it rewrites the same files in
+    /// the same pass, and because a library recorded before it exists is owed the same repair.
+    public static let ruleVersion = 5
 
     /// The time range an early version of the app printed at the front of every paragraph.
     ///

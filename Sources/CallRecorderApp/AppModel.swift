@@ -1565,6 +1565,8 @@ final class AppModel {
         let timestampsStripped: Int
         /// Turns joined into the paragraph above them, which is layout and not speech.
         let foldedLines: Int
+        /// Words the pass removed because the recorder had written them down twice.
+        let duplicatesRemoved: Int
         /// Calls whose search index was rebuilt from the corrected text.
         let reindexed: Int
 
@@ -1658,6 +1660,15 @@ final class AppModel {
                     + " joined into the paragraph above"
             )
         }
+        if outcome.duplicatesRemoved > 0 {
+            // The half of the cleanup a person can see for themselves: the same sentence, written
+            // once. It is the largest count a repair reports, and the only one that changes how
+            // much of the call there is to read.
+            work.append(
+                "\(outcome.duplicatesRemoved) repeated word"
+                    + (outcome.duplicatesRemoved == 1 ? "" : "s") + " removed"
+            )
+        }
         let result = work.isEmpty
             ? "no spellings and no invented lines"
             : Self.listed(work)
@@ -1689,6 +1700,7 @@ final class AppModel {
         glossaryLinesRemoved: Int = 0,
         timestampsStripped: Int = 0,
         foldedLines: Int = 0,
+        duplicatesRemoved: Int = 0,
         reindexed: Int = 0
     ) -> String {
         "visited \(visited), changed \(changed), unchanged \(visited - changed - failed), "
@@ -1696,6 +1708,7 @@ final class AppModel {
             + "notSpeechRemoved \(artifactsRemoved), glossaryLinesRemoved \(glossaryLinesRemoved), "
             + "timestampsStripped \(timestampsStripped), "
             + "speakerTurnsFolded \(foldedLines), "
+            + "repeatedWordsRemoved \(duplicatesRemoved), "
             + "reindexed \(reindexed)"
     }
 
@@ -1788,6 +1801,7 @@ final class AppModel {
             var glossaryLinesRemoved = 0
             var timestampsStripped = 0
             var foldedLines = 0
+            var duplicatesRemoved = 0
             var reindexed = 0
             var failures: [String] = []
             var changedIDs: [CallID] = []
@@ -1814,6 +1828,7 @@ final class AppModel {
                         if corrected.glossaryLineRemoved { glossaryLinesRemoved += 1 }
                         timestampsStripped += corrected.timestampsStripped
                         foldedLines += corrected.foldedLines
+                        duplicatesRemoved += corrected.duplicatesRemoved
                         continue
                     }
                     if backupDirectory == nil {
@@ -1829,6 +1844,7 @@ final class AppModel {
                     if corrected.glossaryLineRemoved { glossaryLinesRemoved += 1 }
                     timestampsStripped += corrected.timestampsStripped
                     foldedLines += corrected.foldedLines
+                    duplicatesRemoved += corrected.duplicatesRemoved
                     changedIDs.append(callID)
                 } catch {
                     failedCalls += 1
@@ -1878,6 +1894,7 @@ final class AppModel {
                     glossaryLinesRemoved: glossaryLinesRemoved,
                     timestampsStripped: timestampsStripped,
                     foldedLines: foldedLines,
+                    duplicatesRemoved: duplicatesRemoved,
                     reindexed: reindexed
                 ),
                 failures: failures,
@@ -1893,6 +1910,7 @@ final class AppModel {
                 glossaryLinesRemoved: glossaryLinesRemoved,
                 timestampsStripped: timestampsStripped,
                 foldedLines: foldedLines,
+                duplicatesRemoved: duplicatesRemoved,
                 reindexed: reindexed
             )
         } catch {
@@ -1928,6 +1946,8 @@ final class AppModel {
         /// Spellings the glossary fixed, plus lines that were not speech.
         let replacements: Int
         let artifacts: TranscriptArtifacts.Outcome
+        /// Words the pass removed because the recorder had written them down twice.
+        let duplicatesRemoved: Int
         /// Whether the markdown lost the glossary line an earlier version wrote at the top.
         let glossaryLineRemoved: Bool
         /// Printed time ranges the pass took off the front of the markdown paragraphs.
@@ -1954,6 +1974,10 @@ final class AppModel {
         // spellings fixed in this transcript.
         let correctedText = matcher.correct(record.text)
         let textArtifacts = TranscriptArtifacts.filter(correctedText.text)
+        // The speech the recorder wrote down twice, taken out of the stored text as well. The text,
+        // the JSON and the markdown are the same words in three shapes, and a repair that cleaned
+        // one of them would leave the other two saying it twice.
+        let textDuplicates = TranscriptDeduplicator.deduplicate(text: textArtifacts.text)
 
         // The JSON carries the segment boundaries that the search index is built from, so it is
         // corrected too, and its result is what the indexer reads.
@@ -1965,14 +1989,15 @@ final class AppModel {
                 let outcome = WhisperTranscript(language: document.language, segments: document.segments)
                     .applyingGlossary(matcher)
                 let cleaned = TranscriptArtifacts.filter(segments: outcome.transcript.segments)
-                if outcome.corrections > 0 || cleaned.outcome.didChange {
+                let deduplicated = TranscriptDeduplicator.deduplicate(segments: cleaned.segments)
+                if outcome.corrections > 0 || cleaned.outcome.didChange || deduplicated.didChange {
                     document = NormalizedTranscript(
                         callId: document.callId,
                         language: document.language,
                         model: document.model,
                         participants: document.participants,
                         glossary: document.glossary,
-                        segments: cleaned.segments
+                        segments: deduplicated.segments
                     )
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -1998,10 +2023,11 @@ final class AppModel {
             let outcome = matcher.correct(body)
             let cleaned = TranscriptArtifacts.filter(outcome.text)
             timestampsStripped = cleaned.strippedTimestamps
+            let deduplicated = TranscriptDeduplicator.deduplicate(text: cleaned.text)
             // Last, so a paragraph is built from lines that survived the rules above rather than
             // from lines that were about to be removed, and a folded paragraph is never rejoined
             // around a blank the cleaning was going to drop.
-            let folded = TranscriptRenderer.foldingSpeakerTurns(cleaned.text)
+            let folded = TranscriptRenderer.foldingSpeakerTurns(deduplicated.text)
             foldedLines = folded.foldedLines
             let rebuilt = TranscriptRenderer.replacingBody(
                 of: withoutGlossary,
@@ -2018,7 +2044,7 @@ final class AppModel {
                 callID: record.callID,
                 language: record.language,
                 model: record.model,
-                text: textArtifacts.text,
+                text: textDuplicates.text,
                 markdownPath: record.markdownPath,
                 jsonPath: record.jsonPath
             ),
@@ -2026,11 +2052,13 @@ final class AppModel {
             markdown: correctedMarkdown,
             replacements: correctedText.replacementCount,
             artifacts: textArtifacts,
+            duplicatesRemoved: textDuplicates.removedWords,
             glossaryLineRemoved: glossaryLineRemoved,
             timestampsStripped: timestampsStripped,
             foldedLines: foldedLines,
             changed: correctedText.didChange
                 || textArtifacts.didChange
+                || textDuplicates.removedRuns > 0
                 || markdownChanged
                 || jsonData != nil
         )
