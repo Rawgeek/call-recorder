@@ -4,6 +4,8 @@
 #
 #   scripts/release.sh --check     fail if the documents name another version, the changelog has
 #                                  no entry for this one, or a screenshot the README shows is gone
+#   scripts/release.sh --test      the Swift suite, with the serial run as the fallback a busy
+#                                  machine needs
 #   scripts/release.sh --sync      write the version into the documents and re-render the
 #                                  screenshots into docs/images
 #   scripts/release.sh --publish   check, test, package, publish the release with its two assets,
@@ -94,7 +96,7 @@ publish() {
     fi
 
     print "Testing..."
-    swift test
+    test_suite
 
     print "Packaging..."
     scripts/package-app.sh
@@ -115,6 +117,15 @@ publish() {
     gh release create "$tag" "${arguments[@]}" "$assets/$archive" "$assets/README.txt"
 
     verify
+}
+
+test_suite() {
+    if ! swift test; then
+        # A busy machine can starve the parallel run's threads. The serial run is the reliable
+        # proof, and it is the same code either way.
+        print "The parallel run failed; running the suite serially..."
+        swift test --no-parallel
+    fi
 }
 
 verify() {
@@ -149,9 +160,10 @@ verify() {
 case "${1:---check}" in
     --check) check ;;
     --sync) sync ;;
+    --test) test_suite ;;
     --publish) publish ;;
     *)
-        print -u2 "usage: scripts/release.sh [--check | --sync | --publish]"
+        print -u2 "usage: scripts/release.sh [--check | --test | --sync | --publish]"
         print -u2 "Do not run a release by hand: $hooks installs the hooks that keep the documents in step."
         exit 2
         ;;

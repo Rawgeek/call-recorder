@@ -10,12 +10,7 @@ root=$(git rev-parse --show-toplevel)
 cd "$root"
 
 "$root/scripts/release.sh" --check
-if ! swift test; then
-    # A busy machine can starve the parallel run's threads. The serial run is the reliable proof,
-    # and it is the same code either way.
-    echo "The parallel run failed; running the suite serially..."
-    swift test --no-parallel
-fi
+"$root/scripts/release.sh" --test
 
 if ! git diff --quiet origin/main...HEAD -- mcp 2>/dev/null; then
     cd mcp
