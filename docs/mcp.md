@@ -40,13 +40,17 @@ The default database is `~/Library/Application Support/CallRecorder/calls.db`.
 
 ## The first start
 
-The runtime that serves these tools travels inside the app as one compressed archive. The first
-start unpacks it into `~/Library/Application Support/CallRecorder/runtime`, which takes a few
+The runtime that serves these tools travels as one compressed archive of about 36 MB, fetched once
+and unpacked into `~/Library/Application Support/CallRecorder/runtime`, which takes a few
 seconds and happens once for each app version. Every later start uses that copy, and the path
 above never changes, so an existing registration keeps working.
 
 - A failed unpack is written to `~/Library/Logs/CallRecorder/indexer-runtime.log`, and the app
   reports it under Settings > Models > Components.
+- The archive is kept at `~/Library/Application Support/CallRecorder/runtime.zip`, so a runtime
+  folder that is deleted or damaged is rebuilt from it without a second download.
+- The app and this script both fetch the archive when it is missing, and both check it against the
+  hash recorded in the app before anything is unpacked.
 - To force a fresh unpack, delete the `runtime` folder. Nothing else reads it.
 - `CALL_RECORDER_RUNTIME_DIR` moves the folder, which is what the test suite does.
 

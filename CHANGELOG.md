@@ -4,6 +4,40 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.3] - 2026-09-17
+
+A size release. The app bundle is 10 MB instead of 49 MB, and every Whisper model the model host
+publishes can now be installed.
+
+### Changed
+- The JavaScript runtime travels as a release asset instead of inside the app. It was 36 MB of the
+  49 MB bundle. The app fetches it once, with the same byte-counted downloader the models use, and
+  Settings > Models shows it as a row with its own progress, Retry, and state. The archive is kept
+  in Application Support, so a Mac that has fetched it once can rebuild the runtime with no
+  network, and the runtime folder itself is 95 MB unpacked either way.
+- Codex can start the MCP server with no app running, so the script at the registered path fetches
+  the archive itself when it has to. Both paths write the same file, and the hash in the bundle
+  decides whether what arrived is accepted. The registered path is unchanged.
+- The app binary is stripped of the symbol table nothing reads: 13.1 MB to 8.5 MB.
+- `scripts/package-app.sh` builds the small app by default and writes the runtime archive beside
+  it as a release asset. `CALL_RECORDER_EMBED_RUNTIME=1` builds the self-contained app instead,
+  which needs no network.
+
+### Added
+- Every model file the host publishes is in the catalog: 33 files instead of 11. Large v1 was
+  missing, and so were the 21 quantized files. Quantization matters where memory is tight: a
+  five-bit Large v3 Turbo is 574 MB and about 1.3 GB of working set, against 1.6 GB and 2.3 GB for
+  the full file.
+- Quantized rows carry no word error rate of their own. The published figures belong to the full
+  files, so repeating them beside a smaller file would claim an accuracy it does not have; the row
+  says what it trades instead.
+- The catalog was checked against the host: every file's byte count and SHA-256 match, the pin
+  names the host's current revision, and the list is exactly the host's own file list.
+
+### Verified
+- The app fetches the runtime, verifies it, unpacks it, and indexes a call through it with the
+  app's own entry point.
+
 ## [0.1.2] - 2026-09-17
 
 A size release. The app bundle is 49 MB instead of 150 MB, and what it does is unchanged.

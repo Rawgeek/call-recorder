@@ -1,4 +1,4 @@
-Call Recorder 0.1.2
+Call Recorder 0.1.3
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
@@ -9,7 +9,8 @@ Setup
 2. Right-click the app and choose Open on first launch. This internal build is locally signed, not Apple-notarized.
 3. Allow Microphone and Screen & System Audio Recording when macOS asks.
 4. Open Settings > Models and download a Whisper model. The silence filter, about 865 KB,
-   downloads on its own, and transcription waits for it.
+   downloads on its own, and transcription waits for it. The indexer runtime, about 36 MB, is
+   fetched the same way and shows its own row with progress.
 5. Open Settings > General and choose the microphone to record.
 6. In Settings > Participants, choose the person speaking into that microphone. On a fresh
    install the app files your own voice under your macOS account name; change it there if
@@ -20,8 +21,8 @@ Queued calls process in the background, so the next recording can start immediat
 Microphone and system audio are captured separately. Whisper transcribes each available
 source locally; a missing source does not discard the other one.
 The menu shows the five latest calls; select a completed call to copy its transcript.
-The app unpacks its own JavaScript runtime into Application Support the first time it starts.
-That takes a few seconds and happens once for each version.
+The app fetches its own JavaScript runtime once and unpacks it into Application Support. That
+takes a minute on a slow line, happens once, and the archive is kept so it never happens twice.
 
 Speaker identification
 - Remote voices remain Speaker 1, Speaker 2, etc. unless a safe match is available.

@@ -120,9 +120,14 @@ Packaging needs `bun` on `PATH` (or `CALL_RECORDER_BUN`) and a code-signing iden
 without a certificate, use `CALL_RECORDER_SIGNING_IDENTITY=-` for an ad-hoc signature, or set
 `CALL_RECORDER_SKIP_SIGNING=1` to skip the signature step while measuring a build.
 
-The app carries its JavaScript runtime, `bun` and the search dependencies, as one compressed
-archive and unpacks it into Application Support on first use. That keeps the bundle near 50 MB
-rather than 150 MB, and the path Codex registers does not change.
+The JavaScript runtime, `bun` and the search dependencies, travels as one compressed archive of
+about 36 MB. It is not inside the app: the app is 10 MB, and the archive is fetched once from the
+release page, unpacked into Application Support, and kept there, so a Mac that has it can rebuild
+the runtime without the network. The path Codex registers does not change, and Codex can fetch the
+archive itself when it starts the MCP server with no app running.
+
+Set `CALL_RECORDER_EMBED_RUNTIME=1` to package a self-contained app instead: the archive travels
+inside the bundle, nothing is fetched, and that build needs no network.
 
 ### Speaker identification (optional)
 
