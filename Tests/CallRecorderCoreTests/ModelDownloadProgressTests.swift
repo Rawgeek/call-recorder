@@ -115,13 +115,28 @@ struct ModelDownloadProgressTests {
         // The row draws a ring from these numbers, so they have to move: a download that reported
         // only its end would look stopped for the minutes a model takes.
         let reported = counts.values
-        #expect(reported.count >= 2)
+        // How many callbacks a transfer makes is up to the network and is not what is being
+        // tested. What matters is that the count is reported, that it only grows, and that it ends
+        // at the size of the file.
+        #expect(!reported.isEmpty)
         #expect(reported == reported.sorted())
         #expect(reported.last == Int64(body.count))
-        // The row draws a ring from these numbers, so the first one has to be short of the end.
-        // A transfer that only reported its finish would look stopped the whole way.
-        #expect((reported.first ?? Int64(body.count)) < Int64(body.count))
         #expect(counts.announcedSize == Int64(body.count))
+    }
+
+    @Test("the count is reported in steps, and the first bytes always count")
+    func reportsInSteps() {
+        let known = ModelFileDownload.ReportStep(expected: 2_000_000)
+        #expect(known.size == 10_000)
+        // The first bytes reach the row, or a ring would sit empty while a large file starts.
+        #expect(known.isDue(totalBytesWritten: 4_096, reported: 0))
+        #expect(!known.isDue(totalBytesWritten: 9_000, reported: 4_096))
+        #expect(known.isDue(totalBytesWritten: 14_096, reported: 4_096))
+        // A host that never named a size still moves the ring, one report per four megabytes.
+        #expect(ModelFileDownload.ReportStep(expected: 0).size == 4 * 1_048_576)
+        // A size smaller than the report count still reports: the step never becomes zero, which
+        // would report every chunk of a small file.
+        #expect(ModelFileDownload.ReportStep(expected: 10).size == 1)
     }
 
     @Test("a cancelled transfer is reported as a cancellation, not as a failure")

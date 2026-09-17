@@ -500,6 +500,28 @@ final class ModelManager {
 final class ModelFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     typealias ProgressHandler = @Sendable (_ received: Int64, _ expected: Int64) -> Void
 
+    /// How much has to arrive before a count is worth reporting.
+    ///
+    /// A transfer reports in whatever size the network hands it, and each report crosses to the
+    /// main thread. Two hundred of them describe a ring that fills; a caller that asked for one
+    /// report per chunk would get thousands. A host that never named a size gets one report every
+    /// four megabytes instead, which is still a ring that moves.
+    struct ReportStep: Equatable, Sendable {
+        let size: Int64
+
+        init(expected: Int64) {
+            size = expected > 0 ? max(1, expected / 200) : 4 * 1_048_576
+        }
+
+        /// Whether this count is worth reporting, given the last one that was.
+        ///
+        /// The first bytes always count: a ring that waited for its first two-hundredth would show
+        /// an empty circle for the seconds before a large file starts to move.
+        func isDue(totalBytesWritten: Int64, reported: Int64) -> Bool {
+            reported == 0 || totalBytesWritten - reported >= size
+        }
+    }
+
     private let destination: URL
     private let configuration: URLSessionConfiguration
     private let onProgress: ProgressHandler
@@ -508,7 +530,7 @@ final class ModelFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked 
     private var task: URLSessionDownloadTask?
     private var continuation: CheckedContinuation<URLResponse, any Error>?
     private var reportedBytes: Int64 = 0
-    private var reportStep: Int64 = 0
+    private var reportStep: ReportStep?
     private var isCancelled = false
     private var isSettled = false
 
@@ -574,14 +596,9 @@ final class ModelFileDownload: NSObject, URLSessionDownloadDelegate, @unchecked 
     ) {
         lock.lock()
         let expected = max(totalBytesExpectedToWrite, 0)
-        if reportStep == 0 {
-            // Two hundred reports over a known size, and one every four megabytes over an unknown
-            // one, so a fast transfer does not cross to the main thread for every chunk.
-            reportStep = expected > 0 ? max(1, expected / 200) : 4 * 1_048_576
-        }
-        // The first bytes always count. A ring that waits for the first two hundredth of a
-        // three-gigabyte file shows an empty circle for the seconds before it starts moving.
-        let due = reportedBytes == 0 || totalBytesWritten - reportedBytes >= reportStep
+        let step = reportStep ?? ReportStep(expected: expected)
+        reportStep = step
+        let due = step.isDue(totalBytesWritten: totalBytesWritten, reported: reportedBytes)
         if due { reportedBytes = totalBytesWritten }
         lock.unlock()
         guard due else { return }
