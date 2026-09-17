@@ -8,7 +8,7 @@ import {
   openDatabase,
   resolveDatabasePath,
 } from "./database.ts"
-import { EMBEDDING_MODEL_VERSION, loadEmbeddingService } from "./embedder.ts"
+import { embeddingModelVersion, loadEmbeddingService } from "./embedder.ts"
 import type { QueryEmbedder } from "./search.ts"
 import { registerSpeakerTools } from "./speaker-tools.ts"
 import { registerTools } from "./tools.ts"
@@ -31,7 +31,7 @@ const main = async (): Promise<void> => {
   await migrateSearchSchema(database)
   let embeddingService: ReturnType<typeof loadEmbeddingService> | undefined
   const embedder: QueryEmbedder = {
-    modelVersion: EMBEDDING_MODEL_VERSION,
+    modelVersion: embeddingModelVersion(join(applicationDirectory(), "models", "embeddinggemma")),
     embedQuery: async (query) => {
       embeddingService ??= loadEmbeddingService(
         join(applicationDirectory(), "models", "embeddinggemma"),

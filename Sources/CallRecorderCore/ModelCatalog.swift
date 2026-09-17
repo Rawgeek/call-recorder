@@ -361,6 +361,31 @@ extension WhisperModel {
     public func fits(inMemoryOf bytes: Int64) -> Bool {
         recommendedMemoryBytes <= bytes
     }
+
+    /// How this model's memory need compares with the memory of the Mac it would run on.
+    ///
+    /// The two failing states are different, and one message for both was wrong in the direction
+    /// that matters: a model that overruns the machine outright cannot run, and one that fits
+    /// without the headroom runs by swapping through a transcript. The settings list colours them
+    /// apart so a person can see which is which at a glance.
+    public func memoryFit(inMemoryOf bytes: Int64) -> WhisperModelMemoryFit {
+        if fits(inMemoryOf: bytes) { return .comfortable }
+        return memoryBytes <= bytes ? .tight : .insufficient
+    }
+
+    /// The two models the settings page points at: the balanced one, and the accurate one.
+    public var isRecommended: Bool {
+        id == "small" || id == "large-v3-turbo"
+    }
+}
+
+public enum WhisperModelMemoryFit: Equatable, Sendable {
+    /// The published working set and the app's headroom both fit.
+    case comfortable
+    /// The working set fits and the headroom does not: the machine will swap under load.
+    case tight
+    /// Even the working set does not fit.
+    case insufficient
 }
 
 /// Sizes, stated the way the model host and the published model table state them.

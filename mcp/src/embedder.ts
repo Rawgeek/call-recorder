@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs"
 import { join } from "node:path"
 import { AutoModel, AutoTokenizer, env } from "@huggingface/transformers"
 import { z } from "zod"
@@ -10,10 +11,36 @@ export const EMBEDDING_DIMENSIONS = 256
 /// model are never ranked against a query vector they cannot be compared with.
 export const EMBEDDING_MODEL_VERSION = `${EMBEDDING_MODEL_ID}@${EMBEDDING_MODEL_REVISION}:q4:mrl256`
 
+/// The record the app writes beside the model folders when it installs one.
+///
+/// The app downloads this model now, and it records the revision it verified the bytes of. Reading
+/// that record keeps one source of truth: without it, an app and a model that drifted apart would
+/// fail as a load error instead of being used at the revision that is actually on disk.
+export const InstalledMarkerSchema = z
+  .object({ model: z.string(), revision: z.string().min(1) })
+  .readonly()
+
+export const installedRevision = (cacheDirectory: string): string => {
+  try {
+    const marker = InstalledMarkerSchema.safeParse(
+      JSON.parse(readFileSync(join(cacheDirectory, "installed.json"), "utf8")),
+    )
+    if (marker.success && marker.data.model === EMBEDDING_MODEL_ID) return marker.data.revision
+  } catch {
+    // No marker, or one written before the app wrote any. The pinned revision is the honest
+    // fallback: it is the revision this build was written against.
+  }
+  return EMBEDDING_MODEL_REVISION
+}
+
+/// The stamp put on every embedded chunk, for the revision that is installed.
+export const embeddingModelVersion = (cacheDirectory: string): string =>
+  `${EMBEDDING_MODEL_ID}@${installedRevision(cacheDirectory)}:q4:mrl256`
+
 export const embeddingModelSource = (cacheDirectory: string, allowDownload: boolean): string =>
   allowDownload
     ? EMBEDDING_MODEL_ID
-    : join(cacheDirectory, EMBEDDING_MODEL_ID, EMBEDDING_MODEL_REVISION)
+    : join(cacheDirectory, EMBEDDING_MODEL_ID, installedRevision(cacheDirectory))
 
 export type FeatureExtractor = (texts: readonly string[]) => Promise<readonly (readonly number[])[]>
 
@@ -68,7 +95,7 @@ export const loadEmbeddingService = async (
   const options = {
     cache_dir: cacheDirectory,
     local_files_only: !allowDownload,
-    revision: EMBEDDING_MODEL_REVISION,
+    revision: installedRevision(cacheDirectory),
   }
   const modelSource = embeddingModelSource(cacheDirectory, allowDownload)
   const [tokenizer, model] = await Promise.all([
@@ -81,5 +108,5 @@ export const loadEmbeddingService = async (
     const output = await model(inputs)
     const raw: unknown = output.sentence_embedding.tolist()
     return ModelOutputSchema.parse(raw)
-  }, EMBEDDING_MODEL_VERSION)
+  }, embeddingModelVersion(cacheDirectory))
 }

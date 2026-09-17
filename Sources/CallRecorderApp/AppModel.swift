@@ -248,6 +248,8 @@ final class AppModel {
     private(set) var errorDetails: String?
 
     let modelManager: ModelManager
+    /// The models the app needs but does not ask anyone to choose between.
+    let supportingManager: SupportingModelManager
     private let applicationDirectory: URL
     private let store: CallStore?
     private var speakerStore: SpeakerStore?
@@ -422,10 +424,12 @@ final class AppModel {
         self.applicationDirectory = applicationDirectory
         modelManager = ModelManager(
             directory: applicationDirectory.appending(path: "models/whisper"),
-            // One manifest for every model the app keeps, so whisper and the embedding model
-            // share a single record of what has been verified.
+            // Whisper models keep one record of what has been verified.
             manifestURL: applicationDirectory.appending(path: "models/manifest.json")
         )
+        // The components beside them keep another: a model that is one file and a model that is
+        // five are not the same shape, and a shared record would have to describe both.
+        supportingManager = SupportingModelManager(applicationDirectory: applicationDirectory)
         // Watch every window, so windows opened from menus or the Window menu also come forward.
         WindowPresentation.startObservingWindows()
         if
@@ -440,6 +444,7 @@ final class AppModel {
             forKey: Self.startAtLoginKey
         ) as? Bool ?? true
         errorDetails = defaults.string(forKey: "last-error")
+        whisperVersion = defaults.string(forKey: Self.whisperVersionKey)
         let localStore = try? CallStore(path: applicationDirectory.appending(path: "calls.db").path)
         let tools = ToolLocator.standard
         store = localStore
@@ -1246,6 +1251,7 @@ final class AppModel {
                 guard let self else { return }
                 if self.settings.automaticModelUpdatesEnabled {
                     await self.modelManager.performAutomaticPass()
+                    await self.supportingManager.performAutomaticPass()
                 }
                 try? await Task.sleep(for: .seconds(6 * 3600))
             }
@@ -1258,6 +1264,10 @@ final class AppModel {
             guard let self else { return true }
             return self.isModelInUse
         }
+        supportingManager.isBusy = { [weak self] in
+            guard let self else { return true }
+            return self.isModelInUse
+        }
     }
 
     /// The folder holding the local embedding model that transcript search uses.
@@ -1265,15 +1275,52 @@ final class AppModel {
         applicationDirectory.appending(path: "models/embeddinggemma")
     }
 
-    /// Whether the embedding model has been downloaded.
+    /// Whether the embedding model is installed and complete.
     ///
-    /// Downloading it happens on first use rather than at install, so the Settings window has to
-    /// describe both states instead of promising a component the user may not have yet.
+    /// The manager answers from the files themselves. A folder that merely exists used to count as
+    /// installed, so a download that stopped half way read as ready.
     var embeddingModelIsInstalled: Bool {
-        let contents = try? FileManager.default.contentsOfDirectory(
-            atPath: embeddingModelDirectory.path
-        )
-        return !(contents ?? []).isEmpty
+        guard let model = supportingManager.models.first else { return false }
+        return supportingManager.state(for: model).isInstalled
+    }
+
+    /// The version of the whisper.cpp tool this Mac transcribes with.
+    ///
+    /// The tool comes from Homebrew rather than from the app, so this is the only place that says
+    /// which engine is in use. It is read when the Models pane opens, because starting the tool
+    /// loads a graphics back end that took fourteen seconds on this machine the first time.
+    private(set) var whisperVersion: String?
+
+    /// Where the last reading of that version is kept, so the row has an answer to show before
+    /// the tool has been started again.
+    private static let whisperVersionKey = "last-whisper-version"
+
+    /// Where the tool was found, so the row can name the install rather than describe it.
+    var whisperCLIPath: String? {
+        ToolLocator.standard.locate("whisper-cli")?.path
+    }
+
+    func refreshWhisperVersion() async {
+        guard let executable = ToolLocator.standard.locate("whisper-cli") else {
+            whisperVersion = nil
+            return
+        }
+        whisperVersion = await Task.detached { WhisperCLIVersion.read(from: executable) }.value
+        // A render reads the real preferences but must not write to them, or taking a picture
+        // would change the settings of the installed app.
+        if let whisperVersion, !Self.isPreviewMode {
+            defaults.set(whisperVersion, forKey: Self.whisperVersionKey)
+        }
+    }
+
+    /// The version to show for the tool.
+    ///
+    /// What the tool answered when it was last asked, or, until then, the version written in the
+    /// install path it was found at. The second is instant, so the row has an answer to show on a
+    /// Mac that has never opened this pane before.
+    var whisperVersionLabel: String? {
+        whisperVersion
+            ?? whisperCLIPath.flatMap { WhisperCLIVersion.fromInstallPath(URL(filePath: $0)) }
     }
 
     /// True while a recording is running or a transcript is being produced.

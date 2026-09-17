@@ -47,14 +47,21 @@ struct SettingsPane<Content: View>: View {
 struct CRSettingsCard<Content: View>: View {
     var title: String?
     var footnote: String?
+    /// A sentence the card owes the reader, carried by an icon rather than by a line of text.
+    var info: String?
     @ViewBuilder var content: () -> Content
 
     var body: some View {
         VStack(alignment: .leading, spacing: CR.Space.snug) {
             if let title {
-                Text(title)
-                    .font(CR.Font.headline)
-                    .foregroundStyle(CR.Ink.readable)
+                HStack(spacing: CR.Space.tight) {
+                    Text(title)
+                        .font(CR.Font.headline)
+                        .foregroundStyle(CR.Ink.readable)
+                    if let info { CRInfoIcon(text: info) }
+                }
+            } else if let info {
+                CRInfoIcon(text: info)
             }
             VStack(alignment: .leading, spacing: 0) {
                 content()
@@ -91,14 +98,19 @@ struct CRSettingsCard<Content: View>: View {
 struct CRSettingsRow<Content: View>: View {
     let title: String
     var detail: String?
+    /// What the row would otherwise spend a second line saying, kept for the pointer.
+    var info: String?
     var warning: Bool = false
     @ViewBuilder var control: () -> Content
 
     var body: some View {
         HStack(alignment: .center, spacing: CR.Space.item) {
             VStack(alignment: .leading, spacing: CR.Space.hairline) {
-                Text(title)
-                    .font(CR.Font.body)
+                HStack(spacing: CR.Space.tight) {
+                    Text(title)
+                        .font(CR.Font.body)
+                    if let info { CRInfoIcon(text: info) }
+                }
                 if let detail {
                     Text(detail)
                         .font(CR.Font.caption)
@@ -116,6 +128,25 @@ struct CRSettingsRow<Content: View>: View {
         .padding(.horizontal, CR.Space.section)
         .padding(.vertical, CR.Space.item)
         .accessibilityElement(children: .contain)
+    }
+}
+
+/// A glyph that carries a sentence on the pointer.
+///
+/// Settings rows used to explain themselves in the row. A card of six rows then held six
+/// paragraphs for facts a person needs once, and the numbers that decide a choice were buried in
+/// the prose. The sentences are the same sentences; they now cost a glyph's width, and the row
+/// says only what is not already known.
+struct CRInfoIcon: View {
+    let text: String
+    var tone: CR.Tone = .muted
+
+    var body: some View {
+        Image(systemName: "info.circle")
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(tone.ink)
+            .help(text)
+            .accessibilityLabel(text)
     }
 }
 

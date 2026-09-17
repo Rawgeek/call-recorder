@@ -78,6 +78,11 @@ enum SnapshotRunner {
         guard let directory = ProcessInfo.processInfo.environment["CALL_RECORDER_SNAPSHOT"],
               !directory.isEmpty
         else { return false }
+        // A render must never reach the login keychain. The supported way to start one sets this
+        // flag, and starting the binary by hand did not, so the run stopped on a keychain prompt
+        // that nobody had asked for and the picture never arrived. Setting it here means the flag
+        // no longer depends on how the process was started.
+        setenv("CALL_RECORDER_PREVIEW", "1", 1)
         run(into: URL(filePath: directory, directoryHint: .isDirectory))
         return true
     }

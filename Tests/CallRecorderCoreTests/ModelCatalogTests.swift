@@ -75,6 +75,27 @@ struct ModelCatalogTests {
         #expect(large.fits(inMemoryOf: 16_000_000_000))
     }
 
+    @Test func theThreeColoursSayWhichFailureAModelHas() throws {
+        // Given a model whose working set is 2.1 GB, so its headroom line is 2.73 GB.
+        let medium = try #require(WhisperModel.catalog.first { $0.id == "medium" })
+
+        // Then a Mac above the headroom line is comfortable, one between the working set and the
+        // headroom is tight, and one below the working set is too small.
+        #expect(medium.memoryFit(inMemoryOf: 8_000_000_000) == .comfortable)
+        #expect(medium.memoryFit(inMemoryOf: 2_500_000_000) == .tight)
+        #expect(medium.memoryFit(inMemoryOf: 2_000_000_000) == .insufficient)
+        // The boundary counts as comfortable, because it is the point the app promises.
+        #expect(medium.memoryFit(inMemoryOf: medium.recommendedMemoryBytes) == .comfortable)
+    }
+
+    @Test func thePagePointsAtTwoModelsAndNoOthers() {
+        // Given / When
+        let recommended = WhisperModel.catalog.filter(\.isRecommended).map(\.id)
+
+        // Then
+        #expect(recommended == ["small", "large-v3-turbo"])
+    }
+
     @Test func sizeLabelsStateFileAndMemorySizesTheWayTheModelTableDoes() {
         #expect(ModelSizeLabel.file(bytes: 487_601_967) == "465 MiB")
         #expect(ModelSizeLabel.file(bytes: 3_095_033_483) == "2.9 GiB")
