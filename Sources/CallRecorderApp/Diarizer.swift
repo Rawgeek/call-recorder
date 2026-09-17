@@ -5,11 +5,18 @@ import Foundation
 struct Diarizer: Sendable {
     let python: URL
     let script: URL
+    let ffmpeg: URL?
     let timeout: TimeInterval
 
-    init(python: URL, script: URL, timeout: TimeInterval = 90 * 60) {
+    init(
+        python: URL,
+        script: URL,
+        ffmpeg: URL? = nil,
+        timeout: TimeInterval = 90 * 60
+    ) {
         self.python = python
         self.script = script
+        self.ffmpeg = ffmpeg
         self.timeout = timeout
     }
 
@@ -32,12 +39,16 @@ struct Diarizer: Sendable {
 
     private func execute(
         arguments: [String],
-        cancellation: ProcessCancellation? = nil
+        cancellation: ProcessCancellation? = nil,
+        ffmpegOverride: URL? = nil
     ) throws -> DiarizationResult {
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path] + arguments
-        process.environment = ProcessInfo.processInfo.environment
+        process.environment = Self.runtimeEnvironment(
+            base: ProcessInfo.processInfo.environment,
+            ffmpeg: ffmpegOverride ?? ffmpeg
+        )
         let errorURL = FileManager.default.temporaryDirectory.appending(
             path: "diarizer-\(UUID().uuidString).stderr")
         FileManager.default.createFile(atPath: errorURL.path, contents: nil)
@@ -116,7 +127,39 @@ struct Diarizer: Sendable {
                 "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wave.path,
             ],
             cancellation: cancellation)
-        return try run(on: wave, numberOfSpeakers: nil, cancellation: cancellation)
+        return try execute(
+            arguments: [wave.path],
+            cancellation: cancellation,
+            ffmpegOverride: ffmpeg
+        )
+    }
+
+    /// TorchCodec loads FFmpeg's shared libraries at runtime. A GUI app does not inherit
+    /// Homebrew's shell setup, so the executable may be found while its dylibs are not. Derive
+    /// the library directory from the exact ffmpeg binary the app selected and expose it only to
+    /// the speaker-analysis child process.
+    static func runtimeEnvironment(base: [String: String], ffmpeg: URL?) -> [String: String] {
+        guard let ffmpeg else { return base }
+        let libraryDirectory = ffmpeg
+            .resolvingSymlinksInPath()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "lib", directoryHint: .isDirectory)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(
+            atPath: libraryDirectory.path,
+            isDirectory: &isDirectory
+        ), isDirectory.boolValue else { return base }
+
+        var environment = base
+        var paths = (base["DYLD_FALLBACK_LIBRARY_PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        if !paths.contains(libraryDirectory.path) {
+            paths.insert(libraryDirectory.path, at: 0)
+        }
+        environment["DYLD_FALLBACK_LIBRARY_PATH"] = paths.joined(separator: ":")
+        return environment
     }
 
     static func decode(_ data: Data) throws -> DiarizationResult {

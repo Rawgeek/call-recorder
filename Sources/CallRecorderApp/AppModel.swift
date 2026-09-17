@@ -174,7 +174,7 @@ final class AppModel {
     /// throws, and the error that reached the surface named no permission and no way to grant one.
     /// The state is kept here so the popover can say what is wrong before a call is attempted,
     /// rather than after one has failed.
-    private(set) var screenRecordingGranted = AppModel.previewScreenRecordingGranted
+    private(set) var screenRecordingGranted = AppModel.initialScreenRecordingGranted
 
     /// Lets a render show the card a missing Screen Recording grant draws.
     ///
@@ -183,9 +183,9 @@ final class AppModel {
     /// The grant is a system fact, and a render of the popover on a Mac that has it can never show
     /// what a person without it sees. The flag exists so the sentence and the button can be looked
     /// at, which is the only way to check that a failure this common says the right thing.
-    static var previewScreenRecordingGranted: Bool {
-        guard isPreviewMode,
-              let raw = ProcessInfo.processInfo.environment["CALL_RECORDER_SCREEN_PERMISSION"]
+    static var initialScreenRecordingGranted: Bool {
+        guard isPreviewMode else { return CGPreflightScreenCaptureAccess() }
+        guard let raw = ProcessInfo.processInfo.environment["CALL_RECORDER_SCREEN_PERMISSION"]
         else { return true }
         return raw.lowercased() != "denied"
     }
@@ -274,7 +274,11 @@ final class AppModel {
             .map { URL(filePath: $0) }
         let python = configuredPython ?? managedPython
         guard FileManager.default.isExecutableFile(atPath: python.path) else { return nil }
-        return Diarizer(python: python, script: script)
+        return Diarizer(
+            python: python,
+            script: script,
+            ffmpeg: ToolLocator.standard.locate("ffmpeg")
+        )
     }
 
     /// The speaker-detection script.
@@ -1125,7 +1129,12 @@ final class AppModel {
         defer { checkingSpeakerRuntime = false }
         do {
             guard let diarizer else { throw DiarizerError.runtimeUnavailable }
-            let check = Diarizer(python: diarizer.python, script: diarizer.script, timeout: 60)
+            let check = Diarizer(
+                python: diarizer.python,
+                script: diarizer.script,
+                ffmpeg: diarizer.ffmpeg,
+                timeout: 60
+            )
             try await Task.detached { try check.check() }.value
             speakerRuntimeMessage = "Local speaker model is ready."
         } catch {
@@ -2402,6 +2411,10 @@ final class AppModel {
                 apply(.manualStart(sessionID: sessionID))
             }
         } catch {
+            if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
+                screenRecordingGranted = false
+                return
+            }
             report(error, context: "Capture Start", category: .capture)
             apply(.fail(.captureUnavailable))
         }
@@ -2468,6 +2481,10 @@ final class AppModel {
             recordingPausedAt = nil
             apply(.manualResume)
         } catch {
+            if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
+                screenRecordingGranted = false
+                return
+            }
             errorMessage = error.localizedDescription
             apply(.fail(.captureUnavailable))
         }

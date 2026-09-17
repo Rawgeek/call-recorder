@@ -58,6 +58,17 @@ struct AppBundleInstallerTests {
         #expect(result.exitCode == 0)
     }
 
+    @Test("the release signature permits microphone capture")
+    func releaseEntitlementsPermitMicrophoneCapture() throws {
+        let url = TestEnvironment.packageRoot.appending(path: "Resources/CallRecorder.entitlements")
+        let data = try Data(contentsOf: url)
+        let entitlements = try #require(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        #expect(entitlements["com.apple.security.device.audio-input"] as? Bool == true)
+    }
+
     @Test("a bundle describes itself")
     func bundleDescribesItself() throws {
         let root = makeTemporaryDirectory()

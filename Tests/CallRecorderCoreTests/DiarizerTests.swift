@@ -4,6 +4,29 @@ import Testing
 @testable import CallRecorderApp
 
 struct DiarizerTests {
+    @Test("speaker runtime receives the selected FFmpeg library directory")
+    func addsFFmpegLibrariesToChildEnvironment() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "diarizer-environment-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let bin = directory.appending(path: "bin", directoryHint: .isDirectory)
+        let library = directory.appending(path: "lib", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let ffmpeg = bin.appending(path: "ffmpeg")
+        try Data().write(to: ffmpeg)
+
+        let environment = Diarizer.runtimeEnvironment(
+            base: ["DYLD_FALLBACK_LIBRARY_PATH": "/existing/lib"],
+            ffmpeg: ffmpeg
+        )
+
+        #expect(
+            environment["DYLD_FALLBACK_LIBRARY_PATH"]
+                == "\(library.path):/existing/lib"
+        )
+    }
+
     @Test("speaker overlap combines split turns and preserves the source track")
     func choosesCombinedSpeakerActivity() {
         let merged = SegmentMerger.merge(

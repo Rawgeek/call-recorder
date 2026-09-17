@@ -207,17 +207,19 @@ final class AudioCaptureSession {
         return cocoaError.domain == SCStreamErrorDomain && cocoaError.code == -3_808
     }
 
-    private static func microphone(deviceID: String?) throws -> AVCaptureDevice {
+    nonisolated static func isScreenRecordingPermissionDeniedError(_ error: any Error) -> Bool {
+        let cocoaError = error as NSError
+        return cocoaError.domain == SCStreamErrorDomain && cocoaError.code == -3_801
+    }
+
+    private static func microphone(deviceID: String?) -> AVCaptureDevice? {
         let devices = captureDevices()
         let resolvedID = resolvedMicrophoneID(
             availableIDs: devices.map(\.uniqueID),
             selectedID: deviceID,
             systemDefaultID: systemDefaultMicrophoneID()
         )
-        guard let microphone = devices.first(where: { $0.uniqueID == resolvedID }) else {
-            throw AudioCaptureError.noMicrophone
-        }
-        return microphone
+        return devices.first(where: { $0.uniqueID == resolvedID })
     }
 
     private static func captureDevices() -> [AVCaptureDevice] {
@@ -260,10 +262,13 @@ final class AudioCaptureSession {
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48_000
         configuration.channelCount = 2
-        configuration.captureMicrophone = true
-        configuration.microphoneCaptureDeviceID = try Self.microphone(
-            deviceID: microphoneDeviceID
-        ).uniqueID
+        // A Mac mini can legitimately have no audio input at all. ScreenCaptureKit can still
+        // record the call's system audio, so the absent microphone is an optional source rather
+        // than a reason to reject the whole recording. If an input appears later, the next segment
+        // resolves it again and includes it automatically.
+        let microphone = Self.microphone(deviceID: microphoneDeviceID)
+        configuration.captureMicrophone = microphone != nil
+        configuration.microphoneCaptureDeviceID = microphone?.uniqueID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
         let router = AudioCaptureRouter(paths: paths, levels: levels)
@@ -272,11 +277,13 @@ final class AudioCaptureSession {
             type: .audio,
             sampleHandlerQueue: router.systemQueue
         )
-        try stream.addStreamOutput(
-            router,
-            type: .microphone,
-            sampleHandlerQueue: router.microphoneQueue
-        )
+        if microphone != nil {
+            try stream.addStreamOutput(
+                router,
+                type: .microphone,
+                sampleHandlerQueue: router.microphoneQueue
+            )
+        }
         do {
             try await stream.startCapture()
             activeCapture = ActiveCapture(
