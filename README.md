@@ -29,11 +29,13 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 **Updates**
 
-- Call Recorder follows the releases of its own repository, at launch and every six hours. A newer
-  one is downloaded, checked against the digest the release published, and unpacked beside the app,
-  where the bundle inside it is checked again before it is trusted.
-- The swap happens when the app quits, which is the one moment the bundle is not in use, so the
-  next launch is the new version and no recording is ever interrupted by an update.
+- Call Recorder follows the releases of its own repository, at launch and on a step you choose,
+  which is every six hours unless you change it. A newer one is downloaded, checked against the
+  digest the release published, and unpacked beside the app, where the bundle inside it is checked
+  again before it is trusted.
+- The swap happens when the app quits, which is the one moment the bundle is not in use, so no
+  recording is ever interrupted by an update. **Restart** in the same card installs a version that
+  is already waiting and opens the app again; while a call is being recorded it waits for the call.
 - The version that was working is kept in Application Support; **Settings > General > Updates**
   shows the state and can go back to it. Every step is written to
   `~/Library/Logs/CallRecorder/app-update.log`.
@@ -75,7 +77,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 - Menu-bar app; there is no window to keep open.
 - The app updates itself too: a newer release is downloaded and checked in the background, and
-  put in place when the app quits, so the next launch is the new version.
+  put in place when the app quits or at once when Restart is pressed, so the next launch is the
+  new version.
 - Models update themselves: the new file is downloaded beside the model in use, verified
   against a published SHA-256, swapped atomically, and the previous copy is kept for revert.
 - Recovery tools: database check and backup, restore of working files, retry of failed calls,
@@ -121,7 +124,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 6. Leave **Start at login** on if you want it always available.
 
 From 0.1.4 on, later versions install themselves: the check runs in the background, and the new
-version is put in place when the app quits, so there is no download and no reinstall to do by hand.
+version is put in place when the app quits or when Restart is pressed, so there is no download and
+no reinstall to do by hand.
 
 ### From source
 
