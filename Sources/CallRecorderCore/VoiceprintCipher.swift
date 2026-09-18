@@ -119,6 +119,17 @@ public enum VoiceprintKeyLocation: Sendable, Equatable {
 
     /// A file under the app's own folder that only this account can read.
     case file(URL)
+
+    /// The same file, given the key out of the keychain the first time a key is needed and the
+    /// library already holds sealed profiles.
+    ///
+    /// A development run reads the same library as the installed app, and the profiles in it were
+    /// sealed with the key the installed app keeps in the keychain. Making a new key instead would
+    /// leave those profiles unreadable to both programs, and would seal everything the development
+    /// run writes with a key the installed app cannot open. So the one key is copied out of the
+    /// keychain once, with the question the keychain asks a program it does not recognise, and
+    /// every run after that reads the file and asks nothing.
+    case fileSeededFromKeychain(URL)
 }
 
 public enum VoiceprintKeyStore {
@@ -139,9 +150,13 @@ public enum VoiceprintKeyStore {
     ) throws -> VoiceprintCipher {
         switch location {
         case .keychain:
-            return try loadOrCreateInKeychain(hasEncryptedData: hasEncryptedData)
+            return try VoiceprintCipher(
+                keyData: try keychainKey(hasEncryptedData: hasEncryptedData)
+            )
         case .file(let url):
-            return try loadOrCreateInFile(url, hasEncryptedData: hasEncryptedData)
+            return try keyFromFile(url, hasEncryptedData: hasEncryptedData, seeded: false)
+        case .fileSeededFromKeychain(let url):
+            return try keyFromFile(url, hasEncryptedData: hasEncryptedData, seeded: true)
         }
     }
 
@@ -152,7 +167,8 @@ public enum VoiceprintKeyStore {
             .appending(path: account, directoryHint: .notDirectory)
     }
 
-    private static func loadOrCreateInKeychain(hasEncryptedData: Bool) throws -> VoiceprintCipher {
+    /// The key the keychain holds, made only when there is nothing for it to open.
+    private static func keychainKey(hasEncryptedData: Bool) throws -> Data {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -166,7 +182,7 @@ public enum VoiceprintKeyStore {
             guard let data = item as? Data, data.count == 32 else {
                 throw VoiceprintKeyStoreError.invalidStoredKey
             }
-            return try VoiceprintCipher(keyData: data)
+            return data
         }
         guard status == errSecItemNotFound else {
             throw VoiceprintKeyStoreError.inaccessible(status)
@@ -185,20 +201,28 @@ public enum VoiceprintKeyStore {
         guard insertStatus == errSecSuccess else {
             throw VoiceprintKeyStoreError.inaccessible(insertStatus)
         }
-        return try VoiceprintCipher(keyData: bytes)
+        return bytes
     }
 
     /// The same key in a file, for a run whose program the keychain does not know.
-    private static func loadOrCreateInFile(
+    private static func keyFromFile(
         _ url: URL,
-        hasEncryptedData: Bool
+        hasEncryptedData: Bool,
+        seeded: Bool
     ) throws -> VoiceprintCipher {
         if let data = try? Data(contentsOf: url) {
             guard data.count == 32 else { throw VoiceprintKeyStoreError.invalidStoredKey }
             return try VoiceprintCipher(keyData: data)
         }
-        guard !hasEncryptedData else { throw VoiceprintKeyStoreError.missingKey }
-        let bytes = try generatedKey()
+        let bytes: Data
+        if hasEncryptedData {
+            // Something is stored that this key has to open. A file that is not there yet can only
+            // be given the key that sealed it, and the keychain is where the installed app put it.
+            guard seeded else { throw VoiceprintKeyStoreError.missingKey }
+            bytes = try keychainKey(hasEncryptedData: true)
+        } else {
+            bytes = try generatedKey()
+        }
         do {
             // The folder is closed to everyone else, and the file is made unreadable to them before
             // anything is ever sealed with it.

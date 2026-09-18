@@ -16,13 +16,16 @@ panel stops keeping the room of a notice that has gone away.
   would have been given had it finished after the update.
 
 ### Changed
-- **A development run no longer touches the keychain.** Voice profiles are sealed with a key that
-  lives in a keychain item, and the keychain decides whether a program may read one of its items by
-  the program's signature: every rebuild is a new program to it, so starting a build from the build
-  directory waited on a password dialog with nothing on screen to explain it. Those runs keep the
-  same key in a file only this account can read, inside the app's own folder, and
-  `CALL_RECORDER_VOICEPRINT_KEY=keychain` asks for the keychain back. The installed app keeps using
-  the keychain.
+- **A development run keeps its voice-profile key in a file instead of the keychain.** Voice
+  profiles are sealed with a key that lives in a keychain item, and the keychain decides whether a
+  program may read one of its items by the program's signature: every rebuild is a new program to
+  it, so starting a build from the build directory waited on a password dialog with nothing on
+  screen to explain it. Those runs keep the key in a file only this account can read, inside the
+  app's own folder. The file holds the key the installed app keeps in the keychain, because both
+  programs read one library: the first development run that finds profiles already sealed copies it
+  out of the keychain, which is the one question it asks, and every run after that reads the file.
+  `CALL_RECORDER_VOICEPRINT_KEY=keychain` asks for the keychain throughout. The installed app keeps
+  using the keychain.
 - **Packaging signs ad-hoc unless an identity is named**, so building an app for this machine needs
   no signing key and no password. `scripts/release.sh --publish` names the release identity, so a
   published build is still recognised by macOS across updates and keeps the permissions it was
@@ -38,7 +41,7 @@ panel stops keeping the room of a notice that has gone away.
   is what the first attempt at this fix relied on and why it changed nothing on screen.
 
 ### Verified
-- 647 tests pass in 83 suites. The request path shares the pipeline's transcript read, so it is
+- 648 tests pass in 83 suites. The request path shares the pipeline's transcript read, so it is
   covered by the tests that already cover the brief. The panel was measured on the machine the
   strip was reported on: with the notice it is 603 points tall, the notice goes, and it is 576 with
   its top edge in the same place.

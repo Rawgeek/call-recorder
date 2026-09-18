@@ -21,7 +21,7 @@ enum VoiceprintKeyChoice {
         bundleIdentifier: String?,
         applicationDirectory: URL
     ) -> VoiceprintKeyLocation {
-        let file = VoiceprintKeyLocation.file(
+        let file = VoiceprintKeyLocation.fileSeededFromKeychain(
             VoiceprintKeyStore.fileLocation(inApplicationDirectory: applicationDirectory)
         )
         switch environment[environmentKey]?.lowercased() {

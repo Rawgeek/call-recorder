@@ -16,6 +16,25 @@ struct VoiceprintKeyLocationTests {
         FileManager.default.temporaryDirectory.appending(path: "voiceprint-key-\(UUID().uuidString)")
     }
 
+    @Test("a file that is being seeded makes its own key when nothing is sealed yet")
+    func seededFileWithNothingToOpenMakesAKey() throws {
+        let directory = scratchDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = VoiceprintKeyStore.fileLocation(inApplicationDirectory: directory)
+
+        // Nothing is stored yet, so there is nothing to ask the keychain for: the key is made here
+        // and the keychain is never reached. A development run that has profiles to open does read
+        // it, which is the one question such a run asks, and that path needs a keychain to test.
+        let cipher = try VoiceprintKeyStore.loadOrCreate(
+            hasEncryptedData: false,
+            in: .fileSeededFromKeychain(url)
+        )
+        let envelope = try cipher.seal([1, 0], modelVersion: "v1")
+
+        #expect(try cipher.open(envelope, modelVersion: "v1") == [1, 0])
+        #expect(FileManager.default.fileExists(atPath: url.path))
+    }
+
     @Test("a file keeps the same key across runs, and only this account can read it")
     func theFileKeepsTheSameKey() throws {
         let directory = scratchDirectory()
@@ -61,7 +80,7 @@ struct VoiceprintKeyLocationTests {
     @Test("an installed app uses the keychain, a development run does not")
     func theChoiceFollowsTheBuild() {
         let directory = URL(filePath: "/tmp/call-recorder-choice", directoryHint: .isDirectory)
-        let file = VoiceprintKeyLocation.file(
+        let file = VoiceprintKeyLocation.fileSeededFromKeychain(
             VoiceprintKeyStore.fileLocation(inApplicationDirectory: directory)
         )
 
@@ -97,7 +116,7 @@ struct VoiceprintKeyLocationTests {
     @Test("the environment can name either store")
     func theEnvironmentWins() {
         let directory = URL(filePath: "/tmp/call-recorder-choice", directoryHint: .isDirectory)
-        let file = VoiceprintKeyLocation.file(
+        let file = VoiceprintKeyLocation.fileSeededFromKeychain(
             VoiceprintKeyStore.fileLocation(inApplicationDirectory: directory)
         )
 

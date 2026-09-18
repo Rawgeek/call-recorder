@@ -228,7 +228,7 @@ Layout: Sources/CallRecorderApp (menu bar, capture, processing), Sources/CallRec
 (database, matching, transcription boundaries), mcp/ (MCP server and indexer), and
 scripts/package-app.sh.
 
-Verification in this build: 647 Swift tests and 56 MCP tests pass, plus TypeScript and
+Verification in this build: 648 Swift tests and 56 MCP tests pass, plus TypeScript and
 Biome checks.
 
 ## 10. Troubleshooting

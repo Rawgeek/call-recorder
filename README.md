@@ -269,17 +269,20 @@ system audio ------ /                                  |                      |
 
 ```sh
 swift build          # debug build
-swift test           # 647 Swift tests
+swift test           # 648 Swift tests
 cd mcp && bun install && bun test    # 56 MCP tests, plus: bun run typecheck
 ```
 
-A development run never touches the keychain. Voice profiles are sealed with a key that lives in a
-keychain item, and the keychain decides whether a program may read one by the program's signature: a
-rebuild is a new program to it, so every start from the build directory used to meet a password
-dialog with nothing on screen to explain it. Those runs keep the same key in
+A development run keeps its voice-profile key in a file instead of the keychain. Voice profiles are
+sealed with a key that lives in a keychain item, and the keychain decides whether a program may read
+one by the program's signature: a rebuild is a new program to it, so every start from the build
+directory used to meet a password dialog with nothing on screen to explain it. The file is
 `~/Library/Application Support/CallRecorder/voiceprints/embedding-key-v1`, which only this account
-can read. Set `CALL_RECORDER_VOICEPRINT_KEY=keychain` for a run that should use the keychain anyway.
-The installed app, which macOS recognises by the identity it was signed with, goes on using it.
+can read. It holds the key the installed app keeps in the keychain, because both programs read one
+library: the first development run that finds profiles already sealed copies it out of the keychain,
+which is the one time it asks, and every run after that reads the file. Set
+`CALL_RECORDER_VOICEPRINT_KEY=keychain` for a run that should use the keychain throughout. The
+installed app, which macOS recognises by the identity it was signed with, goes on using it.
 
 Render every window to PNGs without packaging, signing, or installing:
 
