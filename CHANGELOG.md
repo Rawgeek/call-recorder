@@ -4,6 +4,20 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.16] - 2026-09-18
+
+Calls recorded before briefs existed can be written up now, without recording them again.
+
+### Added
+- **Write a brief**, on the menu-bar row of any call that has a transcript and no brief yet. The
+  button appears when the runtime and the model are ready, and the row shows the work while it
+  runs. It is the same path the pipeline takes, so a brief written on request is the brief a call
+  would have been given had it finished after the update.
+
+### Verified
+- 641 tests pass in 82 suites. The request path shares the pipeline's transcript read, so it is
+  covered by the tests that already cover the brief.
+
 ## [0.1.15] - 2026-09-18
 
 A release about reading less. A call now comes with a brief: what it was about, what was agreed,

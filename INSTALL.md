@@ -1,4 +1,4 @@
-# Call Recorder 0.1.15 — install, features, and Codex MCP
+# Call Recorder 0.1.16 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -15,6 +15,8 @@ the machine. Nothing is uploaded to a cloud service.
   "Write a brief" switches it off.
 - The menu-bar panel sits against the menu bar on a display whose menu bar hides itself, and the
   app's own menu is no longer turned into a bar when it is opened from the menu bar.
+- A call recorded before briefs existed can be written up from its row, so the calls already on
+  this Mac do not have to be recorded again to get one.
 - A recording starts by itself only for a real call. The app that holds the microphone
   must also play the other side for five seconds, so a voice message or a dictation
   session no longer starts one. Every decision is logged with the app's name.

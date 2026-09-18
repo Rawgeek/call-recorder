@@ -1405,14 +1405,8 @@ final class AppModel {
         writingBriefs.insert(callID)
         defer { writingBriefs.remove(callID) }
         do {
-            let transcript = try await store.transcript(for: callID)
-            guard let transcript else { return }
-            let markdown = try String(contentsOf: URL(filePath: transcript.markdownPath),
-                encoding: .utf8)
             let outcome = try await writeBrief(
                 callID: callID,
-                markdown: markdown,
-                language: transcript.language,
                 store: store,
                 cancellation: ProcessCancellation()
             )
@@ -1420,6 +1414,15 @@ final class AppModel {
         } catch {
             report(error, context: "Write Brief", category: .models)
         }
+    }
+
+    /// Whether a call can be written up on request right now.
+    ///
+    /// A call that already has a brief, a call with no speech in it, and a Mac without the runtime
+    /// or the model are all answered by the row drawing no button, rather than by a button that
+    /// fails when it is pressed.
+    func canWriteBrief(for call: RecentCallSummary) -> Bool {
+        call.hasTranscript && call.hasSpeech && briefs[call.id] == nil && briefReadiness == nil
     }
 
     /// Writes the brief of a call whose transcript has just been saved.
@@ -1438,15 +1441,8 @@ final class AppModel {
         writingBriefs.insert(callID)
         defer { writingBriefs.remove(callID) }
         do {
-            guard let transcript = try await store.transcript(for: callID) else { return }
-            let markdown = try String(
-                contentsOf: URL(filePath: transcript.markdownPath),
-                encoding: .utf8
-            )
             _ = try await writeBrief(
                 callID: callID,
-                markdown: markdown,
-                language: transcript.language,
                 store: store,
                 cancellation: cancellation
             )
@@ -1465,6 +1461,36 @@ final class AppModel {
         case written
         /// Nothing was written, and this is why, in a sentence for the person who asked.
         case skipped(String)
+    }
+
+    /// Writes the brief of one finished call, and never fails the call over it.
+    ///
+    /// The transcript is already saved and indexed by the time this runs, and a brief is a reading
+    /// Writes the brief of a call from the transcript it saved, whatever asked for it.
+    ///
+    /// The pipeline asks for this when a call finishes, and the menu-bar row asks for it when
+    /// somebody wants an older call written up: one path, so a brief written on request is the same
+    /// brief the pipeline would have written.
+    @discardableResult
+    private func writeBrief(
+        callID: CallID,
+        store: CallStore,
+        cancellation: ProcessCancellation
+    ) async throws -> BriefOutcome {
+        guard let transcript = try await store.transcript(for: callID) else {
+            return .skipped("This call has no transcript yet.")
+        }
+        let markdown = try String(
+            contentsOf: URL(filePath: transcript.markdownPath),
+            encoding: .utf8
+        )
+        return try await writeBrief(
+            callID: callID,
+            markdown: markdown,
+            language: transcript.language,
+            store: store,
+            cancellation: cancellation
+        )
     }
 
     /// Writes the brief of one finished call, and never fails the call over it.

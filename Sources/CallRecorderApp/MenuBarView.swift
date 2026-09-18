@@ -752,6 +752,21 @@ struct RecentCallRow: View {
                 }
             }
 
+            // A call that has a transcript but no brief yet can be written up from here, which is
+            // what makes the feature useful for the calls that were recorded before it existed.
+            if model.writingBriefs.contains(call.id) {
+                ProgressView().controlSize(.small)
+            } else if model.canWriteBrief(for: call) {
+                CRIconButton(
+                    icon: "text.badge.plus",
+                    label: "Write brief",
+                    revealed: hovering,
+                    trailingAligned: true
+                ) {
+                    Task { await model.writeBriefNow(for: call.id) }
+                }
+            }
+
             // Work that is running gets a way to end it. The row is where this call's state is
             // read, so the control that stops the work sits with the stage it names.
             if showsStopControl {

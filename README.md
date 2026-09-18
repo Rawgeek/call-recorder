@@ -73,6 +73,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
   returns it, so a task that needs the call's context reads a hundred and fifty words rather than
   the whole transcript. **Settings > General > "Write a brief"** switches it off, and the model is
   downloaded from **Settings > Models**.
+- A call recorded before briefs existed can be written up from its row, without recording it again.
 - Every transcript is indexed into a local Turso/libsql database with FTS5 (BM25) ranking and
   256-dimension vector embeddings from a local model that is downloaded once. Search is hybrid
   by default.
@@ -113,7 +114,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.15.zip` from the
+1. Download `CallRecorder-0.1.16.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
