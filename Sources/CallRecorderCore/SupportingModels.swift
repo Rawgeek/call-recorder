@@ -7,12 +7,18 @@ import Foundation
 public struct SupportingModelFile: Codable, Hashable, Sendable {
     public let path: String
     public let bytes: Int64
+    /// The SHA-256 the host publishes for a large file, or empty when all the host publishes is
+    /// the Git blob hash below.
     public let sha256: String
+    /// The name the file has in the host's repository, for the small files a host hashes that way:
+    /// a config.json, a tokenizer configuration.
+    public let blobID: String?
 
-    public init(path: String, bytes: Int64, sha256: String) {
+    public init(path: String, bytes: Int64, sha256: String, blobID: String? = nil) {
         self.path = path
         self.bytes = bytes
         self.sha256 = sha256
+        self.blobID = blobID
     }
 }
 
@@ -229,7 +235,8 @@ public enum SupportingModelChecker {
     public static func decision(
         model: SupportingModel,
         installed: InstalledSupportingModel?,
-        remote: ModelHostMetadata
+        remote: ModelHostMetadata,
+        installedBlobIDs: [String: String] = [:]
     ) -> SupportingModelDecision {
         guard let installed, !installed.files.isEmpty else {
             return .cannotVerify(reason: "Call Recorder has not verified this model copy yet.")
@@ -239,7 +246,20 @@ public enum SupportingModelChecker {
             guard let published = remote.files[file.path] else {
                 return .cannotVerify(reason: "The host does not publish " + file.path + " any more.")
             }
-            guard !published.sha256.isEmpty else {
+            if !published.sha256.isEmpty {
+                remoteFiles.append(
+                    SupportingModelFile(
+                        path: file.path,
+                        bytes: published.bytes,
+                        sha256: published.sha256.lowercased()
+                    )
+                )
+                continue
+            }
+            // A small file carries no SHA-256 in the host's listing. What it carries is the name
+            // the file has in the host's repository, which is a hash of the contents too, so the
+            // copy on disk can be checked against it instead of the check giving up.
+            guard let blobID = published.blobID, !blobID.isEmpty else {
                 return .cannotVerify(
                     reason: "The host does not publish a hash for " + file.path + "."
                 )
@@ -248,7 +268,8 @@ public enum SupportingModelChecker {
                 SupportingModelFile(
                     path: file.path,
                     bytes: published.bytes,
-                    sha256: published.sha256.lowercased()
+                    sha256: "",
+                    blobID: blobID.lowercased()
                 )
             )
         }
@@ -256,11 +277,30 @@ public enum SupportingModelChecker {
             installed.files.map { ($0.path, $0) },
             uniquingKeysWith: { first, _ in first }
         )
-        let sameRevision = installed.revision == remote.revision
-        let sameFiles = remoteFiles.allSatisfy { file in
-            installedByPath[file.path]?.sha256.lowercased() == file.sha256
+        var sameFiles = true
+        for file in remoteFiles {
+            guard let copy = installedByPath[file.path] else {
+                sameFiles = false
+                break
+            }
+            if !file.sha256.isEmpty {
+                sameFiles = copy.sha256.lowercased() == file.sha256
+            } else if let blobID = file.blobID {
+                // The name of the file in the host's repository, computed from the bytes on disk.
+                // Without it the copy cannot be judged, and saying so is better than calling it
+                // either current or out of date.
+                guard let onDisk = installedBlobIDs[file.path]?.lowercased() else {
+                    return .cannotVerify(
+                        reason: "Call Recorder could not read " + file.path + " to check it."
+                    )
+                }
+                sameFiles = onDisk == blobID
+            } else {
+                sameFiles = false
+            }
+            if !sameFiles { break }
         }
-        if sameRevision, sameFiles { return .upToDate }
+        if installed.revision == remote.revision, sameFiles { return .upToDate }
         return .updateAvailable(
             SupportingModelUpdate(revision: remote.revision, files: remoteFiles)
         )

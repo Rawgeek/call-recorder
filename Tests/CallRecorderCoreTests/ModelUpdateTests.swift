@@ -499,9 +499,13 @@ struct ModelUpdateTests {
     func realHostResponseParses() throws {
         let metadata = try ModelHostMetadata.parse(Data(capturedWhisperResponse.utf8))
         #expect(metadata.revision == "5359861c739e955e79d9a303bcbc70fb988958b1")
-        // Thirty-three model files carry a hash; the README does not and is left out.
-        #expect(metadata.files.count == 33)
-        #expect(metadata.files["README.md"] == nil)
+        // Thirty-three model files carry a SHA-256, and the README carries the name it has in the
+        // host's repository instead: a file the host hashes that way is kept, and its name is what
+        // a check of a small file compares against. Nothing is kept without a hash of some kind.
+        #expect(metadata.files.count == 34)
+        #expect(metadata.files["README.md"]?.sha256 == "")
+        #expect(metadata.files["README.md"]?.blobID == "bb0749e3c17cdf1d040a7e95fbf45610a212ec0a")
+        #expect(metadata.files.values.allSatisfy { !$0.sha256.isEmpty || $0.blobID != nil })
         #expect(metadata.files["ggml-medium.bin"]?.bytes == 1_533_763_059)
     }
 

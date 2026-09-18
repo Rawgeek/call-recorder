@@ -4,6 +4,30 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.17] - 2026-09-18
+
+The Models pane stops saying the host does not publish a file it does publish, and the runtime the
+app fetches is published with the release.
+
+### Fixed
+- **The JavaScript runtime is published with the release.** The app does not carry the runtime: the
+  bundle records the archive's hash and fetches it from a release of its own, named for those bytes.
+  0.1.16 was published without that release, so the runtime download answered with a page that was
+  not the archive, the Models pane said the download did not match the hash recorded when the app
+  was built, and Retry asked for the same missing address. The archive is published now, and
+  publishing it is part of the release: it is created when it is not there, and a release is not
+  called verified until the runtime it fetches is published with the hash the bundle records.
+
+### Changed
+- **A small file is checked by the name the host publishes for it.** A host hashes what it publishes
+  one of two ways: a large file carries a SHA-256, and a small file carries only the name it has in
+  the host's repository, which is a hash of the contents too. The update check understood the first
+  and ignored the second, so the embedding model, whose files include a config.json and a tokenizer
+  configuration, was reported as one the host had stopped publishing, with no verdict possible for
+  as long as it was installed. The app computes the same name for the copy on disk and compares
+  them, which is a check of the contents rather than a size, and a copying update is verified the
+  same way when it arrives.
+
 ## [0.1.16] - 2026-09-18
 
 Calls recorded before briefs existed can be written up now, without recording them again, and the

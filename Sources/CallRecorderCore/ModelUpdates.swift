@@ -4,12 +4,17 @@ import Foundation
 public struct RemoteModelFile: Codable, Equatable, Sendable {
     public let fileName: String
     public let bytes: Int64
+    /// Empty when the host publishes no SHA-256 for this file.
     public let sha256: String
+    /// The name the file has in the host's repository, which is what a small file is published
+    /// with: a Git blob hash of the contents rather than a SHA-256.
+    public let blobID: String?
 
-    public init(fileName: String, bytes: Int64, sha256: String) {
+    public init(fileName: String, bytes: Int64, sha256: String, blobID: String? = nil) {
         self.fileName = fileName
         self.bytes = bytes
         self.sha256 = sha256
+        self.blobID = blobID
     }
 }
 
@@ -167,12 +172,19 @@ public struct ModelHostMetadata: Equatable, Sendable {
         let document = try decoder.decode(HostDocument.self, from: data)
         var files: [String: RemoteModelFile] = [:]
         for sibling in document.siblings {
-            guard let hash = sibling.lfs?.sha256, !hash.isEmpty else { continue }
             guard let size = sibling.size else { continue }
+            // A host hashes what it publishes one of two ways. A large file it stores for the
+            // download carries a SHA-256; a small file carries only the name it has in the
+            // repository, which is a Git blob hash of the contents. Both decide the file, so a
+            // listing that offers either is kept.
+            let hash = sibling.lfs?.sha256 ?? ""
+            let blobID = sibling.blobId ?? ""
+            guard !hash.isEmpty || !blobID.isEmpty else { continue }
             files[sibling.rfilename] = RemoteModelFile(
                 fileName: sibling.rfilename,
                 bytes: size,
-                sha256: hash
+                sha256: hash,
+                blobID: blobID.isEmpty ? nil : blobID
             )
         }
         return ModelHostMetadata(revision: document.sha, files: files)
@@ -186,6 +198,8 @@ public struct ModelHostMetadata: Equatable, Sendable {
             let rfilename: String
             let size: Int64?
             let lfs: LargeFile?
+            /// What the file is called in the host's repository: a Git blob SHA-1 of the contents.
+            let blobId: String?
         }
 
         struct LargeFile: Decodable {

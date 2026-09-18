@@ -309,7 +309,8 @@ final class SupportingModelManager {
                     try ModelFileVerifier.verify(
                         fileAt: downloaded,
                         expectedBytes: file.bytes,
-                        sha256: file.sha256
+                        sha256: file.sha256,
+                        blobID: file.blobID
                     )
                 }.value
                 guard verified else { throw ModelManagerError.verificationFailed }
@@ -461,10 +462,17 @@ final class SupportingModelManager {
                         decisions[model.id] = nil
                         continue
                     }
+                    let installed = manifest.record(for: model.id)
+                    let blobIDs = await installedBlobIDs(
+                        model: model,
+                        installed: installed,
+                        remote: metadata
+                    )
                     decisions[model.id] = SupportingModelChecker.decision(
                         model: model,
-                        installed: manifest.record(for: model.id),
-                        remote: metadata
+                        installed: installed,
+                        remote: metadata,
+                        installedBlobIDs: blobIDs
                     )
                 }
             } catch {
@@ -474,6 +482,38 @@ final class SupportingModelManager {
             }
         }
         measureDuplicates()
+    }
+
+    /// The names the installed copies have in the host's repository, for the files the host
+    /// publishes without a SHA-256.
+    ///
+    /// Those are the small files, a config.json or a tokenizer configuration, and a host hashes
+    /// them the way Git does instead. Reading them to compute the same hash takes milliseconds, and
+    /// without it the update check could only report that it does not know whether the copy on disk
+    /// is the published one.
+    private func installedBlobIDs(
+        model: SupportingModel,
+        installed: InstalledSupportingModel?,
+        remote: ModelHostMetadata
+    ) async -> [String: String] {
+        guard let installed, let directory = installedDirectory(for: model) else { return [:] }
+        let wanted = model.files.filter { file in
+            guard let published = remote.files[file.path] else { return false }
+            return published.sha256.isEmpty
+                && published.blobID?.isEmpty == false
+                && installed.file(file.path) != nil
+        }.map(\.path)
+        guard !wanted.isEmpty else { return [:] }
+        return await Task.detached {
+            var ids: [String: String] = [:]
+            for path in wanted {
+                let url = directory.appending(path: path)
+                if let digest = try? ModelFileVerifier.gitBlobSHA1(of: url) {
+                    ids[path] = digest
+                }
+            }
+            return ids
+        }.value
     }
 
     /// Checks, then applies everything safe to apply at once.

@@ -909,21 +909,59 @@ public enum ModelSizeLabel {
 }
 
 public enum ModelFileVerifier {
+    /// True when the file is the size and content that was expected.
+    ///
+    /// A host hashes what it publishes, but not always the same way: a large file it stores for the
+    /// download carries a SHA-256, and a small file carries only the name it has in the host's
+    /// repository, which is a Git blob hash of the contents. Either one decides the file, and a
+    /// file is never accepted on its size alone.
     public static func verify(
         fileAt url: URL,
         expectedBytes: Int64,
-        sha256: String
+        sha256: String,
+        blobID: String? = nil
     ) throws -> Bool {
         let values = try url.resourceValues(forKeys: [.fileSizeKey])
         guard Int64(values.fileSize ?? -1) == expectedBytes else { return false }
+        if sha256.isEmpty {
+            guard let blobID, !blobID.isEmpty else { return false }
+            return try gitBlobSHA1(of: url) == blobID.lowercased()
+        }
+        return try ModelFileVerifier.sha256(of: url) == sha256.lowercased()
+    }
 
+    /// The SHA-256 of a file, read in blocks so a large one never sits in memory.
+    public static func sha256(of url: URL) throws -> String {
         let file = try FileHandle(forReadingFrom: url)
         defer { try? file.close() }
         var hasher = SHA256()
         while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
             hasher.update(data: data)
         }
-        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        return digest == sha256.lowercased()
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The name a file has in a host's repository, which is how small files are published.
+    ///
+    /// It is the SHA-1 of the header "blob <bytes>\\0" followed by the contents, which is what Git
+    /// computes for every file it stores.
+    public static func gitBlobSHA1(of url: URL) throws -> String {
+        let file = try FileHandle(forReadingFrom: url)
+        defer { try? file.close() }
+        let bytes = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        var hasher = Insecure.SHA1()
+        hasher.update(data: Data("blob \(bytes)\0".utf8))
+        while let data = try file.read(upToCount: 1_048_576), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// The same name, for bytes already in hand.
+    public static func gitBlobSHA1(of data: Data) -> String {
+        var hasher = Insecure.SHA1()
+        hasher.update(data: Data("blob \(data.count)\0".utf8))
+        hasher.update(data: data)
+        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 }

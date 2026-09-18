@@ -221,4 +221,62 @@ struct ModelCatalogTests {
             )
         )
     }
+
+    @Test func theNameOfAFileInAHostRepositoryIsItsGitBlobHash() {
+        // Given the bytes Git has taught everyone: the file "hello world\n" is the blob
+        // 3b18e512dba79e4c8300dd08aeb37f8e728b8dad in every repository that holds it.
+        let bytes = Data("hello world\n".utf8)
+
+        // When / Then
+        #expect(
+            ModelFileVerifier.gitBlobSHA1(of: bytes)
+                == "3b18e512dba79e4c8300dd08aeb37f8e728b8dad"
+        )
+    }
+
+    @Test func verifierAcceptsAFileByNameWhenTheHostPublishesNoSHA256() throws {
+        // Given a small file, of the kind a host describes by the name it has in its repository
+        // rather than by a SHA-256: a configuration, a tokenizer's settings.
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "call-recorder-named-file-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appending(path: "config.json")
+        let bytes = Data("{\"hidden_size\":768}".utf8)
+        try bytes.write(to: file)
+        let name = ModelFileVerifier.gitBlobSHA1(of: bytes)
+
+        // When / Then the name decides it, and a size that does not match still refuses it.
+        #expect(
+            try ModelFileVerifier.verify(
+                fileAt: file,
+                expectedBytes: Int64(bytes.count),
+                sha256: "",
+                blobID: name
+            )
+        )
+        #expect(
+            try !ModelFileVerifier.verify(
+                fileAt: file,
+                expectedBytes: Int64(bytes.count),
+                sha256: "",
+                blobID: String(repeating: "f", count: 40)
+            )
+        )
+        #expect(
+            try !ModelFileVerifier.verify(
+                fileAt: file,
+                expectedBytes: Int64(bytes.count) + 1,
+                sha256: "",
+                blobID: name
+            )
+        )
+        // A file with no hash of either kind is never accepted on its size alone.
+        #expect(
+            try !ModelFileVerifier.verify(
+                fileAt: file,
+                expectedBytes: Int64(bytes.count),
+                sha256: ""
+            )
+        )
+    }
 }

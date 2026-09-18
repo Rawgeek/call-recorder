@@ -113,6 +113,9 @@ publish() {
     CALL_RECORDER_SIGNING_IDENTITY=${CALL_RECORDER_SIGNING_IDENTITY:-Call Recorder Local Development} \
         scripts/package-app.sh
 
+    print "Publishing the runtime the app fetches..."
+    publish_runtime
+
     local notes="dist/release-notes-$version.md"
     awk -v heading="## [$version]" '
         index($0, heading) == 1 { inside = 1; next }
@@ -129,6 +132,48 @@ publish() {
     gh release create "$tag" "${arguments[@]}" "$assets/$archive" "$assets/README.txt"
 
     verify
+}
+
+# Publishes the JavaScript runtime archive the app fetches, under the tag its own bytes name.
+#
+# The app does not carry the runtime: the bundle records the archive's hash and the address it is
+# fetched from, which is a release of its own named runtime-<first eight characters of the hash>, so
+# a runtime that does not change keeps one address across app releases. Nothing else creates that
+# release, and an app whose runtime is not published there fails its hash check however many times
+# it is retried: this is what happened to 0.1.16, which was published without its runtime, and the
+# Models pane said the download did not match and Retry changed nothing.
+publish_runtime() {
+    local bundle="$root/dist/Call Recorder $version/Call Recorder.app"
+    local recorded
+    recorded=$(<"$bundle/Contents/Resources/indexer/runtime.sha256")
+    local short=$recorded[1,8]
+    local archive="$root/dist/releases/CallRecorder-runtime-$short.zip"
+    if [[ ! -s "$archive" ]]; then
+        print -u2 "The bundle records runtime $recorded, and $archive is not here."
+        return 1
+    fi
+    local actual=$(shasum -a 256 "$archive" | awk '{ print $1 }')
+    if [[ "$actual" != "$recorded" ]]; then
+        print -u2 "The runtime archive hashes to $actual, and the bundle records $recorded."
+        return 1
+    fi
+    if gh release view "runtime-$short" >/dev/null 2>&1; then
+        print "Runtime $short is already published; the app fetches these same bytes."
+        return 0
+    fi
+    gh release create "runtime-$short" \
+        --title "Runtime $short" \
+        --notes "The transcript runtime Call Recorder
+$version
+fetches on first use, published under the first eight characters of its hash so an app update that
+changes nothing about the runtime reuses the copy already unpacked beside the app.
+
+It carries the transcript indexer, the MCP server, and what they run on: bun, ONNX Runtime, libsql,
+and the search dependencies. About 95 MB unpacked, 36 MB as this archive.
+
+The bundle of Call Recorder $version records the whole hash, $recorded, and accepts
+nothing else." \
+        "$archive"
 }
 
 test_suite() {
@@ -168,7 +213,20 @@ verify() {
         return 1
     fi
     codesign --verify --deep --strict "$bundle"
+    # The app fetches its JavaScript runtime from a release of its own. A bundle whose runtime is not
+    # published there fails on first use however many times it is retried, which is a release that
+    # cannot work, so this is not a release this script calls verified.
+    local recorded=$(<"$bundle/Contents/Resources/indexer/runtime.sha256")
+    local short=$recorded[1,8]
+    local published_runtime=$(gh api "repos/{owner}/{repo}/releases/tags/runtime-$short" \
+        --jq '.assets[].digest' 2>/dev/null || print "")
+    if [[ "$published_runtime" != "sha256:$recorded" ]]; then
+        print -u2 "The bundle fetches runtime-$short, which does not carry the bytes it records."
+        print -u2 "The app cannot unpack a runtime, and Retry cannot help it."
+        return 1
+    fi
     print "$tag is published: $archive, digest $digest, build $shipped_build, signature valid."
+    print "Runtime $short is published, carrying the hash this bundle records."
 }
 
 case "${1:---check}" in
