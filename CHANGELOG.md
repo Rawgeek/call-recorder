@@ -4,6 +4,43 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.13] - 2026-09-18
+
+A release about the two sides of a call. A recording that held one side said nothing about why, and
+on a Mac with no audio input at all it could not be made. Both are answered here, together with the
+speaker runtime that could not find the libraries it decodes with.
+
+### Added
+- **Settings -> General -> Record when there is no microphone**, on by default. A Mac mini has no
+  audio input, and ScreenCaptureKit records the call's system audio on its own, so the other side is
+  captured and the transcript holds it. Turning the switch off keeps the older refusal, which is the
+  choice for a Mac that has a microphone and wants every recording to hold both sides.
+- The Screen Recording permission is read when the app starts, so the card that names it is on the
+  surface before a call rather than after one that failed. The card opens the pane that holds the
+  switch.
+
+### Fixed
+- A start or a resume that macOS refuses for lack of Screen Recording now says so. It was reported
+  as a ScreenCaptureKit failure, and the sentence named no permission and no way to grant one. The
+  diagnostics still record the framework error, and a resume that fails this way leaves the call
+  paused, with the audio it holds, instead of ending it.
+- Speaker detection finds FFmpeg's shared libraries. TorchCodec loads them at runtime, and a GUI app
+  does not inherit the shell setup that makes them findable, so the check reported a runtime that
+  could not decode. The library directory of the FFmpeg the app selected is now passed to the child
+  process that does the speaker analysis, and nothing else in the app's environment changes.
+- The Speaker setup check decodes a real, one-second WAV through TorchCodec instead of loading the
+  model and stopping there. A runtime that cannot decode audio no longer reports itself ready.
+- Every capture refusal has a sentence a person can act on. Without one, a missing microphone
+  reached the surface as "The operation couldn't be completed".
+- The release signature carries the microphone entitlement.
+
+### Verified
+- 607 tests pass in 77 suites. Eight are new: the two permissions, the absent microphone, the
+  FFmpeg library path, and the stored setting that records without one.
+- Said plainly: a recording made without a microphone holds the other side only, and no local
+  voice is in it. Diarization has one speaker to work with, and the person who recorded it is not
+  in the transcript. The switch is there to be turned off where that is not wanted.
+
 ## [0.1.12] - 2026-09-18
 
 A correction to when the recorder starts by itself. It started for any app that took the

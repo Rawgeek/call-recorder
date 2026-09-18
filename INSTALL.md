@@ -1,4 +1,4 @@
-# Call Recorder 0.1.1 — install, features, and Codex MCP
+# Call Recorder 0.1.13 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -9,31 +9,19 @@ the machine. Nothing is uploaded to a cloud service.
 
 ## What is new in this build
 
-This build is a full interface rebuild on the same engine.
-
-- The menu-bar panel now has three fixed bands: what is happening now, what needs a
-  decision, and recent calls. The recording timer is large, and row actions appear when
-  the pointer is over a call instead of filling the list with icons.
-- Review Speakers shows one glass card per voice, with the sample lines beside a play
-  button. Speaker labels read "Speaker 2" rather than SPEAKER_02.
-- Settings uses a sidebar instead of a tab bar: General, Models, Participants,
-  Vocabulary, Recovery.
-- Every settings pane shares one frame: the same margins, one readable column width, and
-  grouped cards instead of full-width rows. Resizing the window no longer stretches a
-  label away from its control.
-- The Participants list is a checklist you can click anywhere on. The editor collects
-  name, role, company, and email in one pass.
-- Models update themselves. After launch and every few hours, Call Recorder asks the model
-  host whether a newer Whisper model exists.
-
-Behavior fixes in this build:
-
-- Confirm in Review Speakers no longer stays inert while samples are loading.
-- Long participant names truncate at the end, not through the middle of a word.
-- The participant editor and the vocabulary editor use the same card layout and spacing
-  as the settings panes they open from.
-- Adding a new setting no longer resets the saved ones. An older settings file is read
-  field by field, so folder, microphone, and participant choices survive an update.
+- A recording starts by itself only for a real call. The app that holds the microphone
+  must also play the other side for five seconds, so a voice message or a dictation
+  session no longer starts one. Every decision is logged with the app's name.
+- A Mac with no audio input still records the other side. ScreenCaptureKit captures the
+  call's system audio on its own; Settings > General > "Record when there is no
+  microphone" keeps the older refusal one switch away.
+- The Screen Recording permission is read when the app starts, so the card that names it
+  and opens the right settings pane appears before a call rather than after one fails.
+- Speaker detection finds FFmpeg's shared libraries, and the Speaker setup check decodes a
+  real one-second WAV instead of only loading the model.
+- The menu-bar panel no longer opens with a strip of nothing above its content, and every
+  row in Recent shows how long its call ran.
+- Discarding a recording is confirmed inside the panel, where the buttons answer.
 
 The app draws its surfaces with Liquid Glass on macOS 26 and falls back to system
 materials on macOS 15. No third-party design dependency is used.
@@ -242,3 +230,4 @@ Biome checks.
 | Wrong microphone (headset instead of laptop) | Settings -> General -> Recording microphone. |
 | Some transcripts are missing | Settings -> Recovery -> check database, restore working files, or retry the failed call. |
 | Settings says a new version is ready, but the version did not change | The new version is installed when the app quits. Settings -> Updates -> Restart installs it now, without a manual download. |
+| A Mac with no microphone records the other side only | Expected on a Mac mini: Settings -> General -> "Record when there is no microphone" is on. Turn it off to refuse recordings without a microphone. |
