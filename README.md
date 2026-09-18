@@ -118,7 +118,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
      accurate and slower. The silence filter, about 865 KB, downloads on its own. Everything
      runs locally.
    - **General**: choose the microphone or follow the system's own choice, the recordings folder
-     (default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
+     (direct-build default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
      microphone, and whether a finished call keeps its audio.
    - **Participants**: add the people you meet with, and mark which one is you.
 6. Leave **Start at login** on if you want it always available.
@@ -155,6 +155,25 @@ archive itself when it starts the MCP server with no app running.
 
 Set `CALL_RECORDER_EMBED_RUNTIME=1` to package a self-contained app instead: the archive travels
 inside the bundle, nothing is fetched, and that build needs no network.
+
+### Mac App Store package
+
+The App Store build is a separate, sandboxed path. It uses Apple AVFoundation instead of ffmpeg for
+audio processing and embeds only a pinned, prebuilt `whisper-cli` executable helper. It includes
+local transcription and maintains an internal native transcript index for processing integrity;
+there is no Store-facing transcript search. MCP and speaker identification/review are also
+unavailable in this distribution. Start with the submission checklist
+and account-specific environment variables in [`AppStore/README.md`](AppStore/README.md), then run:
+
+```sh
+scripts/app-store-preflight.sh --source
+scripts/package-app-store.sh
+scripts/app-store-preflight.sh --app "dist/AppStore/Call Recorder.app"
+```
+
+The package script creates a signed installer package but does not upload it. A registered bundle
+ID, App Store provisioning profile, application certificate, installer certificate, final privacy
+answers, agreements, screenshots, and App Store Connect submission remain account-holder steps.
 
 ### Speaker identification (optional)
 
@@ -195,19 +214,24 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 
 | Path | Contents |
 | --- | --- |
-| `~/Desktop/Call Recordings` | Transcripts (`<date-time>.md`) and a small metadata file per call. The folder is configurable. |
+| `~/Desktop/Call Recordings` | Direct-build default for transcripts (`<date-time>.md`) and their small metadata files. The folder is configurable. |
+| `~/Library/Application Support/CallRecorder/Recordings` | Store-build default for the same recording files inside the app sandbox. The folder is configurable with the folder picker. |
 | `~/Library/Application Support/CallRecorder/calls.db` | The local library: calls, participants, glossary, transcripts, search index. |
-| `~/Library/Application Support/CallRecorder/models` | Downloaded Whisper, VAD, and embedding models. |
-| `~/Library/Application Support/CallRecorder/runtime` | The JavaScript runtime the search index and the MCP server run on, unpacked from the app once per version. |
+| `~/Library/Application Support/CallRecorder/models` | Downloaded Whisper and VAD models; the direct build can also keep embedding models here. |
+| `~/Library/Application Support/CallRecorder/runtime` | Direct build only: the JavaScript runtime used by transcript search and the MCP server, unpacked from the app once per version. The Store build neither installs nor uses it. |
 | `~/Library/Application Support/CallRecorder/Recently Deleted` | Working folders kept for 24 hours after a call is finished or discarded. |
-| `~/Library/Application Support/CallRecorder/Speaker Samples` | Short clips cut for speaker review, with the silence removed. Kept for a fortnight. |
-| macOS Keychain | The encryption key for voice profiles. |
+| `~/Library/Application Support/CallRecorder/Speaker Samples` | Direct build only: short clips cut for speaker review, with the silence removed. Kept for a fortnight. |
+| macOS Keychain | Direct build only: the encryption key for voice profiles. |
 
 ## Privacy
 
-- Recording, transcription, diarization, embedding, and search all run locally.
-- No account, no telemetry, and no network call other than model downloads from the model host
-  you configure.
+- Recording and transcription run locally. In the direct build, diarization, embedding, and
+  transcript search also run locally; the Store build does not expose those features.
+- No account or telemetry. The direct build contacts GitHub for update checks, app updates, and
+  its verified indexer-runtime archive, plus configured model hosts for model downloads. The Mac
+  App Store build embeds only its pinned Whisper helper, receives app updates through the Store,
+  and contacts only configured model hosts for requested speech models and supporting data models,
+  such as the VAD model that may be prepared automatically for local transcription.
 - Voice profiles are encrypted with a key in the macOS Keychain, and are excluded from
   transcripts, diagnostics, and MCP responses.
 - The MCP server exposes read tools for everything, and write tools only for vocabulary,

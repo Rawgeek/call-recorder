@@ -92,8 +92,25 @@ public struct AppSettings: Codable, Equatable, Sendable {
     }
 
     public static var `default`: AppSettings {
-        AppSettings(
-            automaticDetectionEnabled: true,
+        defaults(for: .direct)
+    }
+
+    /// Fresh-install settings for an independently distributed or App Store build.
+    public static func defaults(for distributionChannel: DistributionChannel) -> AppSettings {
+        let automaticDetectionEnabled = distributionChannel == .direct
+        let outputDirectory = switch distributionChannel {
+        case .direct:
+            FileManager.default.urls(for: .desktopDirectory, in: .userDomainMask)[0]
+                .appending(path: "Call Recordings", directoryHint: .isDirectory).path
+        case .appStore:
+            FileManager.default.urls(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask
+            )[0]
+                .appending(path: "CallRecorder/Recordings", directoryHint: .isDirectory).path
+        }
+        return AppSettings(
+            automaticDetectionEnabled: automaticDetectionEnabled,
             automaticDetectionNoticeDismissed: false,
             automaticStopGraceSeconds: 2,
             minimumAutomaticRecordingSeconds: AutomaticRecordingRails.defaultMinimumSeconds,
@@ -103,8 +120,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             selectedMicrophoneID: nil,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
-            outputDirectory: FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Desktop/Call Recordings", directoryHint: .isDirectory).path,
+            outputDirectory: outputDirectory,
             automaticModelUpdatesEnabled: true,
             automaticAppUpdatesEnabled: true,
             appUpdateCheckInterval: .default,
@@ -113,6 +129,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
             appliedArtifactRuleVersion: nil
         )
     }
+}
+
+extension DistributionChannel {
+    /// Voice profiles and speaker review ship only in the independently distributed build.
+    public var allowsVoiceIdentity: Bool { self == .direct }
 }
 
 extension AppSettings {
@@ -125,9 +146,12 @@ extension AppSettings {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let fallback = AppSettings.default
+        // Automatic detection predates this decoder. A stored blob without the key belongs to an
+        // existing installation, so it keeps the original on-by-default behavior even though a
+        // genuinely fresh App Store installation starts with recording off.
         automaticDetectionEnabled =
             try container.decodeIfPresent(Bool.self, forKey: .automaticDetectionEnabled)
-            ?? fallback.automaticDetectionEnabled
+            ?? true
         // Added after the first release. Absent means the reminder has never been dismissed, which
         // is what a settings blob written before the option existed has to mean, and what keeps a
         // first run showing the card.

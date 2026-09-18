@@ -3,7 +3,7 @@ import Testing
 @testable import CallRecorderCore
 
 struct ModelCatalogTests {
-    @Test func defaultsToMultilingualSmallModelAndDesktopOutput() {
+    @Test func defaultsToDirectAutomaticRecordingAndDesktopOutput() {
         // Given / When
         let settings = AppSettings.default
 

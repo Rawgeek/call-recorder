@@ -88,26 +88,33 @@ struct SpeakerReviewView: View {
                 )
                 runtimeChip
                 Spacer(minLength: 0)
-                Menu {
-                    Button("Check Speaker Setup", systemImage: "checkmark.seal") {
-                        Task { await model.checkSpeakerRuntime() }
-                    }
-                    .disabled(model.checkingSpeakerRuntime)
-                    Button("Choose Python Environment…", systemImage: "folder") {
-                        model.chooseSpeakerPython()
-                    }
-                    if model.errorDetails != nil {
-                        Button("Copy Debug Details", systemImage: "doc.on.doc") {
-                            model.copyErrorDetails()
+                if model.distributionChannel.allowsExternalToolSelection {
+                    Menu {
+                        Button("Check Speaker Setup", systemImage: "checkmark.seal") {
+                            Task { await model.checkSpeakerRuntime() }
                         }
+                        .disabled(model.checkingSpeakerRuntime)
+                        Button("Choose Python Environment…", systemImage: "folder") {
+                            model.chooseSpeakerPython()
+                        }
+                        if model.errorDetails != nil {
+                            Button("Copy Debug Details", systemImage: "doc.on.doc") {
+                                model.copyErrorDetails()
+                            }
+                        }
+                    } label: {
+                        Label("Speaker setup", systemImage: "wrench.and.screwdriver")
+                            .font(CR.Font.caption)
                     }
-                } label: {
-                    Label("Speaker setup", systemImage: "wrench.and.screwdriver")
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Check or repair the local speaker detection runtime")
+                } else {
+                    Text("Speaker detection is unavailable because its runtime is not bundled.")
                         .font(CR.Font.caption)
+                        .foregroundStyle(CR.Ink.readable)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .menuStyle(.borderlessButton)
-                .fixedSize()
-                .help("Check or repair the local speaker detection runtime")
             }
         }
         .padding(CR.Space.screen)
@@ -115,7 +122,9 @@ struct SpeakerReviewView: View {
 
     @ViewBuilder
     private var runtimeChip: some View {
-        if model.checkingSpeakerRuntime {
+        if !model.distributionChannel.allowsExternalToolSelection {
+            CRStatusChip(tone: .muted, text: "Not available in this build")
+        } else if model.checkingSpeakerRuntime {
             CRStatusChip(tone: .working, text: "Checking setup…")
         } else if isRuntimeHealthy {
             CRStatusChip(tone: .ready, text: "Speaker detection ready")

@@ -3,8 +3,13 @@
 Call Recorder records private conversations, so its privacy and security properties are part of
 the product.
 
-- **Local only.** Recording, transcription, diarization, embedding, and search run on the Mac.
-  The only network requests are model downloads from the configured model host.
+- **Local processing.** Recording and transcription run on the Mac. In the direct-download build,
+  diarization, embedding, and transcript search also run locally; that build contacts GitHub for
+  update checks, app updates, and its signed indexer-runtime archive. The Mac App Store build has
+  no JavaScript indexer/MCP runtime or user-facing transcript search. It keeps only a native
+  internal transcript index, receives application updates through the App Store, and contacts
+  configured model hosts for requested speech models and supporting data models, such as the VAD
+  model that may be prepared automatically.
 - **Voiceprints are encrypted.** The key lives in the macOS Keychain; profiles never appear in
   transcripts, search results, diagnostics, or MCP output.
 - **The MCP server cannot destroy work.** It exposes read tools for calls and transcripts and
@@ -19,4 +24,3 @@ the product.
 
 To report a vulnerability, use GitHub's private vulnerability reporting on the repository
 (Security -> Report a vulnerability).
-

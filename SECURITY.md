@@ -18,8 +18,13 @@ include the tool name and arguments.
 These are properties the code is built to keep. A report that shows one of them failing is a
 security bug, even without data loss.
 
-- **Local only.** Recording, transcription, diarization, embedding, and search run on the
-  machine. The only network requests are model downloads from the configured model host.
+- **Local processing.** Recording and transcription run on the machine. In the direct-download
+  build, diarization, embedding, and transcript search also run locally; that build contacts GitHub
+  for update checks, app updates, and its signed indexer-runtime archive. The Mac App Store build
+  has no JavaScript indexer/MCP runtime or user-facing transcript search. It keeps only a native
+  internal transcript index, receives application updates through the App Store, and contacts
+  configured model hosts for requested speech models and supporting data models, such as the VAD
+  model that may be prepared automatically.
 - **Voiceprints are encrypted.** The voice-profile key lives in the macOS Keychain
   (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and the profiles never appear in
   transcripts, search results, diagnostics, or MCP output.

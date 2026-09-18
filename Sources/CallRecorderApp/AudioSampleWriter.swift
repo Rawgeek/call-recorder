@@ -55,7 +55,10 @@ final class AudioSampleWriter: @unchecked Sendable {
         partial = destination.deletingLastPathComponent().appending(path: partialName)
     }
 
-    func append(_ sampleBuffer: CMSampleBuffer) throws {
+    /// Appends one captured buffer. Returns false when bounded back-pressure handling deliberately
+    /// drops the sample; callers that prove source readiness must not count that as writable audio.
+    @discardableResult
+    func append(_ sampleBuffer: CMSampleBuffer) throws -> Bool {
         lock.lock()
         defer { lock.unlock() }
         if let appendError { throw appendError }
@@ -68,7 +71,7 @@ final class AudioSampleWriter: @unchecked Sendable {
                 // click; losing the track is a call without the other person in it.
                 if let appendError { throw appendError }
                 droppedSamples += 1
-                return
+                return false
             }
             guard input.append(sampleBuffer) else {
                 throw AudioSampleWriterError.writerFailed(
@@ -85,6 +88,7 @@ final class AudioSampleWriter: @unchecked Sendable {
             } else {
                 lastPresentationEnd = end
             }
+            return true
         } catch {
             appendError = error
             throw error

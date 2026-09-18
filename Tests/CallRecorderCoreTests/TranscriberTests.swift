@@ -1,3 +1,4 @@
+import AVFoundation
 import CallRecorderCore
 import Foundation
 import Testing
@@ -199,6 +200,51 @@ struct TranscriberTests {
         #expect(segments.map { $0["source"] as? String } == ["microphone", "system"])
         let first = try #require(segments.first)
         #expect(first["speakerName"] as? String == "Sam")
+    }
+
+    @Test("native transcription keeps WAV fallback sources separate")
+    func transcribesWAVFallbackSourcesNatively() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "call-recorder-wav-sources-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let system = directory.appending(path: "system.wav")
+        let microphone = directory.appending(path: "microphone.wav")
+        let compatibilityMix = directory.appending(path: "call.wav")
+        try makeTone(at: system, frequency: 440)
+        try makeTone(at: microphone, frequency: 880)
+        try FileManager.default.copyItem(at: system, to: compatibilityMix)
+        let fakeWhisper = try makeSourceAwareFakeWhisper(in: directory)
+        let model = directory.appending(path: "ggml-small.bin")
+        try Data().write(to: model)
+        let vadModel = directory.appending(path: "ggml-silero-v6.2.0.bin")
+        try Data().write(to: vadModel)
+        let sam = Participant(id: ParticipantID(rawValue: UUID()), name: "Sam")
+
+        let record = try await Transcriber(
+            preparation: .native,
+            whisperCLI: fakeWhisper,
+            vadModel: vadModel
+        ).transcribe(
+            callID: CallID(rawValue: UUID()),
+            audio: compatibilityMix,
+            modelID: "small",
+            modelFile: model,
+            participants: [sam],
+            glossary: [],
+            directory: directory,
+            localParticipant: sam
+        )
+
+        #expect(record.text == "Local hello.\nRemote hello.")
+        let object = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: URL(filePath: record.jsonPath)))
+                as? [String: Any]
+        )
+        let segments = try #require(object["segments"] as? [[String: Any]])
+        #expect(segments.map { $0["source"] as? String } == ["microphone", "system"])
+        #expect(segments.map { $0["startMs"] as? Int } == [100, 400])
+        #expect(segments.first?["speakerName"] as? String == "Sam")
     }
 
     // The speaker stage drives a Python script through its pipes, which a CI image does not run the
@@ -511,6 +557,34 @@ struct TranscriberTests {
         try Data(script.utf8).write(to: url)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
+    }
+
+    private func makeTone(at url: URL, frequency: Double) throws {
+        let format = try #require(
+            AVAudioFormat(
+                commonFormat: .pcmFormatInt16,
+                sampleRate: 48_000,
+                channels: 1,
+                interleaved: false
+            )
+        )
+        let frameCount = AVAudioFrameCount(format.sampleRate / 5)
+        let buffer = try #require(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount))
+        buffer.frameLength = frameCount
+        let samples = try #require(buffer.int16ChannelData?[0])
+        for frame in 0..<Int(frameCount) {
+            samples[frame] = Int16(
+                sin(2 * .pi * frequency * Double(frame) / format.sampleRate)
+                    * Double(Int16.max) * 0.2
+            )
+        }
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: format.settings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+        try file.write(from: buffer)
     }
 
     private func makeFakeDiarizer(in directory: URL) throws -> URL {

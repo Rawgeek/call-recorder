@@ -247,7 +247,8 @@ final class AppModel {
             // The wait between checks is running on the step that was in force when it started.
             // A change to the setting ends that wait, so the choice takes effect now rather than
             // after the day it may have replaced.
-            if settings.appUpdateCheckInterval != oldValue.appUpdateCheckInterval {
+            if distributionChannel.allowsSelfUpdate,
+               settings.appUpdateCheckInterval != oldValue.appUpdateCheckInterval {
                 appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
             }
             saveSettings()
@@ -262,11 +263,13 @@ final class AppModel {
     let modelManager: ModelManager
     /// The models the app needs but does not ask anyone to choose between.
     let supportingManager: SupportingModelManager
+    let distributionChannel = DistributionChannel.current
     private let applicationDirectory: URL
     private let store: CallStore?
     private var speakerStore: SpeakerStore?
 
     private var diarizer: Diarizer? {
+        guard distributionChannel.allowsExternalToolSelection else { return nil }
         guard let script = Self.diarizerScriptURL() else { return nil }
         let managedPython = applicationDirectory.appending(path: "python/bin/python3")
         let configuredPython = (defaults.string(forKey: "speaker-python")
@@ -310,7 +313,7 @@ final class AppModel {
     }
 
     private let pipeline: CallPipeline?
-    private let indexer: IndexerClient?
+    private let indexer: (any TranscriptIndexing)?
     /// The JavaScript runtime the indexer runs on, fetched rather than carried in the bundle.
     let indexerRuntime: IndexerRuntimeInstaller
     /// Follows the releases of this app's repository and installs a newer one when the app quits.
@@ -358,6 +361,8 @@ final class AppModel {
     private let captureSession = AudioCaptureSession()
     private var captureOperationInFlight = false
     private var activeSessionDirectory: URL?
+    /// The user-selected recordings directory whose sandbox extension stays active for this run.
+    private var securityScopedOutputURL: URL?
     private var capturedSegments: [CaptureSegment] = []
     private var nextSegmentIndex = 1
     private var activeCallID: CallID?
@@ -376,6 +381,7 @@ final class AppModel {
     private var captureQueue = CaptureCommandQueue()
     private static let settingsKey = "app-settings"
     private static let startAtLoginKey = "start-at-login"
+    private static let outputDirectoryBookmarkKey = "output-directory-bookmark"
 
     /// Where saved preferences are read and written.
     ///
@@ -442,8 +448,8 @@ final class AppModel {
 
     init() {
         let applicationDirectory = Self.previewHomeDirectory()
-            ?? FileManager.default.homeDirectoryForCurrentUser
-                .appending(path: "Library/Application Support/CallRecorder", directoryHint: .isDirectory)
+            ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+                .appending(path: "CallRecorder", directoryHint: .isDirectory)
         self.applicationDirectory = applicationDirectory
         modelManager = ModelManager(
             directory: applicationDirectory.appending(path: "models/whisper"),
@@ -461,7 +467,7 @@ final class AppModel {
         {
             settings = stored
         } else {
-            settings = .default
+            settings = .defaults(for: distributionChannel)
         }
         startAtLoginEnabled = defaults.object(
             forKey: Self.startAtLoginKey
@@ -469,12 +475,13 @@ final class AppModel {
         errorDetails = defaults.string(forKey: "last-error")
         whisperVersion = defaults.string(forKey: Self.whisperVersionKey)
         let localStore = try? CallStore(path: applicationDirectory.appending(path: "calls.db").path)
-        let tools = ToolLocator.standard
         store = localStore
-        if
+        if let localStore, distributionChannel == .appStore {
+            pipeline = CallPipeline(store: localStore, finalizer: NativeMediaProcessor())
+        } else if
             let localStore,
-            let ffmpeg = tools.locate("ffmpeg"),
-            let ffprobe = tools.locate("ffprobe")
+            let ffmpeg = ToolLocator.standard.locate("ffmpeg"),
+            let ffprobe = ToolLocator.standard.locate("ffprobe")
         {
             pipeline = CallPipeline(
                 store: localStore,
@@ -483,7 +490,9 @@ final class AppModel {
         } else {
             pipeline = nil
         }
-        indexer = IndexerClient.standard(applicationDirectory: applicationDirectory)
+        indexer = distributionChannel == .appStore
+            ? NativeTranscriptIndexer()
+            : IndexerClient.standard(applicationDirectory: applicationDirectory)
         indexerRuntime = IndexerRuntimeInstaller(
             applicationDirectory: applicationDirectory,
             unpacker: Bundle.main.url(forResource: "bun", withExtension: nil, subdirectory: "indexer"),
@@ -500,6 +509,7 @@ final class AppModel {
             pipeline: pipeline
         )
         self.backgroundFinalization = backgroundFinalization
+        restoreSecurityScopedOutputDirectory()
         Task {
             await backgroundFinalization.setOnChange { [weak self] state in
                 Task { @MainActor [weak self] in
@@ -510,20 +520,26 @@ final class AppModel {
         updateStartAtLogin()
         // Read through the setting every time, so turning automatic updates off takes effect at
         // the next check rather than at the next launch.
-        appUpdater.automaticUpdatesEnabled = { [weak self] in
-            self?.settings.automaticAppUpdatesEnabled ?? true
+        if distributionChannel.allowsSelfUpdate {
+            appUpdater.automaticUpdatesEnabled = { [weak self] in
+                self?.settings.automaticAppUpdatesEnabled ?? true
+            }
+            // The step the user chose is handed over once, here; every later change arrives
+            // through the settings observer above.
+            appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
         }
-        // The step the user chose is handed over once, here; every later change arrives through
-        // the settings observer above.
-        appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
         Task {
             await loadMetadata()
             // Preview mode stops here. Everything below either watches the microphone, writes
             // to the database, or talks to the network, and a layout review needs none of it.
             if Self.isPreviewMode { return }
             await processor?.start()
-            startSpeakerReviewRequestPolling()
-            observeSessionUnlock()
+            if distributionChannel.allowsVoiceIdentity {
+                startSpeakerReviewRequestPolling()
+            }
+            if distributionChannel.allowsVoiceIdentity {
+                observeSessionUnlock()
+            }
             // Two repairs run here, and this is the order they have to run in.
             //
             // Cleanup removes a call's working folder once its transcript is promoted. Where the
@@ -564,14 +580,95 @@ final class AppModel {
             startFromLaunchArgumentIfNeeded()
             startModelMaintenance()
             prepareSupportingModels()
-            observeApplicationTermination()
-            appUpdater.start()
+            if distributionChannel.allowsSelfUpdate {
+                observeApplicationTermination()
+                appUpdater.start()
+            }
             // The clips the speaker review plays are a cache: the recording is the record, and
             // anything nobody has listened to for a fortnight can go.
-            speakerSamples?.prune()
+            if distributionChannel.allowsVoiceIdentity {
+                speakerSamples?.prune()
+            }
             Logger(subsystem: "local.callrecorder.app", category: "models")
                 .notice("launch setup reached the model maintenance step")
         }
+    }
+
+    isolated deinit {
+        securityScopedOutputURL?.stopAccessingSecurityScopedResource()
+    }
+
+    /// Applies a recordings-folder choice under the rules of the current distribution.
+    func selectOutputDirectory(_ url: URL) {
+        guard distributionChannel.usesSecurityScopedOutputBookmarks else {
+            settings.outputDirectory = url.path
+            return
+        }
+
+        do {
+            let bookmark = try url.bookmarkData(
+                options: .withSecurityScope,
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+            guard url.startAccessingSecurityScopedResource() else { return }
+
+            let previousURL = securityScopedOutputURL
+            securityScopedOutputURL = url
+            defaults.set(bookmark, forKey: Self.outputDirectoryBookmarkKey)
+            settings.outputDirectory = url.path
+            previousURL?.stopAccessingSecurityScopedResource()
+        } catch {
+            return
+        }
+    }
+
+    /// Restores the sandbox extension before any recording or recovery work starts.
+    private func restoreSecurityScopedOutputDirectory() {
+        guard distributionChannel.usesSecurityScopedOutputBookmarks else { return }
+        guard let bookmark = defaults.data(forKey: Self.outputDirectoryBookmarkKey) else {
+            fallBackToSafeOutputDirectory()
+            return
+        }
+
+        do {
+            var isStale = false
+            let url = try URL(
+                resolvingBookmarkData: bookmark,
+                options: .withSecurityScope,
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            )
+            guard url.startAccessingSecurityScopedResource() else {
+                fallBackToSafeOutputDirectory()
+                return
+            }
+            if isStale {
+                do {
+                    let refreshed = try url.bookmarkData(
+                        options: .withSecurityScope,
+                        includingResourceValuesForKeys: nil,
+                        relativeTo: nil
+                    )
+                    defaults.set(refreshed, forKey: Self.outputDirectoryBookmarkKey)
+                } catch {
+                    url.stopAccessingSecurityScopedResource()
+                    fallBackToSafeOutputDirectory()
+                    return
+                }
+            }
+            securityScopedOutputURL = url
+            settings.outputDirectory = url.path
+        } catch {
+            fallBackToSafeOutputDirectory()
+        }
+    }
+
+    private func fallBackToSafeOutputDirectory() {
+        securityScopedOutputURL?.stopAccessingSecurityScopedResource()
+        securityScopedOutputURL = nil
+        defaults.removeObject(forKey: Self.outputDirectoryBookmarkKey)
+        settings.outputDirectory = AppSettings.defaults(for: distributionChannel).outputDirectory
     }
 
     /// Gets what the next recording needs out of the way while the app is idle.
@@ -581,7 +678,9 @@ final class AppModel {
     /// silence filter is a download of under a megabyte that every transcription waits for.
     /// Neither is urgent, and both are worse to hit at the end of a call than at launch.
     private func prepareSupportingModels() {
-        indexerRuntime.install()
+        if distributionChannel.allowsDownloadedExecutableRuntime {
+            indexerRuntime.install()
+        }
         if let vad = supportingManager.models.first(where: { $0.id == SupportingModel.sileroVADID }) {
             supportingManager.downloadIfNeeded(vad)
         }
@@ -661,13 +760,14 @@ final class AppModel {
             // The saved choice is reported as it was saved. Resolving it here would collapse
             // "follow the system" into whichever device the system points at while the menu is
             // drawn, and the menu would then show that device as chosen instead of the choice.
-            if settings.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
+            if settings.selectedMicrophoneID == nil
+                || settings.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
                 return AudioCaptureSession.systemMicrophoneID
             }
-            return AudioCaptureSession.resolvedMicrophoneID(
-                availableIDs: availableMicrophones.map(\.id),
-                selectedID: settings.selectedMicrophoneID
-            ) ?? ""
+            guard let selected = settings.selectedMicrophoneID,
+                  availableMicrophones.contains(where: { $0.id == selected })
+            else { return AudioCaptureSession.systemMicrophoneID }
+            return selected
         }
         set { settings.selectedMicrophoneID = newValue.isEmpty ? nil : newValue }
     }
@@ -992,6 +1092,14 @@ final class AppModel {
     }
 
     func refreshSpeakerReviews() async {
+        guard distributionChannel.allowsVoiceIdentity else {
+            speakerReviews = []
+            speakerReviewEvidence = [:]
+            speakerReviewCallDates = [:]
+            voiceProfileSummaries = []
+            speakerAnalysisIssues = []
+            return
+        }
         // A seeded card is put there by the renderer, and the window refreshes the list when it
         // appears, which would clear it and draw an empty queue over the state being reviewed.
         if previewSeededReviewCard { return }
@@ -1092,6 +1200,7 @@ final class AppModel {
     /// Mac is locked and works again after the user comes back. Retrying on unlock saves a manual
     /// click and heals a session that started before the first unlock.
     private func observeSessionUnlock() {
+        guard distributionChannel.allowsVoiceIdentity else { return }
         guard sessionUnlockObserver == nil else { return }
         sessionUnlockObserver = DistributedNotificationCenter.default().addObserver(
             forName: Notification.Name("com.apple.screenIsUnlocked"),
@@ -1111,6 +1220,7 @@ final class AppModel {
     /// it. The notification arrives on the main thread, so the filesystem work runs to completion
     /// here; work handed to a task at this point would not be guaranteed to start at all.
     private func observeApplicationTermination() {
+        guard distributionChannel.allowsSelfUpdate else { return }
         guard appTerminationObserver == nil else { return }
         appTerminationObserver = NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification,
@@ -1125,6 +1235,10 @@ final class AppModel {
 
     func checkSpeakerRuntime() async {
         guard !checkingSpeakerRuntime else { return }
+        guard distributionChannel.allowsExternalToolSelection else {
+            speakerRuntimeMessage = "Speaker detection is unavailable because its runtime is not bundled."
+            return
+        }
         checkingSpeakerRuntime = true
         defer { checkingSpeakerRuntime = false }
         do {
@@ -1144,6 +1258,7 @@ final class AppModel {
     }
 
     func chooseSpeakerPython() {
+        guard distributionChannel.allowsExternalToolSelection else { return }
         let panel = NSOpenPanel()
         panel.title = "Choose the Python executable with pyannote.audio installed"
         panel.canChooseDirectories = false
@@ -1204,6 +1319,10 @@ final class AppModel {
     }
 
     private func refreshSpeakerAnalysisIssues() async {
+        guard distributionChannel.allowsVoiceIdentity else {
+            speakerAnalysisIssues = []
+            return
+        }
         guard let store else { return }
         do {
             let jobs = try await store.processingJobs()
@@ -1409,11 +1528,11 @@ final class AppModel {
 
     /// Where the tool was found, so the row can name the install rather than describe it.
     var whisperCLIPath: String? {
-        ToolLocator.standard.locate("whisper-cli")?.path
+        resolvedWhisperCLI()?.path
     }
 
     func refreshWhisperVersion() async {
-        guard let executable = ToolLocator.standard.locate("whisper-cli") else {
+        guard let executable = resolvedWhisperCLI() else {
             whisperVersion = nil
             return
         }
@@ -1433,6 +1552,20 @@ final class AppModel {
     var whisperVersionLabel: String? {
         whisperVersion
             ?? whisperCLIPath.flatMap { WhisperCLIVersion.fromInstallPath(URL(filePath: $0)) }
+    }
+
+    /// Store builds execute only the helper signed into their bundle. Direct builds keep the
+    /// existing PATH/Homebrew lookup for users who manage whisper.cpp themselves.
+    private func resolvedWhisperCLI() -> URL? {
+        if distributionChannel == .appStore {
+            guard let bundled = Bundle.main.url(
+                forResource: "whisper-cli",
+                withExtension: nil,
+                subdirectory: "bin"
+            ), FileManager.default.isExecutableFile(atPath: bundled.path) else { return nil }
+            return bundled
+        }
+        return ToolLocator.standard.locate("whisper-cli")
     }
 
     /// True while a recording is running or a transcript is being produced.
@@ -1901,7 +2034,11 @@ final class AppModel {
                 if let pending = try? await store.pendingIndexCallIDs() { owed.formUnion(pending) }
                 for callID in owed.sorted(by: { $0.rawValue.uuidString < $1.rawValue.uuidString }) {
                     do {
-                        try await indexer.index(callID: callID, store: store)
+                        try await indexer.index(
+                            callID: callID,
+                            store: store,
+                            cancellation: nil
+                        )
                         // The indexing the pipeline was queued for has just happened here, so the
                         // queue must not keep counting it as pending work. Without this the pane
                         // listed the whole repaired library as still processing, and a second
@@ -2365,7 +2502,7 @@ final class AppModel {
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
         guard let pipeline else {
-            errorMessage = "ffmpeg and ffprobe are required to save recordings."
+            errorMessage = "The local audio processing pipeline is unavailable."
             apply(.fail(.storageUnavailable))
             return
         }
@@ -2416,6 +2553,11 @@ final class AppModel {
                 return
             }
             report(error, context: "Capture Start", category: .capture)
+            if error is AudioCaptureError {
+                // Capture errors are written to diagnostics above, but the visible message needs
+                // the recovery instruction rather than the reflected enum case name.
+                errorMessage = error.localizedDescription
+            }
             apply(.fail(.captureUnavailable))
         }
     }
@@ -2651,10 +2793,10 @@ final class AppModel {
     /// A diarized turn can open with seconds of silence, and a review card is where a person
     /// decides who a voice is. The clip is cut once and kept, so pressing play again is instant.
     @ObservationIgnored private lazy var speakerSamples: SpeakerSampleBuilder? = {
-        guard let finalizer = pipeline?.finalizer else { return nil }
+        guard let tools = pipeline?.finalizer.externalTools else { return nil }
         return SpeakerSampleBuilder(
-            ffmpeg: finalizer.ffmpeg,
-            ffprobe: finalizer.ffprobe,
+            ffmpeg: tools.ffmpeg,
+            ffprobe: tools.ffprobe,
             directory: applicationDirectory.appending(
                 path: "Speaker Samples",
                 directoryHint: .isDirectory
@@ -2728,7 +2870,7 @@ final class AppModel {
                 let audioPath = call.audioPath,
                 FileManager.default.fileExists(atPath: audioPath)
             else { throw BackgroundProcessingError.audioUnavailable }
-            guard let whisperCLI = ToolLocator.standard.locate("whisper-cli") else {
+            guard let whisperCLI = resolvedWhisperCLI() else {
                 throw BackgroundProcessingError.whisperUnavailable
             }
             guard
@@ -2740,6 +2882,14 @@ final class AppModel {
             let participants = try await store.participants(for: job.callID)
             let glossary = try await store.listGlossaryTerms()
             let audio = URL(filePath: audioPath)
+            let audioPreparation: TranscriptionAudioPreparation
+            if distributionChannel == .appStore {
+                audioPreparation = .native
+            } else if let ffmpeg = pipeline.finalizer.externalTools?.ffmpeg {
+                audioPreparation = .ffmpeg(ffmpeg)
+            } else {
+                throw BackgroundProcessingError.pipelineUnavailable
+            }
             _ = try await pipeline.transcribe(
                 callID: job.callID,
                 audio: audio,
@@ -2751,7 +2901,7 @@ final class AppModel {
                 directory: audio.deletingLastPathComponent(),
                 queueIndexing: false,
                 using: Transcriber(
-                    ffmpeg: pipeline.finalizer.ffmpeg,
+                    preparation: audioPreparation,
                     whisperCLI: whisperCLI,
                     vadModel: try await ensuredVADModel(),
                     cancellation: cancellation
@@ -2759,6 +2909,9 @@ final class AppModel {
             )
             return .diarizing
         case .diarizing:
+            // The Store build has no Python/ffmpeg speaker-analysis runtime. Advancing the durable
+            // job keeps transcription and lexical search available without exposing that feature.
+            guard distributionChannel.allowsExternalToolSelection else { return .attributing }
             guard let call = try await store.call(id: job.callID), let audioPath = call.audioPath else {
                 throw BackgroundProcessingError.audioUnavailable
             }
@@ -2928,16 +3081,20 @@ final class AppModel {
         }
         do {
             try await store.migrate()
-            _ = try await store.resetInterruptedSpeakerReviewRequests()
+            if distributionChannel.allowsVoiceIdentity {
+                _ = try await store.resetInterruptedSpeakerReviewRequests()
+            }
             try await ensureLocalParticipant(in: store)
             _ = try await store.reconcileFailedIndexingJobs()
             await closeInterruptedRecordings(store: store)
             // Reading the voiceprint key raises a keychain prompt. A layout review neither
             // needs the voice profiles nor should ask for a password, so it skips them.
-            if Self.isPreviewMode {
-                await startPreviewVoiceIdentity(store: store)
-            } else {
-                startVoiceIdentity(store: store)
+            if distributionChannel.allowsVoiceIdentity {
+                if Self.isPreviewMode {
+                    await startPreviewVoiceIdentity(store: store)
+                } else {
+                    startVoiceIdentity(store: store)
+                }
             }
             await refreshSpeakerAnalysisIssues()
             let completed = Set(try await store.processingJobs().filter {
@@ -2969,6 +3126,7 @@ final class AppModel {
     /// throughout, because nothing had failed yet. The deadline turns "still waiting" into a state
     /// the surfaces can show, and the user can then answer the dialog or unlock the Mac.
     private func startVoiceIdentity(store: CallStore) {
+        guard distributionChannel.allowsVoiceIdentity else { return }
         setVoiceIdentityState(.checking)
         Task.detached { [weak self] in
             do {
@@ -4171,6 +4329,7 @@ final class AppModel {
     }
 
     private func retryVoiceIdentityNow() async {
+        guard distributionChannel.allowsVoiceIdentity else { return }
         guard let store else { return }
         // Reading the voiceprint key can raise a keychain prompt, and this runs from several
         // places: the screen-unlock observer, the speaker-review window opening, and the
@@ -4248,6 +4407,7 @@ final class AppModel {
     }
 
     private func startSpeakerReviewRequestPolling() {
+        guard distributionChannel.allowsVoiceIdentity else { return }
         guard speakerReviewRequestTask == nil else { return }
         speakerReviewRequestTask = Task { [weak self] in
             while !Task.isCancelled {

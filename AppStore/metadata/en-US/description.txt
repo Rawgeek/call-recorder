@@ -1,0 +1,9 @@
+Call Recorder records microphone and system audio on your Mac, transcribes calls locally with Whisper, and keeps private transcripts organized on your Mac.
+
+Start, pause, resume, stop, or discard a recording from the menu bar. Calls can be transcribed while the next recording is already in progress. A correction glossary and recovery tools help turn private conversations into useful notes.
+
+Recording and transcription happen on your Mac. Call audio and transcripts are not sent to the developer. You choose the recordings folder, and microphone plus Screen & System Audio Recording permissions are requested only for capture.
+
+A Whisper speech model is downloaded when you choose to install it, and a small voice-activity model may be prepared automatically. The Mac App Store build uses Apple AVFoundation for audio processing, carries its pinned Whisper helper, and receives application updates through the App Store. Transcript search, MCP integration, speaker identification, and speaker review are not available in this edition.
+
+Important: Make sure everyone on a call knows about and consents to recording. Recording laws vary by location and circumstance.

@@ -26,7 +26,8 @@ struct GeneralSettingsView: View {
                     title: "Record calls automatically",
                     detail: model.settings.automaticDetectionEnabled
                         ? "Starts when another app opens the microphone, stops shortly after it closes."
-                        : "Off. Use the menu bar to start and stop."
+                        : "Off. Use the menu bar to start and stop.",
+                    info: "Turn this on only after everyone who may be recorded has consented."
                 ) {
                     Toggle("", isOn: $model.settings.automaticDetectionEnabled)
                         .labelsHidden()
@@ -200,67 +201,90 @@ struct GeneralSettingsView: View {
                 }
             }
 
-            CRSettingsCard(
-                title: "Updates",
-                footnote: "Installed when Call Recorder quits or restarts, so the next launch is "
-                    + "the new version."
-            ) {
-                CRSettingsRow(
-                    title: "Version",
-                    detail: updateDetail,
-                    info: "Call Recorder follows its own repository for releases. A newer one is "
-                        + "downloaded and checked while the app runs: the digest the release "
-                        + "published, the identifier, the version, and the signature all have to "
-                        + "match. The swap happens at the one moment the app is not using its "
-                        + "bundle, which is when it quits. The version it replaced is kept, so a "
-                        + "release that misbehaves can be put back."
+            if model.distributionChannel.allowsSelfUpdate {
+                CRSettingsCard(
+                    title: "Updates",
+                    footnote: "Installed when Call Recorder quits or restarts, so the next launch is "
+                        + "the new version."
                 ) {
-                    updateControls
-                }
-                CRSettingsDivider()
-                CRSettingsRow(
-                    title: "Install updates automatically",
-                    detail: model.settings.automaticAppUpdatesEnabled
-                        ? "A newer release is downloaded and checked, then installed at the next quit."
-                        : "Checks still run; nothing is downloaded until it is asked for."
-                ) {
-                    HStack(spacing: CR.Space.inner) {
-                        Toggle("", isOn: $model.settings.automaticAppUpdatesEnabled)
-                            .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
-                        CRButton(title: "Check Now") { model.appUpdater.checkNow() }
+                    CRSettingsRow(
+                        title: "Version",
+                        detail: updateDetail,
+                        info: "Call Recorder follows its own repository for releases. A newer one is "
+                            + "downloaded and checked while the app runs: the digest the release "
+                            + "published, the identifier, the version, and the signature all have to "
+                            + "match. The swap happens at the one moment the app is not using its "
+                            + "bundle, which is when it quits. The version it replaced is kept, so a "
+                            + "release that misbehaves can be put back."
+                    ) {
+                        updateControls
                     }
-                }
-                CRSettingsDivider()
-                CRSettingsRow(
-                    title: "Check for updates",
-                    detail: "Runs at every launch, and on this step while the app stays open.",
-                    info: "A check is one request to the release list. A shorter step notices a "
-                        + "release sooner, and it costs nothing while there is no release: a "
-                        + "download starts only when there is something newer than the copy that "
-                        + "is running."
-                ) {
-                    Picker("", selection: $model.settings.appUpdateCheckInterval) {
-                        ForEach(AppUpdateInterval.allCases) { interval in
-                            Text(interval.title).tag(interval)
-                        }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 200, alignment: .trailing)
-                }
-                if let kept = model.appUpdater.keptVersion, kept != model.appUpdater.installedVersion {
                     CRSettingsDivider()
                     CRSettingsRow(
-                        title: "Version " + kept + " is kept",
-                        detail: "The copy from before the last automatic update. Going back stages "
-                            + "it the way an update is staged."
+                        title: "Install updates automatically",
+                        detail: model.settings.automaticAppUpdatesEnabled
+                            ? "A newer release is downloaded and checked, then installed at the next quit."
+                            : "Checks still run; nothing is downloaded until it is asked for."
                     ) {
-                        CRButton(title: "Go Back") { model.appUpdater.rollBackToKeptVersion() }
-                            .disabled(
-                                model.appUpdater.pendingVersion != nil
-                                    || model.appUpdater.state.isBusy
-                            )
+                        HStack(spacing: CR.Space.inner) {
+                            Toggle("", isOn: $model.settings.automaticAppUpdatesEnabled)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                            CRButton(title: "Check Now") { model.appUpdater.checkNow() }
+                        }
+                    }
+                    CRSettingsDivider()
+                    CRSettingsRow(
+                        title: "Check for updates",
+                        detail: "Runs at every launch, and on this step while the app stays open.",
+                        info: "A check is one request to the release list. A shorter step notices a "
+                            + "release sooner, and it costs nothing while there is no release: a "
+                            + "download starts only when there is something newer than the copy that "
+                            + "is running."
+                    ) {
+                        Picker("", selection: $model.settings.appUpdateCheckInterval) {
+                            ForEach(AppUpdateInterval.allCases) { interval in
+                                Text(interval.title).tag(interval)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 200, alignment: .trailing)
+                    }
+                    if let kept = model.appUpdater.keptVersion,
+                       kept != model.appUpdater.installedVersion {
+                        CRSettingsDivider()
+                        CRSettingsRow(
+                            title: "Version " + kept + " is kept",
+                            detail: "The copy from before the last automatic update. Going back stages "
+                                + "it the way an update is staged."
+                        ) {
+                            CRButton(title: "Go Back") { model.appUpdater.rollBackToKeptVersion() }
+                                .disabled(
+                                    model.appUpdater.pendingVersion != nil
+                                        || model.appUpdater.state.isBusy
+                                )
+                        }
+                    }
+                }
+            }
+
+            CRSettingsCard(
+                title: "Privacy",
+                footnote: "Recording and transcription stay on this Mac. The policy explains "
+                    + "network access, retention, deletion, and the differences between Store "
+                    + "and direct builds."
+            ) {
+                CRSettingsRow(
+                    title: "Privacy Policy",
+                    detail: "Read the data-handling policy in your browser."
+                ) {
+                    CRButton(title: "Open Policy", icon: "arrow.up.right") {
+                        guard let url = URL(
+                            string: "https://github.com/Rawgeek/call-recorder/blob/main/"
+                                + "wiki/Privacy-and-security.md"
+                        ) else { return }
+                        NSWorkspace.shared.open(url)
                     }
                 }
             }
@@ -429,7 +453,7 @@ struct GeneralSettingsView: View {
         panel.canChooseFiles = false
         panel.allowsMultipleSelection = false
         if panel.runModal() == .OK, let url = panel.url {
-            model.settings.outputDirectory = url.path
+            model.selectOutputDirectory(url)
         }
     }
 }

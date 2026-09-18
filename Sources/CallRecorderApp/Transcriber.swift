@@ -22,8 +22,13 @@ enum TranscriberError: LocalizedError {
     }
 }
 
+enum TranscriptionAudioPreparation: Equatable, Sendable {
+    case ffmpeg(URL)
+    case native
+}
+
 struct Transcriber: Sendable {
-    let ffmpeg: URL
+    let preparation: TranscriptionAudioPreparation
     let whisperCLI: URL
     let vadModel: URL?
     /// Set when this run may be stopped from the surface. Nil for a run nobody can stop.
@@ -35,7 +40,19 @@ struct Transcriber: Sendable {
         vadModel: URL? = nil,
         cancellation: ProcessCancellation? = nil
     ) {
-        self.ffmpeg = ffmpeg
+        preparation = .ffmpeg(ffmpeg)
+        self.whisperCLI = whisperCLI
+        self.vadModel = vadModel
+        self.cancellation = cancellation
+    }
+
+    init(
+        preparation: TranscriptionAudioPreparation,
+        whisperCLI: URL,
+        vadModel: URL? = nil,
+        cancellation: ProcessCancellation? = nil
+    ) {
+        self.preparation = preparation
         self.whisperCLI = whisperCLI
         self.vadModel = vadModel
         self.cancellation = cancellation
@@ -122,7 +139,7 @@ struct Transcriber: Sendable {
         localParticipant: Participant? = nil
     ) async throws -> TranscriptRecord {
         try await Task.detached {
-            try transcribeSynchronously(
+            try await transcribeSynchronously(
                 callID: callID, audio: audio, modelID: modelID, modelFile: modelFile,
                 participants: participants, glossary: glossary, glossaryUsage: glossaryUsage,
                 directory: directory,
@@ -143,7 +160,7 @@ struct Transcriber: Sendable {
         directory: URL,
         localParticipant: Participant?,
         cancellation: ProcessCancellation?
-    ) throws -> TranscriptRecord {
+    ) async throws -> TranscriptRecord {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let markdownURL = directory.appending(path: "transcript.md")
         let jsonURL = directory.appending(path: "transcript.json")
@@ -183,13 +200,12 @@ struct Transcriber: Sendable {
         }
 
         var transcript: WhisperTranscript
-        let systemURL = directory.appending(path: "system.m4a")
-        let microphoneURL = directory.appending(path: "microphone.m4a")
-        let hasSystem = FileManager.default.fileExists(atPath: systemURL.path)
-        let hasMicrophone = FileManager.default.fileExists(atPath: microphoneURL.path)
-        if hasSystem || hasMicrophone {
-            let system = try hasSystem
-                ? transcribeSource(
+        let systemURL = FinalizedAudioSource.system.url(in: directory)
+        let microphoneURL = FinalizedAudioSource.microphone.url(in: directory)
+        if systemURL != nil || microphoneURL != nil {
+            let system: WhisperTranscript?
+            if let systemURL {
+                system = try await transcribeSource(
                     audio: systemURL,
                     label: "system",
                     token: token,
@@ -201,9 +217,12 @@ struct Transcriber: Sendable {
                     sourceChunkDurationSeconds: 300,
                     cancellation: cancellation
                 )
-                : nil
-            let microphone = try hasMicrophone
-                ? transcribeSource(
+            } else {
+                system = nil
+            }
+            let microphone: WhisperTranscript?
+            if let microphoneURL {
+                microphone = try await transcribeSource(
                     audio: microphoneURL,
                     label: "microphone",
                     token: token,
@@ -215,14 +234,16 @@ struct Transcriber: Sendable {
                     sourceChunkDurationSeconds: 300,
                     cancellation: cancellation
                 )
-                : nil
+            } else {
+                microphone = nil
+            }
             transcript = SourceTranscriptMerger.merge(
                 microphone: microphone,
                 system: system,
                 localParticipant: localParticipant
             )
         } else {
-            transcript = try transcribeSource(
+            transcript = try await transcribeSource(
                 audio: audio,
                 label: "mixed",
                 token: token,
@@ -338,19 +359,7 @@ struct Transcriber: Sendable {
         directory: URL,
         sourceChunkDurationSeconds: Int,
         cancellation: ProcessCancellation? = nil
-    ) throws -> WhisperTranscript {
-        let waveURL = directory.appending(path: ".transcribing-\(label)-\(token).wav")
-        defer {
-            try? FileManager.default.removeItem(at: waveURL)
-        }
-        _ = try ProcessRunner.runChecked(
-            executable: ffmpeg,
-            arguments: [
-                "-v", "error", "-y", "-i", audio.path,
-                "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", waveURL.path,
-            ],
-            cancellation: cancellation
-        )
+    ) async throws -> WhisperTranscript {
         let vadModel = try self.vadModel ?? Self.resolvedVADModel()
         let chunkDirectory = directory.appending(
             path: ".transcribing-\(label)-\(token)-chunks",
@@ -361,26 +370,55 @@ struct Transcriber: Sendable {
             withIntermediateDirectories: true
         )
         defer { try? FileManager.default.removeItem(at: chunkDirectory) }
-        _ = try ProcessRunner.runChecked(
-            executable: ffmpeg,
-            arguments: [
-                "-v", "error", "-y", "-i", waveURL.path,
-                "-f", "segment",
-                "-segment_time", "\(sourceChunkDurationSeconds)",
-                "-c", "copy",
-                chunkDirectory.appending(path: "chunk-%03d.wav").path,
-            ],
-            cancellation: cancellation
-        )
-        let chunkURLs = try FileManager.default.contentsOfDirectory(
-            at: chunkDirectory,
-            includingPropertiesForKeys: nil
-        ).filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard !chunkURLs.isEmpty else { throw TranscriberError.missingWhisperOutput }
+        let preparedChunks: [PreparedAudioChunk]
+        switch preparation {
+        case let .ffmpeg(ffmpeg):
+            let waveURL = directory.appending(path: ".transcribing-\(label)-\(token).wav")
+            defer { try? FileManager.default.removeItem(at: waveURL) }
+            _ = try ProcessRunner.runChecked(
+                executable: ffmpeg,
+                arguments: [
+                    "-v", "error", "-y", "-i", audio.path,
+                    "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", waveURL.path,
+                ],
+                cancellation: cancellation
+            )
+            _ = try ProcessRunner.runChecked(
+                executable: ffmpeg,
+                arguments: [
+                    "-v", "error", "-y", "-i", waveURL.path,
+                    "-f", "segment",
+                    "-segment_time", "\(sourceChunkDurationSeconds)",
+                    "-c", "copy",
+                    chunkDirectory.appending(path: "chunk-%03d.wav").path,
+                ],
+                cancellation: cancellation
+            )
+            let chunkURLs = try FileManager.default.contentsOfDirectory(
+                at: chunkDirectory,
+                includingPropertiesForKeys: nil
+            ).filter { $0.pathExtension == "wav" }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            preparedChunks = chunkURLs.enumerated().map { index, url in
+                PreparedAudioChunk(
+                    fileURL: url,
+                    startMilliseconds: index * sourceChunkDurationSeconds * 1_000
+                )
+            }
+        case .native:
+            preparedChunks = try await NativeMediaProcessor().prepareWhisperChunks(
+                audio: audio,
+                directory: chunkDirectory,
+                maximumDurationSeconds: Double(sourceChunkDurationSeconds),
+                cancellation: cancellation
+            )
+        }
+        guard !preparedChunks.isEmpty else { throw TranscriberError.missingWhisperOutput }
         var chunks: [WhisperTranscript] = []
-        for (index, chunkURL) in chunkURLs.enumerated() {
+        for chunk in preparedChunks {
             // Asked once per chunk, so a stop does not start the next one only to end it.
             try cancellation?.checkCancelled()
+            let chunkURL = chunk.fileURL
             let chunkBase = chunkURL.deletingPathExtension()
             let chunkJSON = URL(filePath: chunkBase.path + ".json")
             _ = try ProcessRunner.runChecked(
@@ -402,13 +440,12 @@ struct Transcriber: Sendable {
                 throw TranscriberError.missingWhisperOutput
             }
             var raw = try WhisperTranscriptParser.parse(Data(contentsOf: chunkJSON))
-            let offset = index * sourceChunkDurationSeconds * 1000
             raw = WhisperTranscript(
                 language: raw.language,
                 segments: raw.segments.map {
                     TranscriptSegment(
-                        startMs: $0.startMs + offset,
-                        endMs: $0.endMs + offset,
+                        startMs: $0.startMs + chunk.startMilliseconds,
+                        endMs: $0.endMs + chunk.startMilliseconds,
                         text: $0.text
                     )
                 }

@@ -1,0 +1,1 @@
+Initial Mac App Store release with local call recording, on-device transcription, correction tools, and recovery tools.

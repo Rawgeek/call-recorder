@@ -12,6 +12,8 @@
 	<string>local.callrecorder.app</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
 	<key>CFBundleName</key>
 	<string>Call Recorder</string>
 	<key>CFBundlePackageType</key>
@@ -20,8 +22,12 @@
 	<string>0.1.11</string>
 	<key>CFBundleVersion</key>
 	<string>102</string>
+	<key>CRDistributionChannel</key>
+	<string>direct</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>15.0</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.productivity</string>
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>

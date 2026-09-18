@@ -48,6 +48,58 @@ struct AudioCaptureSessionTests {
         #expect(microphoneID == "BuiltInMicrophoneDevice")
     }
 
+    @Test("an unset microphone follows the system AirPods instead of discovery order")
+    func unsetMicrophoneFollowsSystemDefault() {
+        let available = ["ContinuityMicrophone", "AirPodsMicrophone"]
+
+        let resolved = AudioCaptureSession.resolvedMicrophoneID(
+            availableIDs: available,
+            selectedID: nil,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+        let plan = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: nil,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+
+        #expect(resolved == "AirPodsMicrophone")
+        #expect(plan == MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil))
+    }
+
+    @Test("the system and stale choices let ScreenCaptureKit follow the system default")
+    func systemAndStaleChoicesUseSystemRoute() {
+        let available = ["ContinuityMicrophone", "AirPodsMicrophone"]
+
+        let system = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: AudioCaptureSession.systemMicrophoneID,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+        let stale = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: "DisconnectedMicrophone",
+            systemDefaultID: "AirPodsMicrophone"
+        )
+
+        #expect(system == MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil))
+        #expect(stale == system)
+    }
+
+    @Test("an explicit AirPods choice is handed to ScreenCaptureKit unchanged")
+    func explicitAirPodsChoiceIsPreserved() {
+        let plan = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: ["ContinuityMicrophone", "AirPodsMicrophone"],
+            selectedID: "AirPodsMicrophone",
+            systemDefaultID: "ContinuityMicrophone"
+        )
+
+        #expect(plan == MicrophoneCapturePlan(
+            capturesMicrophone: true,
+            deviceID: "AirPodsMicrophone"
+        ))
+    }
+
     @Test("a Mac without a built-in microphone falls back to its first input")
     func fallsBackToFirstAvailableMicrophone() {
         // Given / When
@@ -69,6 +121,44 @@ struct AudioCaptureSessionTests {
         )
 
         #expect(microphoneID == nil)
+        #expect(AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: [],
+            selectedID: AudioCaptureSession.systemMicrophoneID,
+            systemDefaultID: nil
+        ) == MicrophoneCapturePlan(capturesMicrophone: false, deviceID: nil))
+    }
+
+    @Test("microphone readiness succeeds only after a writable sample signal")
+    func waitsForWritableMicrophoneSample() async {
+        let ready = MicrophoneSampleGate()
+        ready.signal()
+        #expect(await ready.wait(timeout: .seconds(1)))
+
+        let silent = MicrophoneSampleGate()
+        #expect(await !silent.wait(timeout: .milliseconds(10)))
+    }
+
+    @Test("cancelling microphone readiness does not wait for the timeout")
+    func cancelsMicrophoneReadinessImmediately() async {
+        let gate = MicrophoneSampleGate()
+        let started = ContinuousClock.now
+        let wait = Task {
+            await gate.wait(timeout: .seconds(5))
+        }
+
+        wait.cancel()
+
+        #expect(await !wait.value)
+        #expect(ContinuousClock.now - started < .seconds(1))
+    }
+
+    @Test("a missing microphone error tells the user how to recover")
+    func missingMicrophoneErrorIsActionable() {
+        let message = AudioCaptureError.noMicrophone.localizedDescription
+
+        #expect(message.contains("microphone"))
+        #expect(message.contains("Reconnect"))
+        #expect(message.contains("Settings"))
     }
 
     @Test("capture paths keep microphone and system sources distinct")

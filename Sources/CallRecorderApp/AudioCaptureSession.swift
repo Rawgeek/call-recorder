@@ -69,12 +69,33 @@ struct AudioInputDevice: Equatable, Identifiable, Sendable {
     let name: String
 }
 
-enum AudioCaptureError: Error {
+struct MicrophoneCapturePlan: Equatable, Sendable {
+    let capturesMicrophone: Bool
+    /// `nil` deliberately asks ScreenCaptureKit to follow the system-default microphone.
+    let deviceID: String?
+}
+
+enum AudioCaptureError: LocalizedError {
     case alreadyCapturing
     case notCapturing
     case noDisplay
     case noMicrophone
     case noAudio
+
+    var errorDescription: String? {
+        switch self {
+        case .alreadyCapturing:
+            "Audio capture is already running."
+        case .notCapturing:
+            "Audio capture is not running."
+        case .noDisplay:
+            "No display is available for system-audio capture."
+        case .noMicrophone:
+            "No audio arrived from the selected microphone. Reconnect your headset or choose a microphone in Settings, then try again."
+        case .noAudio:
+            "No audio arrived from the microphone or the system."
+        }
+    }
 }
 
 @MainActor
@@ -115,17 +136,38 @@ final class AudioCaptureSession {
         selectedID: String?,
         systemDefaultID: String? = nil
     ) -> String? {
-        // The system can be set to a device that has since been unplugged, and it can be set to
-        // one this app cannot open. Either way the choice has been made, so it falls through to
-        // the built-in microphone below rather than leaving the recorder with nothing.
-        if selectedID == systemMicrophoneID,
-            let systemDefaultID,
-            availableIDs.contains(systemDefaultID) {
-            return systemDefaultID
-        }
-        if let selectedID, availableIDs.contains(selectedID) { return selectedID }
+        // An explicit available choice wins. An unset, system-default, or stale choice follows
+        // Core Audio first; only when that answer is unavailable does the display helper fall back
+        // to the built-in/first device. Capture itself uses `microphoneCapturePlan`, because
+        // ScreenCaptureKit can follow the system route directly without pinning a discovery result.
+        if let selectedID,
+           selectedID != systemMicrophoneID,
+           availableIDs.contains(selectedID) { return selectedID }
+        if let systemDefaultID, availableIDs.contains(systemDefaultID) { return systemDefaultID }
         if availableIDs.contains(builtInMicrophoneID) { return builtInMicrophoneID }
         return availableIDs.first
+    }
+
+    /// How ScreenCaptureKit should route microphone audio for this recording.
+    ///
+    /// Its API follows the system default when `microphoneCaptureDeviceID` is nil. That matters on
+    /// a Mac mini: an unset preference used to pick the first discovery result, which can be an
+    /// inactive Continuity or Bluetooth input rather than the AirPods selected in macOS.
+    nonisolated static func microphoneCapturePlan(
+        availableIDs: [String],
+        selectedID: String?,
+        systemDefaultID: String?
+    ) -> MicrophoneCapturePlan {
+        let hasInput = !availableIDs.isEmpty || systemDefaultID != nil
+        guard hasInput else {
+            return MicrophoneCapturePlan(capturesMicrophone: false, deviceID: nil)
+        }
+        if let selectedID,
+           selectedID != systemMicrophoneID,
+           availableIDs.contains(selectedID) {
+            return MicrophoneCapturePlan(capturesMicrophone: true, deviceID: selectedID)
+        }
+        return MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil)
     }
 
     /// The identifier of the microphone macOS is set to use, in the form the device list uses.
@@ -212,16 +254,6 @@ final class AudioCaptureSession {
         return cocoaError.domain == SCStreamErrorDomain && cocoaError.code == -3_801
     }
 
-    private static func microphone(deviceID: String?) -> AVCaptureDevice? {
-        let devices = captureDevices()
-        let resolvedID = resolvedMicrophoneID(
-            availableIDs: devices.map(\.uniqueID),
-            selectedID: deviceID,
-            systemDefaultID: systemDefaultMicrophoneID()
-        )
-        return devices.first(where: { $0.uniqueID == resolvedID })
-    }
-
     private static func captureDevices() -> [AVCaptureDevice] {
         AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone],
@@ -266,9 +298,13 @@ final class AudioCaptureSession {
         // record the call's system audio, so the absent microphone is an optional source rather
         // than a reason to reject the whole recording. If an input appears later, the next segment
         // resolves it again and includes it automatically.
-        let microphone = Self.microphone(deviceID: microphoneDeviceID)
-        configuration.captureMicrophone = microphone != nil
-        configuration.microphoneCaptureDeviceID = microphone?.uniqueID
+        let microphonePlan = Self.microphoneCapturePlan(
+            availableIDs: Self.captureDevices().map(\.uniqueID),
+            selectedID: microphoneDeviceID,
+            systemDefaultID: Self.systemDefaultMicrophoneID()
+        )
+        configuration.captureMicrophone = microphonePlan.capturesMicrophone
+        configuration.microphoneCaptureDeviceID = microphonePlan.deviceID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
         let router = AudioCaptureRouter(paths: paths, levels: levels)
@@ -277,15 +313,22 @@ final class AudioCaptureSession {
             type: .audio,
             sampleHandlerQueue: router.systemQueue
         )
-        if microphone != nil {
+        if microphonePlan.capturesMicrophone {
             try stream.addStreamOutput(
                 router,
                 type: .microphone,
                 sampleHandlerQueue: router.microphoneQueue
             )
         }
+        var streamStarted = false
         do {
             try await stream.startCapture()
+            streamStarted = true
+            if microphonePlan.capturesMicrophone {
+                guard await router.waitForMicrophoneSample(timeout: .seconds(5)) else {
+                    throw AudioCaptureError.noMicrophone
+                }
+            }
             activeCapture = ActiveCapture(
                 stream: stream,
                 router: router,
@@ -293,6 +336,7 @@ final class AudioCaptureSession {
             )
             return paths
         } catch {
+            if streamStarted { try? await stream.stopCapture() }
             router.cancel()
             throw error
         }

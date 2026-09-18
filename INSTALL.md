@@ -59,7 +59,7 @@ materials on macOS 15. No third-party design dependency is used.
    - Models: download a Whisper model. medium is a good default; larger models are slower
      but more accurate. The model runs locally.
    - General: choose the recording microphone (for example MacBook Pro Microphone), the
-     recordings folder (default ~/Desktop/Call Recordings), and whether recording starts
+     recordings folder (default ~/Library/Application Support/CallRecorder/Recordings), and whether recording starts
      automatically when another app opens the microphone.
    - Participants: add the people you meet with, and mark which one is you.
 6. Leave Start at login on if you want it always available.

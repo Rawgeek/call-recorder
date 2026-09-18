@@ -1,6 +1,7 @@
 import Foundation
 import Libsql
 import Darwin
+import CryptoKit
 
 public enum CallStoreError: Error, Equatable {
     case invalidName
@@ -50,6 +51,7 @@ public actor CallStore {
         try migrateSpeakerLineOverrideSchema()
         try migrateSpeakerLineRequestSchema()
         try migrateSystemAudioSchema()
+        try migrateNativeTranscriptIndexSchema()
     }
 
     public func schemaVersion() throws -> Int {
@@ -1660,6 +1662,119 @@ public actor CallStore {
         }
     }
 
+    public struct NativeTranscriptSearchResult: Equatable, Sendable {
+        public let callID: CallID
+        public let startMilliseconds: Int
+        public let endMilliseconds: Int
+        public let text: String
+
+        public init(
+            callID: CallID,
+            startMilliseconds: Int,
+            endMilliseconds: Int,
+            text: String
+        ) {
+            self.callID = callID
+            self.startMilliseconds = startMilliseconds
+            self.endMilliseconds = endMilliseconds
+            self.text = text
+        }
+    }
+
+    /// Replaces one call's Store-safe lexical index and publishes readiness in the same commit.
+    ///
+    /// The transcript row is the authority. Reading it inside the write transaction prevents a
+    /// concurrent writer from publishing chunks for a source that is no longer current. Deletes,
+    /// inserts, the artifact receipt, and readiness either all commit or all roll back.
+    public func rebuildNativeTranscriptIndex(for callID: CallID) async throws {
+        try await withWriteRetry {
+            let transaction = try connection.transaction()
+            do {
+                guard let row = try transaction.query(
+                    "SELECT text, json_path FROM transcripts WHERE call_id = ?",
+                    [callID.rawValue.uuidString]
+                ).next() else { throw CallStoreError.callNotFound(callID) }
+                let source = try Self.nativeIndexSource(
+                    transcriptText: row.getString(0),
+                    jsonPath: row.getString(1)
+                )
+                let chunks = Self.nativeChunks(callID: callID, segments: source.segments)
+
+                _ = try transaction.execute(
+                    "DELETE FROM native_transcript_chunks WHERE call_id = ?",
+                    [callID.rawValue.uuidString]
+                )
+                for chunk in chunks {
+                    _ = try transaction.execute(
+                        "INSERT INTO native_transcript_chunks "
+                            + "(id, call_id, start_ms, end_ms, text, content_hash) "
+                            + "VALUES (?, ?, ?, ?, ?, ?)",
+                        [
+                            chunk.id,
+                            callID.rawValue.uuidString,
+                            chunk.startMilliseconds,
+                            chunk.endMilliseconds,
+                            chunk.text,
+                            chunk.contentHash,
+                        ]
+                    )
+                }
+                _ = try transaction.execute(
+                    "INSERT INTO native_index_artifacts "
+                        + "(call_id, backend, source_digest, chunk_count) VALUES (?, ?, ?, ?) "
+                        + "ON CONFLICT(call_id) DO UPDATE SET backend = excluded.backend, "
+                        + "source_digest = excluded.source_digest, chunk_count = excluded.chunk_count",
+                    [callID.rawValue.uuidString, "lexical-v1", source.digest, chunks.count]
+                )
+                let madeReady = try transaction.execute(
+                    "UPDATE index_jobs SET status = 'ready', error = NULL WHERE call_id = ?",
+                    [callID.rawValue.uuidString]
+                )
+                guard madeReady == 1 else { throw CallStoreError.callNotFound(callID) }
+                transaction.commit()
+            } catch {
+                transaction.rollback()
+                throw error
+            }
+        }
+    }
+
+    /// Searches the native lexical index. FTS5 is the primary path; a bounded Unicode-aware
+    /// substring pass keeps search useful on a libSQL build that cannot execute a MATCH query.
+    public func searchNativeTranscripts(
+        _ query: String,
+        limit: Int = 20
+    ) throws -> [NativeTranscriptSearchResult] {
+        guard (1...500).contains(limit) else { throw CallStoreError.invalidLimit }
+        let cleaned = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return [] }
+        do {
+            return try connection.query(
+                "SELECT chunks.call_id, chunks.start_ms, chunks.end_ms, chunks.text "
+                    + "FROM native_transcript_chunks_fts "
+                    + "JOIN native_transcript_chunks chunks "
+                    + "ON chunks.rowid = native_transcript_chunks_fts.rowid "
+                    + "WHERE native_transcript_chunks_fts MATCH ? "
+                    + "ORDER BY bm25(native_transcript_chunks_fts), chunks.call_id, chunks.start_ms "
+                    + "LIMIT ?",
+                [cleaned, limit]
+            ).map(Self.nativeSearchResult)
+        } catch {
+            let rows = try connection.query(
+                "SELECT call_id, start_ms, end_ms, text FROM native_transcript_chunks "
+                    + "ORDER BY call_id, start_ms, end_ms"
+            ).map(Self.nativeSearchResult)
+            return Array(rows.lazy.filter {
+                $0.text.range(
+                    of: cleaned,
+                    options: [.caseInsensitive, .diacriticInsensitive],
+                    range: nil,
+                    locale: .current
+                ) != nil
+            }.prefix(limit))
+        }
+    }
+
     /// Records whether the other side of a call was captured.
     ///
     /// The answer is measured while the two source files still exist and read long after the
@@ -2387,6 +2502,33 @@ public actor CallStore {
         }
     }
 
+    private func migrateNativeTranscriptIndexSchema() throws {
+        let migrationConnection = try database.connect()
+        try migrationConnection.executeBatch(Self.connectionPragmas)
+        guard try migrationConnection.query(
+            "SELECT 1 FROM call_recorder_migrations WHERE id = ? LIMIT 1",
+            [Self.nativeTranscriptIndexMigrationID]
+        ).next() == nil else { return }
+
+        let transaction = try migrationConnection.transaction()
+        do {
+            do {
+                try transaction.executeBatch(Self.nativeTranscriptIndexSchema)
+            } catch {
+                throw CallStoreError.migrationStepFailed(10, String(reflecting: error))
+            }
+            try Self.ensureForeignKeyIntegrity(transaction)
+            _ = try transaction.execute(
+                "INSERT INTO call_recorder_migrations (id, applied_at) VALUES (?, ?)",
+                [Self.nativeTranscriptIndexMigrationID, Date().timeIntervalSince1970]
+            )
+            transaction.commit()
+        } catch {
+            transaction.rollback()
+            throw error
+        }
+    }
+
     private func migrateSpeakerLineOverrideSchema() throws {
         let migrationConnection = try database.connect()
         try migrationConnection.executeBatch(Self.connectionPragmas)
@@ -2558,6 +2700,235 @@ public actor CallStore {
         case .null: return nil
         default: throw CallStoreError.invalidStoredValue
         }
+    }
+
+    private struct NativeIndexSource {
+        let segments: [NativeTranscriptSegment]
+        let digest: String
+    }
+
+    private struct NativeTranscriptEnvelope: Decodable {
+        let segments: [NativeTranscriptSegment]
+    }
+
+    private struct NativeTranscriptSegment: Decodable {
+        let startMilliseconds: Int
+        let endMilliseconds: Int
+        let text: String
+        let source: String?
+        let speakerIndex: Int?
+        let speakerName: String?
+
+        private enum CodingKeys: String, CodingKey {
+            case startMs
+            case endMs
+            case text
+            case source
+            case speakerIndex
+            case speakerName
+        }
+
+        init(
+            startMilliseconds: Int,
+            endMilliseconds: Int,
+            text: String,
+            source: String? = nil,
+            speakerIndex: Int? = nil,
+            speakerName: String? = nil
+        ) {
+            self.startMilliseconds = startMilliseconds
+            self.endMilliseconds = endMilliseconds
+            self.text = text
+            self.source = source
+            self.speakerIndex = speakerIndex
+            self.speakerName = speakerName
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            startMilliseconds = try Self.integer(in: container, forKey: .startMs)
+            endMilliseconds = try Self.integer(in: container, forKey: .endMs)
+            text = try container.decode(String.self, forKey: .text)
+            source = try container.decodeIfPresent(String.self, forKey: .source)
+            speakerIndex = try container.decodeIfPresent(Int.self, forKey: .speakerIndex)
+            speakerName = try container.decodeIfPresent(String.self, forKey: .speakerName)
+        }
+
+        private static func integer(
+            in container: KeyedDecodingContainer<CodingKeys>,
+            forKey key: CodingKeys
+        ) throws -> Int {
+            if let integer = try? container.decode(Int.self, forKey: key) { return integer }
+            return Int(try container.decode(Double.self, forKey: key).rounded())
+        }
+    }
+
+    private struct NativeTranscriptChunk {
+        let id: String
+        let startMilliseconds: Int
+        let endMilliseconds: Int
+        let text: String
+        let contentHash: String
+    }
+
+    private struct NativeChunkPiece {
+        let startMilliseconds: Int
+        let endMilliseconds: Int
+        let text: String
+    }
+
+    private static func nativeIndexSource(
+        transcriptText: String,
+        jsonPath: String
+    ) throws -> NativeIndexSource {
+        let url = URL(filePath: jsonPath)
+        let jsonData: Data?
+        let segments: [NativeTranscriptSegment]
+        if !jsonPath.isEmpty, FileManager.default.fileExists(atPath: jsonPath) {
+            let data = try Data(contentsOf: url)
+            let decoder = JSONDecoder()
+            if let decoded = try? decoder.decode([NativeTranscriptSegment].self, from: data) {
+                segments = decoded
+            } else {
+                segments = try decoder.decode(NativeTranscriptEnvelope.self, from: data).segments
+            }
+            jsonData = data
+        } else {
+            segments = [NativeTranscriptSegment(
+                startMilliseconds: 0,
+                endMilliseconds: 0,
+                text: transcriptText
+            )]
+            jsonData = nil
+        }
+
+        var digestSource = Data(transcriptText.utf8)
+        digestSource.append(0)
+        if let jsonData { digestSource.append(jsonData) }
+        return NativeIndexSource(segments: segments, digest: sha256(digestSource))
+    }
+
+    private static func nativeChunks(
+        callID: CallID,
+        segments: [NativeTranscriptSegment],
+        maximumCharacters: Int = 1_200
+    ) -> [NativeTranscriptChunk] {
+        let pieces = segments.flatMap {
+            nativePieces(segment: $0, maximumCharacters: maximumCharacters)
+        }
+        var result: [NativeTranscriptChunk] = []
+        var window: [NativeChunkPiece] = []
+        var windowLength = 0
+        for piece in pieces {
+            let separatorLength = window.isEmpty ? 0 : 1
+            if !window.isEmpty, windowLength + separatorLength + piece.text.count > maximumCharacters {
+                result.append(nativeChunk(callID: callID, pieces: window))
+                window = []
+                windowLength = 0
+            }
+            window.append(piece)
+            windowLength += (window.count == 1 ? 0 : 1) + piece.text.count
+        }
+        if !window.isEmpty { result.append(nativeChunk(callID: callID, pieces: window)) }
+        return result
+    }
+
+    private static func nativePieces(
+        segment: NativeTranscriptSegment,
+        maximumCharacters: Int
+    ) -> [NativeChunkPiece] {
+        let body = cleanNativeTranscriptText(segment.text)
+        guard !body.isEmpty else { return [] }
+        let speaker = segment.speakerName.flatMap(cleanNativeSpeakerName)
+            ?? segment.speakerIndex.map { "Speaker \($0 + 1)" }
+            ?? (segment.source == "system" ? "Speaker 1" : nil)
+        let rendered = speaker.map { "\($0): \(body)" } ?? body
+        let characters = Array(rendered)
+        guard characters.count > maximumCharacters else {
+            return [NativeChunkPiece(
+                startMilliseconds: segment.startMilliseconds,
+                endMilliseconds: max(segment.startMilliseconds, segment.endMilliseconds),
+                text: rendered
+            )]
+        }
+
+        var pieces: [NativeChunkPiece] = []
+        let duration = max(0, segment.endMilliseconds - segment.startMilliseconds)
+        var consumed = 0
+        while consumed < characters.count {
+            let remainingCount = characters.count - consumed
+            let length: Int
+            if remainingCount <= maximumCharacters {
+                length = remainingCount
+            } else {
+                let lowerBound = maximumCharacters / 2
+                var candidate = maximumCharacters
+                while candidate > lowerBound,
+                      !characters[consumed + candidate - 1].isWhitespace {
+                    candidate -= 1
+                }
+                length = candidate > lowerBound ? candidate : maximumCharacters
+            }
+            let next = consumed + length
+            let text = String(characters[consumed..<next])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !text.isEmpty {
+                pieces.append(NativeChunkPiece(
+                    startMilliseconds: segment.startMilliseconds
+                        + Int((Double(duration) * Double(consumed) / Double(characters.count)).rounded()),
+                    endMilliseconds: segment.startMilliseconds
+                        + Int((Double(duration) * Double(next) / Double(characters.count)).rounded()),
+                    text: text
+                ))
+            }
+            consumed = next
+        }
+        return pieces
+    }
+
+    private static func cleanNativeTranscriptText(_ text: String) -> String {
+        let filler = #"\[(?:music|silence|applause|laughter|inaudible|noise|phone\.ringing|typing|background|door|cough|sigh|clears\.throat)\]\s*"#
+        let withoutFillers = text.replacingOccurrences(
+            of: filler,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        ).replacingOccurrences(of: "[BLANK_AUDIO]", with: "", options: .caseInsensitive)
+        return withoutFillers.split(whereSeparator: \ .isWhitespace).joined(separator: " ")
+    }
+
+    private static func cleanNativeSpeakerName(_ name: String) -> String? {
+        let cleaned = name.split(whereSeparator: \ .isWhitespace).joined(separator: " ")
+        return cleaned.isEmpty ? nil : cleaned
+    }
+
+    private static func nativeChunk(
+        callID: CallID,
+        pieces: [NativeChunkPiece]
+    ) -> NativeTranscriptChunk {
+        let text = pieces.map(\.text).joined(separator: " ")
+        let contentHash = sha256(Data(text.utf8))
+        let start = pieces[0].startMilliseconds
+        let end = pieces[pieces.count - 1].endMilliseconds
+        return NativeTranscriptChunk(
+            id: "\(callID.rawValue.uuidString):\(start):\(end):\(contentHash)",
+            startMilliseconds: start,
+            endMilliseconds: end,
+            text: text,
+            contentHash: contentHash
+        )
+    }
+
+    private static func sha256(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func nativeSearchResult(_ row: Row) throws -> NativeTranscriptSearchResult {
+        NativeTranscriptSearchResult(
+            callID: CallID(rawValue: try uuid(from: row.getString(0))),
+            startMilliseconds: try row.getInt(1),
+            endMilliseconds: try row.getInt(2),
+            text: try row.getString(3)
+        )
     }
 
     private static func glossaryTerm(from row: Row) throws -> GlossaryTerm {
@@ -2747,6 +3118,60 @@ public actor CallStore {
     private static let speakerLineRequestMigrationID = "speaker-line-request-v1"
 
     private static let systemAudioMigrationID = "call-system-audio-v1"
+
+    private static let nativeTranscriptIndexMigrationID = "native-transcript-index-v1"
+
+    private static let nativeTranscriptIndexSchema = """
+        CREATE TABLE native_transcript_chunks (
+            id TEXT PRIMARY KEY,
+            call_id TEXT NOT NULL REFERENCES transcripts(call_id) ON DELETE CASCADE,
+            start_ms INTEGER NOT NULL CHECK(start_ms >= 0),
+            end_ms INTEGER NOT NULL CHECK(end_ms >= start_ms),
+            text TEXT NOT NULL,
+            content_hash TEXT NOT NULL,
+            UNIQUE(call_id, content_hash, start_ms, end_ms)
+        );
+
+        CREATE INDEX native_transcript_chunks_call_time_idx
+            ON native_transcript_chunks(call_id, start_ms, end_ms);
+
+        CREATE VIRTUAL TABLE native_transcript_chunks_fts USING fts5(
+            id UNINDEXED,
+            text,
+            content='native_transcript_chunks',
+            content_rowid='rowid',
+            tokenize='unicode61 remove_diacritics 2'
+        );
+
+        CREATE TRIGGER native_transcript_chunks_after_insert
+            AFTER INSERT ON native_transcript_chunks BEGIN
+                INSERT INTO native_transcript_chunks_fts(rowid, id, text)
+                VALUES (new.rowid, new.id, new.text);
+            END;
+
+        CREATE TRIGGER native_transcript_chunks_after_delete
+            AFTER DELETE ON native_transcript_chunks BEGIN
+                INSERT INTO native_transcript_chunks_fts(
+                    native_transcript_chunks_fts, rowid, id, text
+                ) VALUES ('delete', old.rowid, old.id, old.text);
+            END;
+
+        CREATE TRIGGER native_transcript_chunks_after_update
+            AFTER UPDATE ON native_transcript_chunks BEGIN
+                INSERT INTO native_transcript_chunks_fts(
+                    native_transcript_chunks_fts, rowid, id, text
+                ) VALUES ('delete', old.rowid, old.id, old.text);
+                INSERT INTO native_transcript_chunks_fts(rowid, id, text)
+                VALUES (new.rowid, new.id, new.text);
+            END;
+
+        CREATE TABLE native_index_artifacts (
+            call_id TEXT PRIMARY KEY REFERENCES transcripts(call_id) ON DELETE CASCADE,
+            backend TEXT NOT NULL CHECK(backend = 'lexical-v1'),
+            source_digest TEXT NOT NULL,
+            chunk_count INTEGER NOT NULL CHECK(chunk_count >= 0)
+        );
+        """
 
     /// The state of the call's system track, written while its sources are still on disk.
     ///

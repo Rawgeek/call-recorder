@@ -1,5 +1,23 @@
 import Foundation
 
+/// A finalized source recording stored beside a call's transcript.
+public enum FinalizedAudioSource: String, Sendable {
+    case system
+    case microphone
+
+    /// The best existing representation of this source, preferring AAC over the native WAV
+    /// fallback so existing direct-distribution recordings retain their established behavior.
+    public func url(in directory: URL) -> URL? {
+        for pathExtension in ["m4a", "wav"] {
+            let candidate = directory.appending(path: "\(rawValue).\(pathExtension)")
+            if FileManager.default.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+}
+
 /// Whether a call's other side was recorded, judged from the two source files.
 ///
 /// A call made through another app arrives on two tracks: the microphone, and the system audio the
@@ -31,8 +49,8 @@ public enum SystemAudioCheck {
     /// Reads the finalized sources a call keeps beside its transcript.
     public static func state(in directory: URL) -> SystemAudioState? {
         state(
-            microphoneBytes: size(of: directory.appending(path: "microphone.m4a")),
-            systemBytes: size(of: directory.appending(path: "system.m4a"))
+            microphoneBytes: FinalizedAudioSource.microphone.url(in: directory).flatMap(size),
+            systemBytes: FinalizedAudioSource.system.url(in: directory).flatMap(size)
         )
     }
 

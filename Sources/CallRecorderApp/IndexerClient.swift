@@ -1,6 +1,24 @@
 import CallRecorderCore
 import Foundation
 
+protocol TranscriptIndexing: Sendable {
+    func index(
+        callID: CallID,
+        store: CallStore,
+        cancellation: ProcessCancellation?
+    ) async throws
+}
+
+struct NativeTranscriptIndexer: TranscriptIndexing {
+    func index(
+        callID: CallID,
+        store: CallStore,
+        cancellation _: ProcessCancellation? = nil
+    ) async throws {
+        try await store.rebuildNativeTranscriptIndex(for: callID)
+    }
+}
+
 extension IndexerClient {
     /// The archive the bundle carries, or nil when it names one to fetch instead.
     static func runtimeArchive(in bundle: Bundle = .main) -> URL? {
@@ -141,7 +159,7 @@ enum IndexerBundleLayout: Equatable, Sendable {
     }
 }
 
-struct IndexerClient: Sendable {
+struct IndexerClient: TranscriptIndexing {
     let executable: URL
     let argumentPrefix: [String]
     let database: URL

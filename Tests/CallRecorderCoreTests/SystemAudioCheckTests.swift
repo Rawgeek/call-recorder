@@ -50,4 +50,36 @@ struct SystemAudioCheckTests {
 
         #expect(SystemAudioCheck.state(in: directory) == .missing)
     }
+
+    @Test("honest WAV fallback sources are read when AAC files are absent")
+    func readsWAVFallbackSources() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "system-audio-wav-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(repeating: 0, count: 600_000)
+            .write(to: directory.appending(path: "microphone.wav"))
+        try Data(repeating: 0, count: 2_000)
+            .write(to: directory.appending(path: "system.wav"))
+
+        #expect(SystemAudioCheck.state(in: directory) == .missing)
+    }
+
+    @Test("AAC source files remain preferred over WAV fallbacks")
+    func prefersAACSources() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "system-audio-preference-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(repeating: 0, count: 600_000)
+            .write(to: directory.appending(path: "microphone.m4a"))
+        try Data(repeating: 0, count: 600_000)
+            .write(to: directory.appending(path: "system.m4a"))
+        try Data(repeating: 0, count: 600_000)
+            .write(to: directory.appending(path: "microphone.wav"))
+        try Data(repeating: 0, count: 2_000)
+            .write(to: directory.appending(path: "system.wav"))
+
+        #expect(SystemAudioCheck.state(in: directory) == .captured)
+    }
 }

@@ -348,7 +348,8 @@ struct MenuBarView: View {
         // looks, and it said nothing: the row under this one offered a review of voices that could
         // not be matched, and a confirmation that would fail. The dialog can open behind another
         // window, which is the one case where this surface has to name something not on screen.
-        if let notice = Self.voiceIdentityNotice(model.voiceIdentityState) {
+        if model.distributionChannel.allowsVoiceIdentity,
+           let notice = Self.voiceIdentityNotice(model.voiceIdentityState) {
             CRCallout(
                 icon: "lock.trianglebadge.exclamationmark",
                 title: notice.title,
@@ -361,7 +362,7 @@ struct MenuBarView: View {
             }
         }
 
-        if !model.speakerReviews.isEmpty {
+        if model.distributionChannel.allowsVoiceIdentity, !model.speakerReviews.isEmpty {
             CRDisclosureRow(
                 icon: "person.crop.circle.badge.questionmark",
                 title: "Review Speakers",
@@ -381,7 +382,7 @@ struct MenuBarView: View {
         // their audio is gone, nothing can be done about them, and a row that counts them would
         // stand here permanently with no action behind it. The full list is in Recovery, where a
         // record of what cannot be fixed belongs.
-        if retryableSpeakerIssues > 0 {
+        if model.distributionChannel.allowsVoiceIdentity, retryableSpeakerIssues > 0 {
             CRDisclosureRow(
                 icon: "arrow.clockwise.circle",
                 title: "Speaker detection stopped",
@@ -393,7 +394,8 @@ struct MenuBarView: View {
                 presentWindow("speaker-review")
             }
         }
-        if model.speakerReviews.isEmpty,
+        if model.distributionChannel.allowsVoiceIdentity,
+           model.speakerReviews.isEmpty,
            model.speakerAnalysisIssues.isEmpty,
            !model.voiceProfileSummaries.isEmpty,
            model.voiceProfileSummaries.allSatisfy({ $0.confirmedSampleCount == 0 }) {
@@ -702,7 +704,8 @@ struct RecentCallRow: View {
                                 .monospacedDigit()
                                 .foregroundStyle(CR.Ink.readable)
                         }
-                        if call.unresolvedSpeakerCount > 0 {
+                        if model.distributionChannel.allowsVoiceIdentity,
+                           call.unresolvedSpeakerCount > 0 {
                             Text("\(call.unresolvedSpeakerCount) to review")
                                 .font(CR.Font.caption)
                                 .foregroundStyle(CR.Ink.readable)
@@ -796,7 +799,7 @@ struct RecentCallRow: View {
             }
         }
 
-        if call.unresolvedSpeakerCount > 0 {
+        if model.distributionChannel.allowsVoiceIdentity, call.unresolvedSpeakerCount > 0 {
             Button("Review Speakers…", systemImage: "person.crop.circle.badge.questionmark") {
                 openWindow("speaker-review")
             }
@@ -919,7 +922,8 @@ struct RecentCallRow: View {
     }
 
     private var speakerIssue: SpeakerAnalysisIssue? {
-        model.speakerAnalysisIssues.first { $0.callID == call.id }
+        guard model.distributionChannel.allowsVoiceIdentity else { return nil }
+        return model.speakerAnalysisIssues.first { $0.callID == call.id }
     }
 
     /// A saved call with no transcript is normally waiting for its turn in the queue. Call

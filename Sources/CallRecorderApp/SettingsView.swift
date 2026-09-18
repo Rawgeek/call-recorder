@@ -470,10 +470,11 @@ struct RecoverySettingsView: View {
                 }
             }
 
-            CRSettingsCard(
-                title: "Speakers",
-                footnote: "Repairs are safe to repeat. Both act on saved data and can be undone by naming speakers again."
-            ) {
+            if model.distributionChannel.allowsExternalToolSelection {
+                CRSettingsCard(
+                    title: "Speakers",
+                    footnote: "Repairs are safe to repeat. Both act on saved data and can be undone by naming speakers again."
+                ) {
                 // The review window is the place where names are set, so it is the primary
                 // action here rather than a link buried in a settings row.
                 CRSettingsRow(
@@ -585,6 +586,7 @@ struct RecoverySettingsView: View {
                     .disabled(model.noSpeechTranscriptCount == 0)
                 }
 
+                }
             }
 
             if !model.recoverableArtifacts.isEmpty {
@@ -761,7 +763,9 @@ struct ModelSettingsView: View {
     var body: some View {
         SettingsPane(
             title: "Models",
-            subtitle: "The transcription model, the silence filter, and the search embeddings."
+            subtitle: model.distributionChannel == .appStore
+                ? "The transcription model and the silence filter."
+                : "The transcription model, the silence filter, and the search embeddings."
         ) {
             // The choice and the library are one card, because they are one decision: which file a
             // new recording uses, and which files this Mac has. Two cards made the same list twice
@@ -848,9 +852,13 @@ struct ModelSettingsView: View {
 
             CRSettingsCard(
                 title: "Components",
-                info: "The engine transcription runs on, and the models transcription and search "
-                    + "read. A download is accepted only when its published hash matches the "
-                    + "publisher's."
+                info: model.distributionChannel == .appStore
+                    ? "The signed transcription engine included with the app and the silence "
+                        + "filter transcription reads. Model downloads are accepted only when "
+                        + "their published hashes match."
+                    : "The engine transcription runs on, and the models transcription and search "
+                        + "read. A download is accepted only when its published hash matches the "
+                        + "publisher's."
             ) {
                 whisperEngineRow
                 if let component = silenceFilterComponent {
@@ -858,13 +866,15 @@ struct ModelSettingsView: View {
                     componentRow(component)
                     componentNotes(component)
                 }
-                if let component = embeddingComponent {
+                if model.distributionChannel.allowsDownloadedExecutableRuntime {
+                    if let component = embeddingComponent {
+                        CRSettingsDivider()
+                        componentRow(component)
+                        componentNotes(component)
+                    }
                     CRSettingsDivider()
-                    componentRow(component)
-                    componentNotes(component)
+                    indexerRuntimeRow
                 }
-                CRSettingsDivider()
-                indexerRuntimeRow
             }
         }
         .task {
@@ -918,12 +928,13 @@ struct ModelSettingsView: View {
     /// is decoded.
     @ViewBuilder
     private var whisperEngineRow: some View {
+        let missingDetail = model.distributionChannel == .appStore
+            ? "The signed transcription engine is missing from this app build."
+            : "Not found. Install it with: brew install whisper-cpp"
         CRSettingsRow(
             title: "whisper.cpp",
             // The one case that has to be said out loud is the one where nothing can transcribe.
-            detail: model.whisperCLIPath == nil
-                ? "Not found. Install it with: brew install whisper-cpp"
-                : nil,
+            detail: model.whisperCLIPath == nil ? missingDetail : nil,
             info: whisperEngineDetail,
             warning: model.whisperCLIPath == nil
         ) {
@@ -939,8 +950,16 @@ struct ModelSettingsView: View {
 
     private var whisperEngineDetail: String {
         guard let path = model.whisperCLIPath else {
+            if model.distributionChannel == .appStore {
+                return "Call Recorder transcribes with the signed whisper.cpp helper included "
+                    + "in the app. Reinstall the app if this component is missing."
+            }
             return "Call Recorder transcribes with whisper.cpp and cannot find it. "
                 + "Install it with: brew install whisper-cpp"
+        }
+        if model.distributionChannel == .appStore {
+            return "The signed transcription engine included with Call Recorder, at " + path
+                + ". It is updated together with the app."
         }
         return "The transcription engine, found at " + path + ". Homebrew updates it; Call "
             + "Recorder only runs it."

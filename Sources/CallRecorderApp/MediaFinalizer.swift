@@ -1,6 +1,21 @@
 import CallRecorderCore
 import Foundation
 
+struct ExternalMediaToolURLs: Equatable, Sendable {
+    let ffmpeg: URL
+    let ffprobe: URL
+}
+
+protocol MediaFinalizing: Sendable {
+    var externalTools: ExternalMediaToolURLs? { get }
+
+    func finalize(segments: [CaptureSegment], destination: URL) async throws -> URL
+    func finalizeSources(
+        segments: [CaptureSegment],
+        destination: URL
+    ) async throws -> FinalizedAudioSources
+}
+
 enum MediaFinalizerError: LocalizedError {
     case noSegments
     case noAudio(URL)
@@ -24,9 +39,13 @@ struct FinalizedAudioSources: Equatable, Sendable {
     let compatibilityMix: URL
 }
 
-struct MediaFinalizer: Sendable {
+struct MediaFinalizer: MediaFinalizing {
     let ffmpeg: URL
     let ffprobe: URL
+
+    var externalTools: ExternalMediaToolURLs? {
+        ExternalMediaToolURLs(ffmpeg: ffmpeg, ffprobe: ffprobe)
+    }
 
     func finalize(segments: [CaptureSegment], destination: URL) async throws -> URL {
         try await finalizeSources(segments: segments, destination: destination).compatibilityMix

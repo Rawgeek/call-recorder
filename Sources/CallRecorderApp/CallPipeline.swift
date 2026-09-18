@@ -3,7 +3,7 @@ import Foundation
 
 struct CallPipeline: Sendable {
     let store: CallStore
-    let finalizer: MediaFinalizer
+    let finalizer: any MediaFinalizing
 
     func start(callID: CallID, startedAt: Date) async throws {
         try await store.migrate()
@@ -89,8 +89,11 @@ struct CallPipeline: Sendable {
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw BackgroundProcessingError.audioUnavailable
         }
+        guard let ffmpeg = finalizer.externalTools?.ffmpeg else {
+            throw DiarizerError.runtimeUnavailable
+        }
         let result = try await Task.detached {
-            try diarizer.run(audio: source, ffmpeg: finalizer.ffmpeg, cancellation: cancellation)
+            try diarizer.run(audio: source, ffmpeg: ffmpeg, cancellation: cancellation)
         }.value
         guard !result.turns.isEmpty, !result.clusters.isEmpty else {
             throw DiarizerError.noSpeakersDetected

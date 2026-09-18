@@ -30,8 +30,7 @@ struct AppSettingsDecodingTests {
         // Giving the audio back is what the app did before the option existed, so a blob written
         // without the flag keeps the behaviour it had.
         #expect(decoded.removeAudioAfterTranscription == true)
-        // The reminder is due on a settings blob that has never carried the flag, which is the
-        // state a first run is in.
+        // A settings blob that has never carried the flag has not dismissed the reminder.
         #expect(decoded.automaticDetectionNoticeDismissed == false)
         // And the check runs on the step the app shipped with, which is what a blob written before
         // the step could be chosen has to mean.
@@ -100,5 +99,22 @@ struct AppSettingsDecodingTests {
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(AppSettings.self, from: Data("not json".utf8))
         }
+    }
+
+    @Test("channel defaults do not change explicit saved choices")
+    func channelDefaultsDoNotChangeSavedChoices() throws {
+        let enabled = try JSONDecoder().decode(
+            AppSettings.self,
+            from: Data(#"{"automaticDetectionEnabled":true,"outputDirectory":"/tmp/direct"}"#.utf8)
+        )
+        let disabled = try JSONDecoder().decode(
+            AppSettings.self,
+            from: Data(#"{"automaticDetectionEnabled":false,"outputDirectory":"/tmp/store"}"#.utf8)
+        )
+
+        #expect(enabled.automaticDetectionEnabled)
+        #expect(enabled.outputDirectory == "/tmp/direct")
+        #expect(!disabled.automaticDetectionEnabled)
+        #expect(disabled.outputDirectory == "/tmp/store")
     }
 }

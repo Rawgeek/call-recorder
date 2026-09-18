@@ -19,7 +19,11 @@ struct CallRecorderApp: App {
         .defaultSize(width: 640, height: 620)
 
         Window("Review Speakers", id: "speaker-review") {
-            SpeakerReviewView(model: model)
+            if model.distributionChannel.allowsVoiceIdentity {
+                SpeakerReviewView(model: model)
+            } else {
+                EmptyView()
+            }
         }
         .defaultSize(width: 760, height: 620)
 

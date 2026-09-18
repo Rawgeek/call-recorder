@@ -72,6 +72,7 @@ mkdir -p \
 cp .build/release/CallRecorder "$task_contents/MacOS/CallRecorder"
 cp Resources/Info.plist "$task_contents/Info.plist"
 cp Resources/AppIcon.icns "$task_contents/Resources/AppIcon.icns"
+cp Resources/PrivacyInfo.xcprivacy "$task_contents/Resources/PrivacyInfo.xcprivacy"
 cp Sources/CallRecorderApp/diarize.py "$task_contents/Resources/diarize.py"
 chmod 755 "$task_contents/MacOS/CallRecorder"
 # The binary carries a symbol table the app never reads: 13 MB of it is 8.5 MB without one.
@@ -192,6 +193,7 @@ fi
 task_required=(
     "$task_contents/MacOS/CallRecorder"
     "$task_contents/Info.plist"
+    "$task_contents/Resources/PrivacyInfo.xcprivacy"
     "$task_contents/Resources/diarize.py"
     "$task_indexer/bun"
     "$task_indexer/runtime.sha256"
