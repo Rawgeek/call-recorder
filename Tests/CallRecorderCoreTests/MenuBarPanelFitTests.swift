@@ -1,4 +1,5 @@
 import AppKit
+import Observation
 import SwiftUI
 import Testing
 @testable import CallRecorderApp
@@ -151,23 +152,10 @@ struct MenuBarPanelFitTests {
         let height = WindowPresentation.menuBarBottom(
             frame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
             visibleFrame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
-            rowBottom: nil,
             barThickness: 22
         )
 
         #expect(height == 1418)
-    }
-
-    @Test("the row the icon is drawn in beats what the display reports")
-    func theIconRowIsTheTruth() {
-        let height = WindowPresentation.menuBarBottom(
-            frame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
-            visibleFrame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
-            rowBottom: 1410,
-            barThickness: 22
-        )
-
-        #expect(height == 1410)
     }
 
     @Test("a display that reserves room for the menu bar keeps its visible frame")
@@ -175,10 +163,93 @@ struct MenuBarPanelFitTests {
         let height = WindowPresentation.menuBarBottom(
             frame: CGRect(x: 0, y: 0, width: 2560, height: 1440),
             visibleFrame: CGRect(x: 0, y: 0, width: 2560, height: 1410),
-            rowBottom: nil,
             barThickness: 22
         )
 
         #expect(height == 1410)
+    }
+
+    @Test("the panel is cut to the height it was measured at, not to what its content view says")
+    func theMeasuredHeightIsTheOneUsed() {
+        // The panel the system makes answers nothing when it is asked how tall its content is: a
+        // fitting size of zero was measured on the machine this was reported on. The height comes
+        // from the content that draws itself instead, and this is that path with the same silence.
+        guard let screen = NSScreen.main else { return }
+        let window = NSWindow(
+            contentRect: NSRect(x: 200, y: 40, width: 360, height: 499),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 499))
+        PanelWindow.report(window)
+        defer { PanelWindow.report(nil) }
+        // The silence itself, so the test keeps saying what the real panel does.
+        #expect(window.contentView?.fittingSize.height == 0)
+
+        WindowPresentation.fitMenuBarPanels(contentHeight: 472)
+
+        #expect(window.frame.height == 472)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
+    }
+
+    @Test("the panel gives back the height of a notice that goes away")
+    func thePanelGivesBackTheHeightOfANotice() async throws {
+        // The panel is sized from its content once, and keeps the tallest size it was given. A
+        // notice that goes away would leave its room behind as a strip above the content, and
+        // nothing about the window changes in that moment: the correction has to come from the
+        // content asking to be measured again. This is that path, through a real hosting view.
+        guard let screen = NSScreen.main else { return }
+        let content = PanelNoticeModel(showsNotice: true)
+        let window = panel(height: 320, contentHeight: 200)
+        window.contentView = NSHostingView(rootView: GrowingPanelContent(model: content))
+        window.contentView?.layoutSubtreeIfNeeded()
+        PanelWindow.report(window)
+        defer { PanelWindow.report(nil) }
+        // The corrections made while the panel appears have run by now, so what is left to see is
+        // the content's own change.
+        try await Task.sleep(for: .milliseconds(700))
+        let tall = window.frame.height
+        #expect(tall > 150)
+
+        content.showsNotice = false
+        for _ in 0..<20 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(25))
+            if window.frame.height < tall { break }
+        }
+
+        // The notice is gone and the panel is the height of what is left, against the menu bar.
+        #expect(window.frame.height < tall)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
+    }
+}
+
+/// The panel's content in the two shapes a notice makes: with it, and without it.
+@MainActor
+@Observable
+private final class PanelNoticeModel {
+    var showsNotice: Bool
+
+    init(showsNotice: Bool) {
+        self.showsNotice = showsNotice
+    }
+}
+
+private struct GrowingPanelContent: View {
+    let model: PanelNoticeModel
+
+    var body: some View {
+        VStack(spacing: 0) {
+            if model.showsNotice {
+                Color.clear.frame(height: 80)
+            }
+            Color.clear.frame(height: 120)
+        }
+        .frame(width: 360)
+        // The wiring the panel has: whatever changes its height asks for the window to be measured.
+        .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.height } action: { height in
+            WindowPresentation.fitMenuBarPanels(contentHeight: height)
+        }
     }
 }

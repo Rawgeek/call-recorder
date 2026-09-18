@@ -1,9 +1,16 @@
 #!/bin/zsh
 # Builds the app bundle that is handed to someone else.
 #
-# Set CALL_RECORDER_SKIP_SIGNING=1 to build the same bundle without touching the signing key. That
-# is for measuring and inspecting a build on a machine where nobody is sitting in front of it. The
-# result cannot be shared: macOS refuses an unsigned copy of an app it did not build.
+# The signature is what macOS recognises an app by, and a signing key lives in the keychain, which
+# asks for a password. A build that stays on this machine therefore needs no keychain at all: with
+# no identity named, the bundle is signed ad-hoc. Name one to make a build that ships, or to replace
+# an installed app without macOS asking for the microphone and screen-recording permissions again:
+#
+#   CALL_RECORDER_SIGNING_IDENTITY="Call Recorder Local Development" scripts/package-app.sh
+#
+# Set CALL_RECORDER_SKIP_SIGNING=1 to build the same bundle with no signature at all. That is for
+# measuring and inspecting a build on a machine where nobody is sitting in front of it. The result
+# cannot be shared: macOS refuses an unsigned copy of an app it did not build.
 set -euo pipefail
 
 task_root=${0:A:h:h}
@@ -16,7 +23,7 @@ if [[ ! -x "$task_bun" ]]; then
     exit 1
 fi
 
-task_identity=${CALL_RECORDER_SIGNING_IDENTITY:-Call Recorder Local Development}
+task_identity=${CALL_RECORDER_SIGNING_IDENTITY:-}
 task_skip_signing=${CALL_RECORDER_SKIP_SIGNING:-0}
 task_version=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$task_root/Resources/Info.plist")
 task_output=${1:-"$task_root/dist/Call Recorder $task_version"}
@@ -47,7 +54,7 @@ task_signing_probe="$task_temp/signing-probe"
 task_signing_error="$task_temp/signing-error.txt"
 if [[ "$task_skip_signing" == "1" ]]; then
     print -u2 "Building without a signature: the copy this writes cannot be shared."
-else
+elif [[ -n "$task_identity" ]]; then
     cp /usr/bin/true "$task_signing_probe"
     if ! codesign --force --sign "$task_identity" "$task_signing_probe" 2>"$task_signing_error"; then
         print -u2 "Code-signing key is unavailable; build not started."
@@ -241,12 +248,22 @@ fi
 
 if [[ "$task_skip_signing" == "1" ]]; then
     print -u2 "Skipping the signature on the app bundle."
-else
+elif [[ -n "$task_identity" ]]; then
     codesign --force --deep --options runtime \
         --sign "$task_identity" \
         --entitlements Resources/CallRecorder.entitlements \
         "$task_app"
     codesign --verify --deep --strict --verbose=2 "$task_app"
+else
+    # A signature with no name of its own: enough for the app to run where it was built, and it
+    # needs no keychain. macOS cannot recognise the app by it on another machine, so nothing built
+    # this way is published.
+    codesign --force --deep --options runtime \
+        --sign - \
+        --entitlements Resources/CallRecorder.entitlements \
+        "$task_app"
+    codesign --verify --deep --strict --verbose=2 "$task_app"
+    print "Signed ad-hoc: this build is for this machine. Name CALL_RECORDER_SIGNING_IDENTITY to publish one."
 fi
 
 if [[ -e "$task_output" ]]; then

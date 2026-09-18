@@ -155,10 +155,13 @@ Run it directly with `swift run CallRecorder`, or build a distributable bundle:
 scripts/package-app.sh "dist/Call Recorder 0.1.4"
 ```
 
-Packaging needs `bun` on `PATH` (or `CALL_RECORDER_BUN`) and a code-signing identity
-(`CALL_RECORDER_SIGNING_IDENTITY`, default `Call Recorder Local Development`). To package
-without a certificate, use `CALL_RECORDER_SIGNING_IDENTITY=-` for an ad-hoc signature, or set
-`CALL_RECORDER_SKIP_SIGNING=1` to skip the signature step while measuring a build.
+Packaging needs `bun` on `PATH` (or `CALL_RECORDER_BUN`). With no identity named the bundle is
+signed ad-hoc, which needs no certificate, no keychain, and no password: that build runs on this
+machine. Name the certificate the releases use,
+`CALL_RECORDER_SIGNING_IDENTITY="Call Recorder Local Development"`, for a build that ships, or that
+replaces an installed app without macOS asking for the microphone and screen-recording permissions
+again. `CALL_RECORDER_SKIP_SIGNING=1` leaves the bundle unsigned, which is only for measuring a
+build.
 
 The JavaScript runtime, `bun` and the search dependencies, travels as one compressed archive of
 about 36 MB. It is not inside the app: the app is 10 MB, and the archive is fetched once from the
@@ -217,6 +220,7 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 | `~/Library/Application Support/CallRecorder/runtime` | The JavaScript runtime the search index and the MCP server run on, unpacked from the app once per version. |
 | `~/Library/Application Support/CallRecorder/Recently Deleted` | Working folders kept for 24 hours after a call is finished or discarded. |
 | `~/Library/Application Support/CallRecorder/Speaker Samples` | Short clips cut for speaker review, with the silence removed. Kept for a fortnight. |
+| `~/Library/Application Support/CallRecorder/voiceprints` | The voice-profile key a development run uses, so that no keychain dialog appears. The installed app keeps this key in the Keychain. |
 | macOS Keychain | The encryption key for voice profiles. |
 
 ## Privacy
@@ -265,9 +269,17 @@ system audio ------ /                                  |                      |
 
 ```sh
 swift build          # debug build
-swift test           # 440 Swift tests
-cd mcp && bun install && bun test    # 55 MCP tests, plus: bun run typecheck
+swift test           # 647 Swift tests
+cd mcp && bun install && bun test    # 56 MCP tests, plus: bun run typecheck
 ```
+
+A development run never touches the keychain. Voice profiles are sealed with a key that lives in a
+keychain item, and the keychain decides whether a program may read one by the program's signature: a
+rebuild is a new program to it, so every start from the build directory used to meet a password
+dialog with nothing on screen to explain it. Those runs keep the same key in
+`~/Library/Application Support/CallRecorder/voiceprints/embedding-key-v1`, which only this account
+can read. Set `CALL_RECORDER_VOICEPRINT_KEY=keychain` for a run that should use the keychain anyway.
+The installed app, which macOS recognises by the identity it was signed with, goes on using it.
 
 Render every window to PNGs without packaging, signing, or installing:
 

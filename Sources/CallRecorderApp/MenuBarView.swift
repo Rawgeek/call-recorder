@@ -30,6 +30,13 @@ struct MenuBarView: View {
         }
         .padding(CR.Space.section)
         .frame(width: 360)
+        // The panel's window is measured again whenever what it holds changes height. The system
+        // sets that height once, from the tallest content it was shown: a notice that goes away
+        // would otherwise leave its room behind as a strip below the menu bar. The height goes with
+        // the call because the panel's own content view reports no size for the window to read.
+        .onGeometryChange(for: CGFloat.self) { proxy in proxy.size.height } action: { height in
+            WindowPresentation.fitMenuBarPanels(contentHeight: height)
+        }
         // The window this content is drawn in is the panel, and the probe is what says so.
         .background(PanelWindowProbe().frame(width: 1, height: 1))
     }

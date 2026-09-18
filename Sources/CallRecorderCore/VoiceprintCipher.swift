@@ -102,6 +102,23 @@ public enum VoiceprintKeyStoreError: Error, Equatable {
     case invalidStoredKey
     case inaccessible(OSStatus)
     case generationFailed(OSStatus)
+    /// The file a development run keeps its key in could not be written. The number is the error
+    /// the file system reported.
+    case fileUnavailable(Int32)
+}
+
+/// Where the key that opens stored voice profiles is kept.
+///
+/// The keychain decides whether a program may read one of its items by the program's signature, and
+/// a rebuild is a new program to it: a development run then waits on a password dialog with nothing
+/// on screen to explain it, and the features behind the key are quietly absent. A build that ships
+/// is never one of those runs.
+public enum VoiceprintKeyLocation: Sendable, Equatable {
+    /// The login keychain, which is where the installed app keeps the key.
+    case keychain
+
+    /// A file under the app's own folder that only this account can read.
+    case file(URL)
 }
 
 public enum VoiceprintKeyStore {
@@ -109,6 +126,33 @@ public enum VoiceprintKeyStore {
     private static let account = "embedding-key-v1"
 
     public static func loadOrCreate(hasEncryptedData: Bool) throws -> VoiceprintCipher {
+        try loadOrCreate(hasEncryptedData: hasEncryptedData, in: .keychain)
+    }
+
+    /// Reads the key, or makes one when there is nothing for it to open yet.
+    ///
+    /// - Parameter hasEncryptedData: whether stored profiles exist. A key that is gone with data to
+    ///   open is a fault and is reported as one; with nothing to open, a new key is made.
+    public static func loadOrCreate(
+        hasEncryptedData: Bool,
+        in location: VoiceprintKeyLocation
+    ) throws -> VoiceprintCipher {
+        switch location {
+        case .keychain:
+            return try loadOrCreateInKeychain(hasEncryptedData: hasEncryptedData)
+        case .file(let url):
+            return try loadOrCreateInFile(url, hasEncryptedData: hasEncryptedData)
+        }
+    }
+
+    /// The file a development run keeps the key in, inside the app's own folder.
+    public static func fileLocation(inApplicationDirectory directory: URL) -> URL {
+        directory
+            .appending(path: "voiceprints", directoryHint: .isDirectory)
+            .appending(path: account, directoryHint: .notDirectory)
+    }
+
+    private static func loadOrCreateInKeychain(hasEncryptedData: Bool) throws -> VoiceprintCipher {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -129,13 +173,7 @@ public enum VoiceprintKeyStore {
         }
         guard !hasEncryptedData else { throw VoiceprintKeyStoreError.missingKey }
 
-        var bytes = Data(repeating: 0, count: 32)
-        let generationStatus = bytes.withUnsafeMutableBytes { buffer in
-            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
-        }
-        guard generationStatus == errSecSuccess else {
-            throw VoiceprintKeyStoreError.generationFailed(generationStatus)
-        }
+        let bytes = try generatedKey()
         let insert: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -148,5 +186,49 @@ public enum VoiceprintKeyStore {
             throw VoiceprintKeyStoreError.inaccessible(insertStatus)
         }
         return try VoiceprintCipher(keyData: bytes)
+    }
+
+    /// The same key in a file, for a run whose program the keychain does not know.
+    private static func loadOrCreateInFile(
+        _ url: URL,
+        hasEncryptedData: Bool
+    ) throws -> VoiceprintCipher {
+        if let data = try? Data(contentsOf: url) {
+            guard data.count == 32 else { throw VoiceprintKeyStoreError.invalidStoredKey }
+            return try VoiceprintCipher(keyData: data)
+        }
+        guard !hasEncryptedData else { throw VoiceprintKeyStoreError.missingKey }
+        let bytes = try generatedKey()
+        do {
+            // The folder is closed to everyone else, and the file is made unreadable to them before
+            // anything is ever sealed with it.
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            try bytes.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: url.path
+            )
+        } catch let error as CocoaError {
+            throw VoiceprintKeyStoreError.fileUnavailable(Int32(error.code.rawValue))
+        } catch {
+            throw VoiceprintKeyStoreError.fileUnavailable(Int32(errno))
+        }
+        return try VoiceprintCipher(keyData: bytes)
+    }
+
+    /// Thirty-two random bytes, or the failure the system reported.
+    private static func generatedKey() throws -> Data {
+        var bytes = Data(repeating: 0, count: 32)
+        let generationStatus = bytes.withUnsafeMutableBytes { buffer in
+            SecRandomCopyBytes(kSecRandomDefault, buffer.count, buffer.baseAddress!)
+        }
+        guard generationStatus == errSecSuccess else {
+            throw VoiceprintKeyStoreError.generationFailed(generationStatus)
+        }
+        return bytes
     }
 }

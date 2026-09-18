@@ -48,9 +48,13 @@ public struct SpeakerStore: Sendable {
         self.cipher = cipher
     }
 
-    public static func production(store: CallStore) async throws -> SpeakerStore {
+    public static func production(
+        store: CallStore,
+        keyLocation: VoiceprintKeyLocation = .keychain
+    ) async throws -> SpeakerStore {
         let cipher = try VoiceprintKeyStore.loadOrCreate(
-            hasEncryptedData: try await store.hasEncryptedSpeakerData()
+            hasEncryptedData: try await store.hasEncryptedSpeakerData(),
+            in: keyLocation
         )
         return SpeakerStore(store: store, cipher: cipher)
     }

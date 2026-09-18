@@ -217,15 +217,18 @@ To produce a distributable app bundle:
 
     scripts/package-app.sh "dist/releases/Call Recorder 0.1.2"
 
-Packaging needs bun on PATH (or CALL_RECORDER_BUN) and a code-signing identity
-(CALL_RECORDER_SIGNING_IDENTITY, default "Call Recorder Local Development"). To package
-without a certificate, build ad-hoc with CALL_RECORDER_SIGNING_IDENTITY=-.
+Packaging needs bun on PATH (or CALL_RECORDER_BUN). With no signing identity named, the bundle is
+signed ad-hoc, which needs no certificate and no keychain: it is a build for this machine. Name the
+identity the releases use for a build that ships, or to replace an installed app without macOS
+asking for the microphone and screen-recording permissions again:
+
+    CALL_RECORDER_SIGNING_IDENTITY="Call Recorder Local Development" scripts/package-app.sh
 
 Layout: Sources/CallRecorderApp (menu bar, capture, processing), Sources/CallRecorderCore
 (database, matching, transcription boundaries), mcp/ (MCP server and indexer), and
 scripts/package-app.sh.
 
-Verification in this build: 440 Swift tests and 55 MCP tests pass, plus TypeScript and
+Verification in this build: 647 Swift tests and 56 MCP tests pass, plus TypeScript and
 Biome checks.
 
 ## 10. Troubleshooting

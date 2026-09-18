@@ -1,4 +1,5 @@
 import AppKit
+import os
 
 @MainActor
 enum WindowPresentation {
@@ -45,8 +46,17 @@ enum WindowPresentation {
         }
     }
 
-    /// Gives the panel, and any borderless window of the app, the height of what it holds.
-    static func fitMenuBarPanels() {
+    /// Gives the panel the height of what it holds.
+    ///
+    /// Called when the panel comes on screen, and again whenever its content changes height. The
+    /// height is the one the content was measured at, and it has to be passed in: the panel's own
+    /// content view reports a fitting size of zero, measured on the machine this was reported on,
+    /// so the window cannot ask what it holds. A notice that goes away is the case this exists for.
+    /// The system sized the panel from the tallest content it was shown and keeps that height, and
+    /// what is left of the room the notice had is drawn as a strip below the menu bar. Nothing
+    /// about the window changes in that moment, which is why the window's own notifications never
+    /// saw it, and why the measurement has to come from the content.
+    static func fitMenuBarPanels(contentHeight: CGFloat? = nil) {
         // The window the probe found is the panel, whatever shape the system gave it.
         //
         // Nothing else is touched. This used to sweep every borderless window of the app, which is
@@ -54,7 +64,7 @@ enum WindowPresentation {
         // are borderless too. Resizing them and moving them to the top of the screen is what turned
         // the application menu into a strip under the menu bar until the pointer moved away.
         guard let panel = PanelWindow.current else { return }
-        fitMenuBarPanel(panel)
+        fitMenuBarPanel(panel, contentHeight: contentHeight)
         fitAgainAsItSettles(panel)
     }
 
@@ -69,8 +79,9 @@ enum WindowPresentation {
     ///
     /// The measurement is only ever used to make the window shorter. A window drawn by the system
     /// is the authority on how tall it should be, and a number larger than the window would be a
-    /// measurement of something else.
-    static func fitMenuBarPanel(_ window: NSWindow) {
+    /// measurement of something else. When no measurement was passed in, the content view is asked,
+    /// which answers zero on the panel and the content's height in a test.
+    static func fitMenuBarPanel(_ window: NSWindow, contentHeight: CGFloat? = nil) {
         // Measuring a hosting view lays it out, and laying it out can size or move the window,
         // which is another change to correct. Without this the measurement calls straight back
         // into the fit and the stack runs out.
@@ -81,29 +92,40 @@ enum WindowPresentation {
         // screen of its own, and the menu bar of the main screen is the same answer.
         guard let content = window.contentView, let screen = window.screen ?? NSScreen.main else { return }
         var frame = window.frame
-        let fitting = content.fittingSize.height
-        if fitting > 0, fitting < frame.height - 0.5 { frame.size.height = fitting }
+        let wanted = contentHeight ?? content.fittingSize.height
+        if wanted > 0, wanted < frame.height - 0.5 { frame.size.height = wanted }
         frame.origin.y = menuBarBottom(of: screen) - frame.height
         guard
             abs(frame.height - window.frame.height) > 0.5
                 || abs(frame.origin.y - window.frame.origin.y) > 0.5
         else { return }
         window.setFrame(frame, display: true)
+        // The panel is the one surface that cannot be looked at in a test and cannot be seen in a
+        // render, so what it was given and what it asked for are written down where a report of it
+        // can be read back. Nothing here is a secret: heights and edges only.
+        logger.debug(
+            "panel fit: top=\(frame.origin.y, privacy: .public) height=\(frame.height, privacy: .public) content=\(wanted, privacy: .public) screen=\(screen.frame.maxY, privacy: .public) visible=\(screen.visibleFrame.maxY, privacy: .public)"
+        )
     }
+
+    private static let logger = Logger(
+        subsystem: "local.callrecorder.app",
+        category: "panel"
+    )
 
     /// The bottom edge of the menu bar on one screen, in screen coordinates.
     ///
     /// A screen whose menu bar takes room from the desktop answers this with its visible frame. A
     /// screen whose menu bar hides itself reserves nothing, and the same answer would then be the
     /// top of the screen: the panel would be drawn over the bar, which is worse than the gap it was
-    /// sent to remove. The row the icon is drawn in is the truth for that case, and the system's own
-    /// thickness is the fallback under it.
+    /// sent to remove. The system's own thickness is the fallback under that. The row the icon is
+    /// drawn in would answer both cases exactly, and the app cannot see it: the label of a menu bar
+    /// extra is drawn into the status item's image, so a view placed in it never lands in a window
+    /// and never reports one.
     static func menuBarBottom(of screen: NSScreen) -> CGFloat {
-        let row = MenuBarRow.current
         return menuBarBottom(
             frame: screen.frame,
             visibleFrame: screen.visibleFrame,
-            rowBottom: row?.screen === screen ? row?.frame.minY : nil,
             barThickness: NSStatusBar.system.thickness
         )
     }
@@ -112,14 +134,8 @@ enum WindowPresentation {
     static func menuBarBottom(
         frame: CGRect,
         visibleFrame: CGRect,
-        rowBottom: CGFloat?,
         barThickness: CGFloat
     ) -> CGFloat {
-        // The row the icon is drawn in, when it is known: it is the bar's own bottom edge, on a
-        // display whose bar takes room and on one whose bar hides itself alike.
-        if let rowBottom, rowBottom > frame.minY, rowBottom < frame.maxY {
-            return rowBottom
-        }
         let reserved = frame.maxY - visibleFrame.maxY
         guard reserved > 0.5 else {
             // A bar that reserves nothing: the top of the screen is not the bottom of the bar, and

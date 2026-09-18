@@ -6,7 +6,8 @@ versioning.
 
 ## [0.1.16] - 2026-09-18
 
-Calls recorded before briefs existed can be written up now, without recording them again.
+Calls recorded before briefs existed can be written up now, without recording them again, and the
+panel stops keeping the room of a notice that has gone away.
 
 ### Added
 - **Write a brief**, on the menu-bar row of any call that has a transcript and no brief yet. The
@@ -14,9 +15,33 @@ Calls recorded before briefs existed can be written up now, without recording th
   runs. It is the same path the pipeline takes, so a brief written on request is the brief a call
   would have been given had it finished after the update.
 
+### Changed
+- **A development run no longer touches the keychain.** Voice profiles are sealed with a key that
+  lives in a keychain item, and the keychain decides whether a program may read one of its items by
+  the program's signature: every rebuild is a new program to it, so starting a build from the build
+  directory waited on a password dialog with nothing on screen to explain it. Those runs keep the
+  same key in a file only this account can read, inside the app's own folder, and
+  `CALL_RECORDER_VOICEPRINT_KEY=keychain` asks for the keychain back. The installed app keeps using
+  the keychain.
+- **Packaging signs ad-hoc unless an identity is named**, so building an app for this machine needs
+  no signing key and no password. `scripts/release.sh --publish` names the release identity, so a
+  published build is still recognised by macOS across updates and keeps the permissions it was
+  granted.
+
+### Fixed
+- **The strip under the menu bar, when a notice went away.** The panel is sized once, from the
+  tallest content it was shown, and it is drawn from the middle of the window it was given: the
+  notice that reported older calls it could not read left its room behind as a gap, and the panel
+  sat lower for as long as it stayed open. The panel now takes the height the content was measured
+  at every time that height changes, so the room goes back when the notice does. The measurement
+  has to come from the content: the panel's own content view reports a fitting size of zero, which
+  is what the first attempt at this fix relied on and why it changed nothing on screen.
+
 ### Verified
-- 641 tests pass in 82 suites. The request path shares the pipeline's transcript read, so it is
-  covered by the tests that already cover the brief.
+- 647 tests pass in 83 suites. The request path shares the pipeline's transcript read, so it is
+  covered by the tests that already cover the brief. The panel was measured on the machine the
+  strip was reported on: with the notice it is 603 points tall, the notice goes, and it is 576 with
+  its top edge in the same place.
 
 ## [0.1.15] - 2026-09-18
 

@@ -3247,9 +3247,19 @@ final class AppModel {
     /// the surfaces can show, and the user can then answer the dialog or unlock the Mac.
     private func startVoiceIdentity(store: CallStore) {
         setVoiceIdentityState(.checking)
+        // Where this run keeps the key is settled here, where the app's own folder is known, so the
+        // read itself can happen away from the main actor.
+        let keyLocation = VoiceprintKeyChoice.forThisRun(
+            applicationDirectory: applicationDirectory
+        )
         Task.detached { [weak self] in
             do {
-                let speakers = try await SpeakerStore.production(store: store)
+                // A development run reads a file instead of the keychain, so no password dialog
+                // appears for a program the keychain has never seen.
+                let speakers = try await SpeakerStore.production(
+                    store: store,
+                    keyLocation: keyLocation
+                )
                 _ = try await speakers.purgeExpiredPending()
                 _ = try await speakers.purgeExpiredProfileRecovery()
                 await self?.activateSpeakerStore(speakers)

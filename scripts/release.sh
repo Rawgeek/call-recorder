@@ -108,7 +108,10 @@ publish() {
     test_suite
 
     print "Packaging..."
-    scripts/package-app.sh
+    # A published build keeps the identity it was made with, so macOS goes on recognising the app
+    # and the permissions it was granted survive the update.
+    CALL_RECORDER_SIGNING_IDENTITY=${CALL_RECORDER_SIGNING_IDENTITY:-Call Recorder Local Development} \
+        scripts/package-app.sh
 
     local notes="dist/release-notes-$version.md"
     awk -v heading="## [$version]" '
