@@ -38,6 +38,9 @@ check() {
     if [[ "$(head -1 DISTRIBUTION_README.txt)" != "Call Recorder $version" ]]; then
         problems+=("DISTRIBUTION_README.txt starts with \"$(head -1 DISTRIBUTION_README.txt)\"")
     fi
+    if [[ "$(head -1 INSTALL.md)" != "# Call Recorder $version — install, features, and Codex MCP" ]]; then
+        problems+=("INSTALL.md starts with \"$(head -1 INSTALL.md)\"")
+    fi
     if ! grep -q "^## \[$version\]" CHANGELOG.md; then
         problems+=("CHANGELOG.md has no entry for $version")
     fi
@@ -62,6 +65,7 @@ check() {
 sync() {
     perl -pi -e "s/CallRecorder-[0-9][0-9.]*[.]zip/$archive/g" README.md
     sed -i '' "1s/^Call Recorder .*/Call Recorder $version/" DISTRIBUTION_README.txt
+    sed -i '' "1s/^# Call Recorder [0-9][0-9.]* —/# Call Recorder $version —/" INSTALL.md
 
     # The pictures are published, so they are drawn from an invented library in a throwaway home:
     # a render of the real one carries somebody's call history and their colleagues' names.

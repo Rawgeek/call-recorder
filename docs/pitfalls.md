@@ -32,6 +32,18 @@ still asks for permission", and the answer is always that the app is not the app
 concluding that the permission code is broken. Keep the app's identity stable between builds when
 possible, and ask for each permission explicitly rather than reading a switch that may be stale.
 
+### A refused permission is not a capture that went wrong
+
+ScreenCaptureKit reports a missing Screen Recording grant as a stream error, and the sentence it
+carries names no permission and no way to grant one. A recording that failed this way read as the
+app being broken, and the card that names the permission never appeared, because the flag behind it
+started as granted and nothing ever read it from the system.
+
+**Rule:** read the grant with `CGPreflightScreenCaptureAccess` when the app starts, and treat the one
+error code that means "declined" (-3801) as a fact about the permission rather than a capture
+failure: say what is missing, keep the framework error in the diagnostics, and leave the recorder
+idle -- or paused, when the refusal arrives on a resume -- so no audio is thrown away.
+
 ### Signing asks for the keychain, once per session
 
 `codesign` needs the signing key unlocked. A locked keychain turns a packaging run into a
@@ -145,6 +157,17 @@ muted microphone, a call where only the other side spoke, or a device that was n
 
 **Rule:** warn on a one-sided call rather than treating it as a fault, and never judge a call by
 one source.
+
+### A missing microphone is one source fewer, not a failed recording
+
+A Mac mini has no audio input at all. The capture resolved the microphone first and refused when it
+found none, so a machine that could record the other side of every call perfectly well recorded
+nothing, and the error it produced named a device the person never had.
+
+**Rule:** treat the microphone as an optional source. ScreenCaptureKit records the system audio on
+its own, the segment manifest already allows one track, and the finaliser already accepts one. The
+refusal is kept behind a setting for the Macs that do have an input, and a device plugged in later
+is picked up by the next segment.
 
 ## Transcribing
 

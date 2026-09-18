@@ -28,6 +28,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// detection. The list is `NonCallMicrophoneApps`.
     public var ignoresNonCallApps: Bool
     public var selectedMicrophoneID: String?
+    /// Whether a recording goes ahead on a Mac that has no audio input at all.
+    ///
+    /// ScreenCaptureKit records a call's system audio without a microphone, so a Mac mini with no
+    /// input device still holds the other side of the call. On makes that recording; off keeps the
+    /// refusal, which is the choice for a Mac that does have a microphone and wants every
+    /// recording to hold both sides. A microphone that exists but was chosen wrongly is not this
+    /// setting: the device list still falls back to the built-in microphone.
+    public var recordsWithoutMicrophone: Bool
     public var localParticipantID: ParticipantID?
     public var selectedWhisperModelID: String
     public var outputDirectory: String
@@ -80,6 +88,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case silenceStopMinutes
         case ignoresNonCallApps
         case selectedMicrophoneID
+        case recordsWithoutMicrophone
         case localParticipantID
         case selectedWhisperModelID
         case outputDirectory
@@ -101,6 +110,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             silenceStopMinutes: AutomaticRecordingRails.defaultSilenceMinutes,
             ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
+            recordsWithoutMicrophone: true,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
             outputDirectory: FileManager.default.homeDirectoryForCurrentUser
@@ -154,6 +164,11 @@ extension AppSettings {
             ?? fallback.ignoresNonCallApps
         selectedMicrophoneID =
             try container.decodeIfPresent(String.self, forKey: .selectedMicrophoneID)
+        // Added after the first release. Absent means the behaviour this release introduced: a Mac
+        // with no audio input records the other side of the call instead of refusing to record.
+        recordsWithoutMicrophone =
+            try container.decodeIfPresent(Bool.self, forKey: .recordsWithoutMicrophone)
+            ?? fallback.recordsWithoutMicrophone
         localParticipantID =
             try container.decodeIfPresent(ParticipantID.self, forKey: .localParticipantID)
         selectedWhisperModelID =

@@ -36,6 +36,20 @@ struct AppSettingsDecodingTests {
         // And the check runs on the step the app shipped with, which is what a blob written before
         // the step could be chosen has to mean.
         #expect(decoded.appUpdateCheckInterval == .everySixHours)
+        // A Mac that has never been asked about a missing microphone records the other side of the
+        // call, which is the behaviour this release introduced.
+        #expect(decoded.recordsWithoutMicrophone)
+    }
+
+    @Test("refusing to record without a microphone survives a save")
+    func recordingWithoutAMicrophoneSurvivesASave() throws {
+        var settings = AppSettings.default
+        settings.recordsWithoutMicrophone = false
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+
+        #expect(decoded.recordsWithoutMicrophone == false)
+        #expect(decoded == settings)
     }
 
     @Test("the chosen check step is remembered, and one this build cannot read costs only itself")

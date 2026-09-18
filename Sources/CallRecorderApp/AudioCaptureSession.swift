@@ -77,6 +77,29 @@ enum AudioCaptureError: Error {
     case noAudio
 }
 
+/// What each refusal says where a person reads it.
+///
+/// A Swift error with no description reaches the popover as "The operation couldn't be completed",
+/// which names neither the cause nor what to do about it. Each case here is one sentence a person
+/// can act on.
+extension AudioCaptureError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .alreadyCapturing:
+            "A recording is already running."
+        case .notCapturing:
+            "No recording is running."
+        case .noDisplay:
+            "No display was found to capture the call's audio through."
+        case .noMicrophone:
+            "No microphone is connected. Turn on Settings, General, Record when there is no "
+                + "microphone to record the other side without one."
+        case .noAudio:
+            "The capture produced no audio."
+        }
+    }
+}
+
 @MainActor
 final class AudioCaptureSession {
     nonisolated private static let builtInMicrophoneID = "BuiltInMicrophoneDevice"
@@ -212,12 +235,38 @@ final class AudioCaptureSession {
         return cocoaError.domain == SCStreamErrorDomain && cocoaError.code == -3_801
     }
 
-    private static func microphone(deviceID: String?) -> AVCaptureDevice? {
-        let devices = captureDevices()
+    /// The microphone a segment records from, or nothing when the Mac has no audio input.
+    ///
+    /// A Mac mini can legitimately have no input at all. ScreenCaptureKit records the call's system
+    /// audio on its own, so a missing microphone is one source fewer rather than a broken
+    /// recording. `allowsMissingMicrophone` is the setting that asks for the older refusal, and it
+    /// is the only thing that turns an absent device into an error.
+    nonisolated static func chosenMicrophoneID(
+        availableIDs: [String],
+        selectedID: String?,
+        systemDefaultID: String? = nil,
+        allowsMissingMicrophone: Bool
+    ) throws -> String? {
         let resolvedID = resolvedMicrophoneID(
+            availableIDs: availableIDs,
+            selectedID: selectedID,
+            systemDefaultID: systemDefaultID
+        )
+        guard resolvedID == nil else { return resolvedID }
+        guard allowsMissingMicrophone else { throw AudioCaptureError.noMicrophone }
+        return nil
+    }
+
+    private static func microphone(
+        deviceID: String?,
+        allowsMissingMicrophone: Bool
+    ) throws -> AVCaptureDevice? {
+        let devices = captureDevices()
+        let resolvedID = try chosenMicrophoneID(
             availableIDs: devices.map(\.uniqueID),
             selectedID: deviceID,
-            systemDefaultID: systemDefaultMicrophoneID()
+            systemDefaultID: systemDefaultMicrophoneID(),
+            allowsMissingMicrophone: allowsMissingMicrophone
         )
         return devices.first(where: { $0.uniqueID == resolvedID })
     }
@@ -233,7 +282,8 @@ final class AudioCaptureSession {
     func startSegment(
         directory: URL,
         index: Int,
-        microphoneDeviceID: String?
+        microphoneDeviceID: String?,
+        allowsMissingMicrophone: Bool
     ) async throws -> CaptureSourcePaths {
         guard activeCapture == nil else { throw AudioCaptureError.alreadyCapturing }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -262,11 +312,13 @@ final class AudioCaptureSession {
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48_000
         configuration.channelCount = 2
-        // A Mac mini can legitimately have no audio input at all. ScreenCaptureKit can still
-        // record the call's system audio, so the absent microphone is an optional source rather
-        // than a reason to reject the whole recording. If an input appears later, the next segment
-        // resolves it again and includes it automatically.
-        let microphone = Self.microphone(deviceID: microphoneDeviceID)
+        // The microphone is optional when the setting allows it: ScreenCaptureKit records the
+        // call's system audio on its own. If an input appears later, the next segment resolves it
+        // again and includes it automatically, so a headset plugged in mid-call is picked up.
+        let microphone = try Self.microphone(
+            deviceID: microphoneDeviceID,
+            allowsMissingMicrophone: allowsMissingMicrophone
+        )
         configuration.captureMicrophone = microphone != nil
         configuration.microphoneCaptureDeviceID = microphone?.uniqueID
 

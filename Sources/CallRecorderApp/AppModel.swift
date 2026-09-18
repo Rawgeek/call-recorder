@@ -2381,7 +2381,8 @@ final class AppModel {
             _ = try await captureSession.startSegment(
                 directory: directory,
                 index: 1,
-                microphoneDeviceID: settings.selectedMicrophoneID
+                microphoneDeviceID: settings.selectedMicrophoneID,
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone
             )
             if automatic, !activityMonitor.externalMicrophoneActive {
                 _ = try await captureSession.finishSegment()
@@ -2412,7 +2413,14 @@ final class AppModel {
             }
         } catch {
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
+                // The permission is a fact about the app rather than a capture that went wrong. The
+                // card above the recent list carries the instructions and the button, so this line
+                // names the permission, and the frame is left idle: there is nothing to stop, and
+                // a start after the grant is a fresh attempt.
                 screenRecordingGranted = false
+                report(error, context: "Capture Start", category: .capture)
+                // After the report, which writes the redacted error into the same line.
+                errorMessage = ScreenRecordingPermission.refusal
                 return
             }
             report(error, context: "Capture Start", category: .capture)
@@ -2473,7 +2481,8 @@ final class AppModel {
             _ = try await captureSession.startSegment(
                 directory: activeSessionDirectory,
                 index: nextSegmentIndex,
-                microphoneDeviceID: settings.selectedMicrophoneID
+                microphoneDeviceID: settings.selectedMicrophoneID,
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone
             )
             nextSegmentIndex += 1
             // The next run starts counting from now rather than from the start of the call.
@@ -2482,7 +2491,12 @@ final class AppModel {
             apply(.manualResume)
         } catch {
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
+                // The recording stays paused and keeps the audio it holds. Ending it here would
+                // throw away a call the person can still choose to keep.
                 screenRecordingGranted = false
+                report(error, context: "Capture Resume", category: .capture)
+                // After the report, which writes the redacted error into the same line.
+                errorMessage = ScreenRecordingPermission.refusal
                 return
             }
             errorMessage = error.localizedDescription

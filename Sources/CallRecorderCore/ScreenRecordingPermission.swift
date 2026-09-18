@@ -16,6 +16,14 @@ public enum ScreenRecordingPermission {
     /// The pane that holds the switch, so the button lands on the right screen.
     public static let settingsURL = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
 
+    /// The one line a recording that could not start says, when the permission is the cause.
+    ///
+    /// The card above the recent list carries the instructions and the button. This is what the
+    /// error line says, so a start that failed names the permission rather than the framework that
+    /// found it missing.
+    public static let refusal =
+        "Screen Recording permission is off, so the other side of the call cannot be captured."
+
     /// What the surface says when the permission is not granted, or nothing when it is.
     ///
     /// Nothing is returned once the permission is held, because a card that stayed after the

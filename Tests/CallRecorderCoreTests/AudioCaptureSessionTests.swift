@@ -61,14 +61,55 @@ struct AudioCaptureSessionTests {
     }
 
     @Test("a Mac mini with no audio input records without a microphone")
-    func acceptsNoMicrophone() {
-        let microphoneID = AudioCaptureSession.resolvedMicrophoneID(
+    func recordsWithoutAMicrophone() throws {
+        // Given a machine whose device list is empty, and the setting that allows it.
+        // Then the segment goes ahead with no microphone source rather than refusing to record.
+        let microphoneID = try AudioCaptureSession.chosenMicrophoneID(
             availableIDs: [],
             selectedID: AudioCaptureSession.systemMicrophoneID,
-            systemDefaultID: nil
+            systemDefaultID: nil,
+            allowsMissingMicrophone: true
         )
 
         #expect(microphoneID == nil)
+    }
+
+    @Test("the refusal is kept for the setting that asks for it")
+    func refusesWithoutAMicrophone() {
+        // Given the same machine, and the setting that wants both sides of a call.
+        // Then the start is refused, and the refusal is the one the settings row explains.
+        #expect(throws: AudioCaptureError.noMicrophone) {
+            try AudioCaptureSession.chosenMicrophoneID(
+                availableIDs: [],
+                selectedID: AudioCaptureSession.systemMicrophoneID,
+                systemDefaultID: nil,
+                allowsMissingMicrophone: false
+            )
+        }
+    }
+
+    @Test("a microphone on the machine is used whether or not one is required")
+    func chosenMicrophoneSurvivesTheSetting() throws {
+        // The setting is about a machine with no input at all, so it may not change which device a
+        // machine that has one records from.
+        for allowsMissing in [true, false] {
+            let microphoneID = try AudioCaptureSession.chosenMicrophoneID(
+                availableIDs: ["BuiltInMicrophoneDevice", "ExternalMicrophone"],
+                selectedID: "ExternalMicrophone",
+                systemDefaultID: nil,
+                allowsMissingMicrophone: allowsMissing
+            )
+
+            #expect(microphoneID == "ExternalMicrophone")
+        }
+    }
+
+    @Test("a refusal without a microphone says what to do about it")
+    func refusalIsReadable() {
+        let message = AudioCaptureError.noMicrophone.localizedDescription
+
+        #expect(message.contains("No microphone is connected"))
+        #expect(message.contains("Settings"))
     }
 
     @Test("capture paths keep microphone and system sources distinct")

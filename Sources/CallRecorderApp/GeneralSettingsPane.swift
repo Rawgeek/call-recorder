@@ -143,6 +143,23 @@ struct GeneralSettingsView: View {
                 }
                 CRSettingsDivider()
                 CRSettingsRow(
+                    title: "Record when there is no microphone",
+                    detail: model.settings.recordsWithoutMicrophone
+                        ? "A Mac with no audio input still records the other side of the call."
+                        : "A recording with no microphone is refused until an input device appears.",
+                    info: "A Mac mini has no audio input at all, and a recorder that insists on one "
+                        + "records nothing there. ScreenCaptureKit captures the call's system audio "
+                        + "on its own, so the other side is recorded and the transcript holds it. "
+                        + "Turning this off keeps the refusal, which is the choice for a Mac that "
+                        + "has a microphone and wants every recording to hold both sides."
+                ) {
+                    Toggle("", isOn: $model.settings.recordsWithoutMicrophone)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
                     title: "Keep recording after a call ends",
                     detail: "Extra time captured after the other app releases the microphone."
                 ) {
@@ -396,7 +413,11 @@ struct GeneralSettingsView: View {
 
     /// Point out a Bluetooth headset, because its audio quality drops when it switches to call mode.
     private var microphoneHint: String {
-        guard !model.availableMicrophones.isEmpty else { return "No microphone available" }
+        guard !model.availableMicrophones.isEmpty else {
+            return model.settings.recordsWithoutMicrophone
+                ? "No microphone available. Recordings will hold the other side only."
+                : "No microphone available, and a recording without one is refused."
+        }
         if model.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
             guard let systemMicrophone else { return "Follows the microphone macOS is set to use." }
             return "Follows the microphone macOS is set to use, which is " + systemMicrophone.name
