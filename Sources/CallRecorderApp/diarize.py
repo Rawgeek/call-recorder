@@ -50,6 +50,22 @@ class SpeakerEmbeddingError(RuntimeError):
     """Pyannote returned a centroid outside the supported matching boundary."""
 
 
+def check_audio_decoder() -> None:
+    """Exercise TorchCodec and FFmpeg with a real, tiny WAV file."""
+    import tempfile
+    import wave
+    from torchcodec.decoders import AudioDecoder
+
+    with tempfile.TemporaryDirectory() as directory:
+        audio = Path(directory) / "runtime-check.wav"
+        with wave.open(str(audio), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(16000)
+            output.writeframes(b"\0\0" * 160)
+        AudioDecoder(str(audio))
+
+
 def normalized_embedding(values) -> list[float]:
     """Return one finite unit-length centroid or an empty list for a zero centroid."""
     embedding = [float(value) for value in values.tolist()]
@@ -78,6 +94,7 @@ def main() -> None:
     )
 
     if args.check:
+        check_audio_decoder()
         print(json.dumps({"model": MODEL_VERSION, "segments": [], "speakers": []}))
         return
     if args.audio is None:

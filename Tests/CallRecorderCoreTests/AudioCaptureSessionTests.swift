@@ -13,6 +13,17 @@ struct AudioCaptureSessionTests {
         #expect(!AudioCaptureSession.isAlreadyStoppedError(AudioCaptureError.notCapturing))
     }
 
+    @Test("only the ScreenCaptureKit user-declined error is a permission denial")
+    func recognizesScreenRecordingPermissionDenial() {
+        let denied = NSError(domain: SCStreamErrorDomain, code: -3_801)
+        let sibling = NSError(domain: SCStreamErrorDomain, code: -3_802)
+        let unrelated = NSError(domain: NSCocoaErrorDomain, code: -3_801)
+
+        #expect(AudioCaptureSession.isScreenRecordingPermissionDeniedError(denied))
+        #expect(!AudioCaptureSession.isScreenRecordingPermissionDeniedError(sibling))
+        #expect(!AudioCaptureSession.isScreenRecordingPermissionDeniedError(unrelated))
+    }
+
     @Test("an available selected microphone wins")
     func selectsRequestedMicrophone() {
         // Given / When
@@ -47,6 +58,17 @@ struct AudioCaptureSessionTests {
 
         // Then
         #expect(microphoneID == "ExternalMicrophone")
+    }
+
+    @Test("a Mac mini with no audio input records without a microphone")
+    func acceptsNoMicrophone() {
+        let microphoneID = AudioCaptureSession.resolvedMicrophoneID(
+            availableIDs: [],
+            selectedID: AudioCaptureSession.systemMicrophoneID,
+            systemDefaultID: nil
+        )
+
+        #expect(microphoneID == nil)
     }
 
     @Test("capture paths keep microphone and system sources distinct")
