@@ -58,9 +58,9 @@ above never changes, so an existing registration keeps working.
 
 | Tool | Purpose |
 | --- | --- |
-| `list_calls` | Recent calls with date, status, and participants. |
+| `list_calls` | Recent calls with date, status, participants, and whether each one has a brief. |
 | `search_calls` | Search transcript chunks with BM25, semantic, or hybrid ranking. Filters: participants, date range. |
-| `get_call` | One call's metadata and transcript location. |
+| `get_call` | One call: its participants, its transcript location, and its brief when the app has written one. The brief is the short written version of the call, so read it before the transcript. |
 | `get_transcript` | A bounded page of transcript segments. |
 | `list_participants` | Saved people with role, company, and email. |
 | `upsert_participants` | Add or update reusable people. |

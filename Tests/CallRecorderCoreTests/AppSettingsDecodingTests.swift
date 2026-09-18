@@ -42,6 +42,20 @@ struct AppSettingsDecodingTests {
         // And a library whose lists have never been trusted with the voice count has the count
         // asked for, which is what this release does by default.
         #expect(decoded.diarizationUsesParticipantCount)
+        // A blob written before briefs existed asks for them, which is the behaviour this release
+        // introduced: a finished call is written up unless somebody says otherwise.
+        #expect(decoded.summarizesCalls)
+    }
+
+    @Test("switching briefs off survives a save")
+    func switchingBriefsOffSurvivesASave() throws {
+        var settings = AppSettings.default
+        settings.summarizesCalls = false
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+
+        #expect(decoded.summarizesCalls == false)
+        #expect(decoded == settings)
     }
 
     @Test("leaving the voice count to the detector survives a save")

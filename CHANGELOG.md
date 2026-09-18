@@ -4,6 +4,48 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.15] - 2026-09-18
+
+A release about reading less. A call now comes with a brief: what it was about, what was agreed,
+who owes what, and what was left open, in the language the call was held in, written on this Mac
+by a model that runs on this Mac. The panel also stops sitting a strip below the menu bar, and
+clicking the app's own menu no longer turns it into a bar.
+
+### Added
+- **Briefs.** After a call is transcribed, a local model writes under a hundred and fifty words
+  about it: the ticket numbers, the decisions and who made them, the tasks and whose they are.
+  Settings -> General -> "Write a brief" turns it off; Settings -> Models downloads the model,
+  which is 2.4 GB and is used for nothing else.
+- **The brief travels with the call.** The menu-bar row marks a call that has one and copies it
+  when the brief button is pressed, and the MCP server returns it from `get_call`, so a task that
+  needs the call's context reads a hundred and fifty words instead of the whole transcript.
+- **llama.cpp is named where it is needed.** The runtime that loads the brief model is found on
+  PATH, its version is shown in Settings -> Models, and the row says what to install when it is
+  missing: `brew install llama.cpp`.
+
+### Fixed
+- The menu-bar panel sits against the menu bar on a display whose menu bar hides itself. Its
+  visible frame is the whole screen there, so the panel was placed against the top of the screen
+  and drew over the bar; the row the icon is drawn in is the measure that is right on both kinds
+  of display.
+- The panel is placed again as it appears. The system places its own window while it comes on
+  screen, which landed after the correction the app made, and left a strip between the bar and
+  the panel for as long as it was open.
+- Clicking the app's name in the menu bar no longer turns that menu into a bar. The fit walked
+  every borderless window of the app, and an open menu is drawn in one of those.
+
+### Verified
+- 641 tests pass in 82 suites, twenty-five of them new: the words a brief is asked for in, the way
+  a transcript is read without its header, the cut a long call is made at, the brief table and its
+  replacement, the model host's own digests, the port the runtime is given, and the arithmetic the
+  panel is placed with on a display whose menu bar hides itself.
+- The brief was written by the real model on this Mac, through the same code the app runs: a
+  fifteen-minute invented call came back in 7.4 seconds with the ticket number, the names, and the
+  tasks in it, under two hundred words. The suite skips that test where the model is not installed.
+- The panel geometry is measured, not guessed. The running app's panel was found at 65 points
+  down a screen whose menu bar ends at 30, which is the strip: the numbers the fix is written
+  against are the numbers the window server reports.
+
 ## [0.1.14] - 2026-09-18
 
 A release about how many people were speaking. The detector counts voices on its own, and on a long

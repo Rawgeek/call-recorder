@@ -50,6 +50,7 @@ public actor CallStore {
         try migrateSpeakerLineOverrideSchema()
         try migrateSpeakerLineRequestSchema()
         try migrateSystemAudioSchema()
+        try migrateCallSummarySchema()
     }
 
     public func schemaVersion() throws -> Int {
@@ -548,6 +549,73 @@ public actor CallStore {
             "SELECT text FROM transcripts WHERE call_id = ?",
             [callID.rawValue.uuidString]
         ).next().map { try $0.getString(0) }
+    }
+
+    /// The brief written for one call, or nil when none has been written.
+    public func summary(for callID: CallID) throws -> CallSummary? {
+        try connection.query(
+            "SELECT call_id, text, model_id, generated_at, covered_seconds "
+                + "FROM call_summaries WHERE call_id = ?",
+            [callID.rawValue.uuidString]
+        ).next().flatMap { try Self.summary(from: $0) }
+    }
+
+    /// The briefs written for the calls named, keyed by call.
+    ///
+    /// The menu bar and the Recovery pane both draw a list of calls, and asking one call at a time
+    /// would be a query per row for a field that is almost always nil.
+    public func summaries(for callIDs: [CallID]) throws -> [CallID: CallSummary] {
+        guard !callIDs.isEmpty else { return [:] }
+        let placeholders = Array(repeating: "?", count: callIDs.count).joined(separator: ", ")
+        var found: [CallID: CallSummary] = [:]
+        let rows = try connection.query(
+            "SELECT call_id, text, model_id, generated_at, covered_seconds FROM call_summaries "
+                + "WHERE call_id IN (" + placeholders + ")",
+            callIDs.map { $0.rawValue.uuidString }
+        )
+        while let row = rows.next() {
+            guard let summary = try Self.summary(from: row) else { continue }
+            found[summary.callID] = summary
+        }
+        return found
+    }
+
+    /// Writes a brief over any brief this call already had.
+    ///
+    /// A brief is a reading of a transcript rather than a record of the call, so the newest one
+    /// replaces the one before it: two briefs of one call would be two answers to one question,
+    /// and a reader would have to work out which to believe.
+    public func saveSummary(_ summary: CallSummary) async throws {
+        try await withWriteRetry {
+            guard try callExists(summary.callID) else {
+                throw CallStoreError.callNotFound(summary.callID)
+            }
+            _ = try connection.execute(
+                "INSERT INTO call_summaries (call_id, text, model_id, generated_at, "
+                    + "covered_seconds) VALUES (?, ?, ?, ?, ?) "
+                    + "ON CONFLICT(call_id) DO UPDATE SET text = excluded.text, "
+                    + "model_id = excluded.model_id, generated_at = excluded.generated_at, "
+                    + "covered_seconds = excluded.covered_seconds",
+                [
+                    summary.callID.rawValue.uuidString,
+                    summary.text,
+                    summary.modelID,
+                    summary.generatedAt.timeIntervalSince1970,
+                    summary.coveredSeconds,
+                ]
+            )
+        }
+    }
+
+    private static func summary(from row: Row) throws -> CallSummary? {
+        guard let id = UUID(uuidString: try row.getString(0)) else { return nil }
+        return CallSummary(
+            callID: CallID(rawValue: id),
+            text: try row.getString(1),
+            modelID: try row.getString(2),
+            generatedAt: Date(timeIntervalSince1970: try row.getDouble(3)),
+            coveredSeconds: try row.getDouble(4)
+        )
     }
 
     /// The same summary `recentCalls` returns, for calls named by id.
@@ -2414,6 +2482,39 @@ public actor CallStore {
         }
     }
 
+    /// Adds the table a brief of a call is written to.
+    ///
+    /// A brief belongs to a call and dies with it, which the foreign key states, so deleting a call
+    /// cannot leave a brief of it behind. The row is replaced rather than appended, and the model
+    /// that wrote it is kept beside it: a brief written by a model nobody chose any more is still
+    /// readable, but a reader is entitled to know what wrote it.
+    private func migrateCallSummarySchema() throws {
+        let migrationConnection = try database.connect()
+        try migrationConnection.executeBatch(Self.connectionPragmas)
+        guard try migrationConnection.query(
+            "SELECT 1 FROM call_recorder_migrations WHERE id = ? LIMIT 1",
+            [Self.callSummaryMigrationID]
+        ).next() == nil else { return }
+
+        let transaction = try migrationConnection.transaction()
+        do {
+            do {
+                try transaction.executeBatch(Self.callSummarySchema)
+            } catch {
+                throw CallStoreError.migrationStepFailed(10, String(reflecting: error))
+            }
+            try Self.ensureForeignKeyIntegrity(transaction)
+            _ = try transaction.execute(
+                "INSERT INTO call_recorder_migrations (id, applied_at) VALUES (?, ?)",
+                [Self.callSummaryMigrationID, Date().timeIntervalSince1970]
+            )
+            transaction.commit()
+        } catch {
+            transaction.rollback()
+            throw error
+        }
+    }
+
     public func processingJob(callID: CallID) throws -> ProcessingJob? {
         guard let row = try connection.query(
             "SELECT call_id, stage, execution_state, attempt_count, created_at, updated_at, "
@@ -2747,6 +2848,19 @@ public actor CallStore {
     private static let speakerLineRequestMigrationID = "speaker-line-request-v1"
 
     private static let systemAudioMigrationID = "call-system-audio-v1"
+
+    private static let callSummaryMigrationID = "call-summary-v1"
+
+    /// The brief of a call, one row per call.
+    private static let callSummarySchema = """
+        CREATE TABLE IF NOT EXISTS call_summaries (
+            call_id TEXT PRIMARY KEY REFERENCES calls(id) ON DELETE CASCADE,
+            text TEXT NOT NULL,
+            model_id TEXT NOT NULL,
+            generated_at REAL NOT NULL,
+            covered_seconds REAL NOT NULL
+        );
+        """
 
     /// The state of the call's system track, written while its sources are still on disk.
     ///

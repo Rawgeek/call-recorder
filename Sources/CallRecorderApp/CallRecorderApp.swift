@@ -40,6 +40,9 @@ private struct StatusItemLabel: View {
     var body: some View {
         Image(systemName: model.menuBarSymbol)
             .accessibilityLabel("Call Recorder, \(model.statusLabel)")
+            // The panel hangs under the row this icon is drawn in, and the view is what says which
+            // window that row is.
+            .background(MenuBarRowProbe().frame(width: 1, height: 1))
             .onAppear {
                 WindowPresentation.startObservingWindows()
             }

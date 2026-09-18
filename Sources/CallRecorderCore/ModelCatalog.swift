@@ -36,6 +36,13 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// one voice — so a library whose lists are often incomplete can turn this off and let the
     /// detector decide on its own.
     public var diarizationUsesParticipantCount: Bool
+    /// Whether a finished call is written up as a brief.
+    ///
+    /// The brief is written on this Mac by the model the Models page downloads, so a Mac without
+    /// that model, or without the runtime that loads it, writes none and says so rather than
+    /// failing the call. On by default: a transcript is a record of what was said, and the brief is
+    /// the part somebody reads.
+    public var summarizesCalls: Bool
     /// Whether a recording goes ahead on a Mac that has no audio input at all.
     ///
     /// ScreenCaptureKit records a call's system audio without a microphone, so a Mac mini with no
@@ -97,6 +104,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case ignoresNonCallApps
         case selectedMicrophoneID
         case diarizationUsesParticipantCount
+        case summarizesCalls
         case recordsWithoutMicrophone
         case localParticipantID
         case selectedWhisperModelID
@@ -120,6 +128,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
             diarizationUsesParticipantCount: true,
+            summarizesCalls: true,
             recordsWithoutMicrophone: true,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
@@ -179,6 +188,11 @@ extension AppSettings {
         diarizationUsesParticipantCount =
             try container.decodeIfPresent(Bool.self, forKey: .diarizationUsesParticipantCount)
             ?? fallback.diarizationUsesParticipantCount
+        // Added after the first release. Absent means the behaviour this release introduced: a
+        // finished call is written up as a brief on the Mac that recorded it.
+        summarizesCalls =
+            try container.decodeIfPresent(Bool.self, forKey: .summarizesCalls)
+            ?? fallback.summarizesCalls
         // Added after the first release. Absent means the behaviour this release introduced: a Mac
         // with no audio input records the other side of the call instead of refusing to record.
         recordsWithoutMicrophone =
@@ -783,7 +797,7 @@ extension WhisperModel {
     /// that matters: a model that overruns the machine outright cannot run, and one that fits
     /// without the headroom runs by swapping through a transcript. The settings list colours them
     /// apart so a person can see which is which at a glance.
-    public func memoryFit(inMemoryOf bytes: Int64) -> WhisperModelMemoryFit {
+    public func memoryFit(inMemoryOf bytes: Int64) -> ModelMemoryFit {
         if fits(inMemoryOf: bytes) { return .comfortable }
         return memoryBytes <= bytes ? .tight : .insufficient
     }
@@ -845,13 +859,33 @@ extension WhisperModel {
     }
 }
 
-public enum WhisperModelMemoryFit: Equatable, Sendable {
+/// How a model's memory need compares with the memory of the Mac it would run on.
+///
+/// The name is not about the transcriber: the brief model is measured the same way, against the
+/// same headroom, and a page that colours the two differently would be inventing a distinction.
+public enum ModelMemoryFit: Equatable, Sendable {
     /// The published working set and the app's headroom both fit.
     case comfortable
     /// The working set fits and the headroom does not: the machine will swap under load.
     case tight
     /// Even the working set does not fit.
     case insufficient
+}
+
+public extension SupportingModel {
+    /// The size of the files on disk plus the headroom every model run needs beside it.
+    ///
+    /// The weights of a model this size are paged in rather than copied, so the file size is the
+    /// right measure of what the run costs the machine. The headroom is the same one Whisper models
+    /// are measured against, because the rest of the cost is the same: audio, ffmpeg, the window.
+    var recommendedMemoryBytes: Int64 {
+        totalBytes * (100 + WhisperModel.memoryHeadroomPercent) / 100
+    }
+
+    func memoryFit(inMemoryOf bytes: Int64) -> ModelMemoryFit {
+        if recommendedMemoryBytes <= bytes { return .comfortable }
+        return totalBytes <= bytes ? .tight : .insufficient
+    }
 }
 
 /// Sizes, stated the way the model host and the published model table state them.

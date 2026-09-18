@@ -761,7 +761,8 @@ struct ModelSettingsView: View {
     var body: some View {
         SettingsPane(
             title: "Models",
-            subtitle: "The transcription model, the silence filter, and the search embeddings."
+            subtitle: "The transcription model, the silence filter, the search embeddings, and "
+                + "the model that writes briefs."
         ) {
             // The choice and the library are one card, because they are one decision: which file a
             // new recording uses, and which files this Mac has. Two cards made the same list twice
@@ -849,16 +850,23 @@ struct ModelSettingsView: View {
             CRSettingsCard(
                 title: "Components",
                 info: "The engine transcription runs on, and the models transcription and search "
-                    + "read. A download is accepted only when its published hash matches the "
-                    + "publisher's."
+                    + "read, and the engine and model a brief is written with. A download is "
+                    + "accepted only when its published hash matches the publisher's."
             ) {
                 whisperEngineRow
+                CRSettingsDivider()
+                llamaEngineRow
                 if let component = silenceFilterComponent {
                     CRSettingsDivider()
                     componentRow(component)
                     componentNotes(component)
                 }
                 if let component = embeddingComponent {
+                    CRSettingsDivider()
+                    componentRow(component)
+                    componentNotes(component)
+                }
+                if let component = briefComponent {
                     CRSettingsDivider()
                     componentRow(component)
                     componentNotes(component)
@@ -871,6 +879,7 @@ struct ModelSettingsView: View {
             // Both are read from this Mac, not from the network: the tool's own version, and the
             // hashes of a model that was installed before Call Recorder recorded them.
             await model.refreshWhisperVersion()
+            await model.refreshLlamaVersion()
             await model.supportingManager.bootstrapManifest()
         }
         .confirmationDialog(
@@ -959,6 +968,38 @@ struct ModelSettingsView: View {
     /// The model that turns text into vectors for search.
     private var embeddingComponent: SupportingModel? {
         model.supportingManager.models.first { $0.id == SupportingModel.embeddingGemmaID }
+    }
+
+    /// The model that writes the brief of a finished call.
+    private var briefComponent: SupportingModel? {
+        model.supportingManager.models.first { $0.id == SupportingModel.callBriefID }
+    }
+
+    /// The llama.cpp build the brief model runs on.
+    ///
+    /// It is a row for the same reason whisper.cpp is one: the app does not ship it, Homebrew
+    /// updates it, and a Mac without it can record and transcribe perfectly well while writing no
+    /// brief at all. That has to be visible somewhere before a call ends.
+    @ViewBuilder
+    private var llamaEngineRow: some View {
+        CRSettingsRow(
+            title: "llama.cpp",
+            detail: model.llamaServerPath == nil
+                ? "Not found. Install it with: brew install llama.cpp"
+                : nil,
+            info: "The runtime that loads the brief model. Call Recorder finds it on PATH and "
+                + "runs it for the length of one brief: it is started when a call is written up "
+                + "and stopped when the brief is saved, so it holds no memory while you record.",
+            warning: model.llamaServerPath == nil
+        ) {
+            if model.llamaServerPath == nil {
+                CRStatusChip(tone: .failed, text: "Not found")
+            } else if let version = model.llamaVersionLabel {
+                CRStatusChip(tone: .ready, text: "v" + version)
+            } else {
+                ProgressView().controlSize(.small)
+            }
+        }
     }
 
     /// The JavaScript runtime the indexer and the MCP server both run on.
@@ -1359,7 +1400,7 @@ struct ModelSettingsView: View {
     /// The chip a row earns, if it earns one.
     private func fitChip(
         _ whisperModel: WhisperModel,
-        fit: WhisperModelMemoryFit,
+        fit: ModelMemoryFit,
         isSelected: Bool
     ) -> CRStatusChip? {
         switch fit {
@@ -1383,7 +1424,7 @@ struct ModelSettingsView: View {
 
     /// The line under a model's name: what it is for, what it costs to download, and, when the
     /// model is a problem, why.
-    private func rowDetail(_ whisperModel: WhisperModel, fit: WhisperModelMemoryFit) -> String {
+    private func rowDetail(_ whisperModel: WhisperModel, fit: ModelMemoryFit) -> String {
         var parts = [
             whisperModel.detail,
             ModelSizeLabel.file(bytes: whisperModel.expectedBytes),
@@ -1393,7 +1434,7 @@ struct ModelSettingsView: View {
     }
 
     /// What a row says about memory, and only when it has something to say.
-    private func fitDetail(_ whisperModel: WhisperModel, fit: WhisperModelMemoryFit) -> String? {
+    private func fitDetail(_ whisperModel: WhisperModel, fit: ModelMemoryFit) -> String? {
         switch fit {
         case .comfortable:
             return nil

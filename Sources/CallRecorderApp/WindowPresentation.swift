@@ -48,10 +48,14 @@ enum WindowPresentation {
     /// Gives the panel, and any borderless window of the app, the height of what it holds.
     static func fitMenuBarPanels() {
         // The window the probe found is the panel, whatever shape the system gave it.
-        if let panel = PanelWindow.current { fitMenuBarPanel(panel) }
-        for window in NSApplication.shared.windows where !window.styleMask.contains(.titled) {
-            fitMenuBarPanel(window)
-        }
+        //
+        // Nothing else is touched. This used to sweep every borderless window of the app, which is
+        // not the same set: the window an open menu is drawn in, and the menu bar's own windows,
+        // are borderless too. Resizing them and moving them to the top of the screen is what turned
+        // the application menu into a strip under the menu bar until the pointer moved away.
+        guard let panel = PanelWindow.current else { return }
+        fitMenuBarPanel(panel)
+        fitAgainAsItSettles(panel)
     }
 
     /// Puts a window under the menu bar, and no taller than what it holds.
@@ -79,12 +83,67 @@ enum WindowPresentation {
         var frame = window.frame
         let fitting = content.fittingSize.height
         if fitting > 0, fitting < frame.height - 0.5 { frame.size.height = fitting }
-        frame.origin.y = screen.visibleFrame.maxY - frame.height
+        frame.origin.y = menuBarBottom(of: screen) - frame.height
         guard
             abs(frame.height - window.frame.height) > 0.5
                 || abs(frame.origin.y - window.frame.origin.y) > 0.5
         else { return }
         window.setFrame(frame, display: true)
+    }
+
+    /// The bottom edge of the menu bar on one screen, in screen coordinates.
+    ///
+    /// A screen whose menu bar takes room from the desktop answers this with its visible frame. A
+    /// screen whose menu bar hides itself reserves nothing, and the same answer would then be the
+    /// top of the screen: the panel would be drawn over the bar, which is worse than the gap it was
+    /// sent to remove. The row the icon is drawn in is the truth for that case, and the system's own
+    /// thickness is the fallback under it.
+    static func menuBarBottom(of screen: NSScreen) -> CGFloat {
+        let row = MenuBarRow.current
+        return menuBarBottom(
+            frame: screen.frame,
+            visibleFrame: screen.visibleFrame,
+            rowBottom: row?.screen === screen ? row?.frame.minY : nil,
+            barThickness: NSStatusBar.system.thickness
+        )
+    }
+
+    /// The same answer, from the numbers alone, so it can be checked without a display.
+    static func menuBarBottom(
+        frame: CGRect,
+        visibleFrame: CGRect,
+        rowBottom: CGFloat?,
+        barThickness: CGFloat
+    ) -> CGFloat {
+        // The row the icon is drawn in, when it is known: it is the bar's own bottom edge, on a
+        // display whose bar takes room and on one whose bar hides itself alike.
+        if let rowBottom, rowBottom > frame.minY, rowBottom < frame.maxY {
+            return rowBottom
+        }
+        let reserved = frame.maxY - visibleFrame.maxY
+        guard reserved > 0.5 else {
+            // A bar that reserves nothing: the top of the screen is not the bottom of the bar, and
+            // answering with it would draw the panel over the menu bar.
+            return frame.maxY - barThickness
+        }
+        return visibleFrame.maxY
+    }
+
+    /// Fits the panel again a few times as it appears.
+    ///
+    /// The system places its own window while it comes on screen, and that placement can land after
+    /// the fit made when the window was first seen: the panel then sits a strip lower than the menu
+    /// bar for as long as it is open. Two more corrections over the next half second leave it where
+    /// the last word put it.
+    static func fitAgainAsItSettles(_ window: NSWindow) {
+        for delay in [0.05, 0.2, 0.45] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak window] in
+                MainActor.assumeIsolated {
+                    guard let window, window.isVisible else { return }
+                    fitMenuBarPanel(window)
+                }
+            }
+        }
     }
 
     /// True while a fit is measuring, so the change that measurement causes does not fit again.

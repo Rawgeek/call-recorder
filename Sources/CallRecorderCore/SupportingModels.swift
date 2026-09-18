@@ -66,6 +66,19 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
 
     public static let embeddingGemmaID = "embeddinggemma"
 
+    /// The model that writes the brief of a finished call.
+    ///
+    /// It is not part of transcription and nothing in the pipeline needs it, so it is the one
+    /// component a person can leave undownloaded and never notice. The id is written where the app
+    /// asks what a brief was written by, so it is a name rather than a label: CallBrief.modelID.
+    public static let callBriefID = "call-brief"
+
+    /// The file inside the brief model's folder that the runtime loads.
+    public var ggufFileName: String? {
+        guard id == Self.callBriefID else { return nil }
+        return files.first { $0.path.hasSuffix(".gguf") }?.path
+    }
+
     /// Names the revision that is installed, beside the model folders.
     ///
     /// The runtime that reads these files is handed a folder, not a revision, so the installed
@@ -145,6 +158,24 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
                     bytes: 196_725_760,
                     sha256: "599962c3143b040de2dd05e5975be3e9091dd067cacc6a8f7186e3203bab9e02"
                 ),
+            ]
+        ),
+        SupportingModel(
+            id: callBriefID,
+            displayName: "Qwen3 4B Instruct 2507",
+            detail: "Writes the brief of a finished call: what it was about, what was agreed, who "
+                + "owes what. It is the one model here that reads, so it is the largest. "
+                + "Downloaded once, then used offline.",
+            repository: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
+            revision: "a06e946bb6b655725eafa393f4a9745d460374c9",
+            installPath: "models/call-brief",
+            versionLabel: "4B, Q4_K_M",
+            files: [
+                SupportingModelFile(
+                    path: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+                    bytes: 2_497_281_120,
+                    sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+                )
             ]
         )
     ]

@@ -61,6 +61,8 @@ export type CallSummary = {
   readonly endedAt: string | null
   readonly status: z.infer<typeof CallStatusSchema>
   readonly participants: readonly Participant[]
+  /// Whether the app has written a brief of this call.
+  readonly hasBrief: boolean
 }
 
 type MutableCallSummary = Omit<CallSummary, "participants"> & { participants: Participant[] }
@@ -85,6 +87,18 @@ export type CallDetail = CallSummary & {
     /// Without this field that row reads exactly like a transcript whose text was lost, so an agent
     /// asking what was said on the call receives an empty answer and no reason for it.
     readonly hasSpeech: boolean
+  } | null
+  /// The brief the app wrote for this call, or null when none was written.
+  ///
+  /// It is served with the call rather than behind a second tool because it is the answer to the
+  /// first question a caller has about a call, and a round trip to fetch a hundred and fifty words
+  /// costs more than the words do.
+  readonly summary: {
+    readonly text: string
+    readonly modelId: string
+    readonly generatedAt: string
+    /// How much of the call the brief covers, in seconds from the start.
+    readonly coveredSeconds: number
   } | null
 }
 
@@ -137,11 +151,27 @@ const participantsForCall = async (database: Client, callId: CallId): Promise<Pa
     })
   ).rows.map(participant)
 
+/// Whether this database has the table the app writes call briefs to.
+///
+/// The server travels with one version of the app and can be pointed at the database of another,
+/// so a table this build knows about is not a table the database has. Asking first turns that
+/// into "no brief" rather than a failed read of a call that is perfectly readable.
+const briefTableExists = async (database: Client): Promise<boolean> =>
+  (
+    await database.execute({
+      sql: "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'call_summaries'",
+    })
+  ).rows.length > 0
+
 export const listCalls = async (
   database: Client,
   limit: number,
   offset = 0,
 ): Promise<Listing<CallSummary>> => {
+  const withBriefs = await briefTableExists(database)
+  const briefColumn = withBriefs
+    ? "EXISTS(SELECT 1 FROM call_summaries WHERE call_summaries.call_id = selected.id) AS has_brief"
+    : "0 AS has_brief"
   const rows = (
     await database.execute({
       sql: `WITH selected AS (
@@ -150,7 +180,7 @@ export const listCalls = async (
         )
         SELECT selected.total, selected.id, selected.started_at, selected.ended_at,
           selected.status, participants.id, participants.name, participants.role,
-          participants.company, participants.email
+          participants.company, participants.email, ${briefColumn}
         FROM selected
         LEFT JOIN call_participants ON call_participants.call_id = selected.id
         LEFT JOIN participants ON participants.id = call_participants.participant_id COLLATE NOCASE
@@ -171,6 +201,7 @@ export const listCalls = async (
         endedAt: row[3] === null ? null : isoDate(row[3]),
         status: CallStatusSchema.parse(row[4]),
         participants: [],
+        hasBrief: Number(row[10]) === 1,
       }
       calls.set(id, call)
     }
@@ -201,6 +232,16 @@ export const getCall = async (database: Client, callId: CallId): Promise<CallDet
       args: [callId],
     })
   ).rows[0]
+  const brief = (await briefTableExists(database))
+    ? (
+        await database.execute({
+          sql:
+            "SELECT text, model_id, generated_at, covered_seconds FROM call_summaries " +
+            "WHERE call_id = ?",
+          args: [callId],
+        })
+      ).rows[0]
+    : undefined
   return {
     id: CallIdSchema.parse(row[0]),
     startedAt: isoDate(row[1]),
@@ -209,6 +250,16 @@ export const getCall = async (database: Client, callId: CallId): Promise<CallDet
     audioPath: z.string().nullable().parse(row[4]),
     audioAvailable: audioAvailable(z.string().nullable().parse(row[4]), callId),
     participants: await participantsForCall(database, callId),
+    hasBrief: brief !== undefined,
+    summary:
+      brief === undefined
+        ? null
+        : {
+            text: z.string().parse(brief[0]),
+            modelId: z.string().parse(brief[1]),
+            generatedAt: isoDate(brief[2]),
+            coveredSeconds: DatabaseNumberSchema.parse(brief[3]),
+          },
     transcript:
       transcript === undefined
         ? null

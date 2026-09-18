@@ -707,6 +707,12 @@ struct RecentCallRow: View {
                                 .font(CR.Font.caption)
                                 .foregroundStyle(CR.Ink.readable)
                         }
+                        // A brief is the part of a call somebody pastes somewhere else, so the row
+                        // says one is there. It is not a status: the call is finished either way.
+                        if model.briefs[call.id] != nil {
+                            CRStatusChip(tone: .ready, text: "Brief", compact: true)
+                                .help("A written brief of this call is ready.")
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -732,6 +738,19 @@ struct RecentCallRow: View {
                 model.copyTranscript(for: call)
             }
             .disabled(!transcriptReady)
+
+            if model.briefs[call.id] != nil {
+                CRIconButton(
+                    icon: model.copiedBriefCallID == call.id ? "checkmark" : "text.document",
+                    label: "Copy brief",
+                    tone: .ready,
+                    alwaysVisible: model.copiedBriefCallID == call.id,
+                    revealed: hovering,
+                    trailingAligned: true
+                ) {
+                    model.copyBrief(for: call)
+                }
+            }
 
             // Work that is running gets a way to end it. The row is where this call's state is
             // read, so the control that stops the work sits with the stage it names.

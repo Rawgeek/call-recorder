@@ -157,6 +157,7 @@ describe("Call Recorder MCP tools", () => {
           startedAt: "2027-01-15T08:00:00.000Z",
           endedAt: null,
           status: "ready",
+          hasBrief: false,
           participants: [
             {
               id: participantID,
@@ -179,6 +180,10 @@ describe("Call Recorder MCP tools", () => {
         status: "ready",
         audioPath: "/tmp/call.m4a",
         audioAvailable: false,
+        // No brief table in this fixture, which is what a database written before briefs look
+        // like: the field is answered rather than left out.
+        hasBrief: false,
+        summary: null,
         participants: [
           {
             id: participantID,
@@ -301,6 +306,48 @@ describe("Call Recorder MCP tools", () => {
         Object.assign(process.env, { CALL_RECORDER_DB_PATH: previous })
       }
     }
+  })
+
+  test("carries the brief of a call with the call itself", async () => {
+    // The brief travels with the call rather than behind a second tool, so an agent that asks
+    // about a call gets the short version of it before it decides to read the long one.
+    await database.executeMultiple(`
+      CREATE TABLE call_summaries (
+        call_id TEXT PRIMARY KEY, text TEXT NOT NULL, model_id TEXT NOT NULL,
+        generated_at REAL NOT NULL, covered_seconds REAL NOT NULL
+      );
+      INSERT INTO call_summaries VALUES (
+        '${callID}', '## About' || char(10) || 'The launch. ## To do Alice writes the plan.',
+        'call-brief', 1800000600, 900
+      );
+    `)
+    const withBrief = await client.callTool({ name: "get_call", arguments: { callId: callID } })
+    const call = z
+      .object({
+        call: z.object({
+          hasBrief: z.boolean(),
+          summary: z
+            .object({
+              text: z.string(),
+              modelId: z.string(),
+              generatedAt: z.string(),
+              coveredSeconds: z.number(),
+            })
+            .nullable(),
+        }),
+      })
+      .parse(withBrief.structuredContent).call
+    expect(call.hasBrief).toBe(true)
+    expect(call.summary?.modelId).toBe("call-brief")
+    expect(call.summary?.coveredSeconds).toBe(900)
+    expect(call.summary?.text).toContain("Alice writes the plan.")
+    expect(call.summary?.generatedAt).toBe("2027-01-15T08:10:00.000Z")
+
+    const listed = await client.callTool({ name: "list_calls", arguments: { limit: 5 } })
+    const listing = z
+      .object({ calls: z.array(z.object({ id: z.string(), hasBrief: z.boolean() })) })
+      .parse(listed.structuredContent)
+    expect(listing.calls.map((row) => row.hasBrief)).toEqual([true])
   })
 
   test("paginates transcript segments with a stable cursor", async () => {

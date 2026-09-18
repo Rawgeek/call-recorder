@@ -67,6 +67,12 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 **Library and Codex**
 
+- Every finished call is written up as a brief: what it was about, what was agreed, who owes what,
+  and what is left open, in the language the call was held in. A local model writes it on this
+  Mac; nothing about the call leaves the Mac. The menu-bar row copies it, and the MCP server
+  returns it, so a task that needs the call's context reads a hundred and fifty words rather than
+  the whole transcript. **Settings > General > "Write a brief"** switches it off, and the model is
+  downloaded from **Settings > Models**.
 - Every transcript is indexed into a local Turso/libsql database with FTS5 (BM25) ranking and
   256-dimension vector embeddings from a local model that is downloaded once. Search is hybrid
   by default.
@@ -100,12 +106,14 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 - [Homebrew](https://brew.sh) packages: `ffmpeg` (capture and conversion) and `whisper-cpp`
   (transcription).
 - Optional, for speaker labels: a local Python environment with `pyannote.audio`.
+- Optional, for briefs: `llama.cpp` (the runtime that loads the brief model) and the model
+  itself from **Settings > Models**.
 
 ## Install
 
 ### From a release
 
-1. Download `CallRecorder-0.1.14.zip` from the
+1. Download `CallRecorder-0.1.15.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -246,6 +254,9 @@ system audio ------ /                                  |                      |
   Speakers.
 - **Indexing**: the transcript is split into chunks; each chunk gets an embedding from the
   bundled local model and a row in the FTS5 index. Search ranks with BM25, vectors, or both.
+- **Brief**: the finished transcript is read once by a local model, which writes the short version
+  of the call. A call too long for one pass is read in parts, and the parts are joined into one
+  brief. The model is started for that call and stopped when the brief is saved.
 - **Cleanup**: once the transcript and the index are verified and speaker review is settled,
   the working folder moves to Recently Deleted for 24 hours and is then purged.
 

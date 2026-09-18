@@ -119,6 +119,10 @@ struct MenuBarPanelFitTests {
         guard let screen = NSScreen.main else { return }
         let other = titledPanel(height: 320, contentHeight: 200)
         let before = other.frame
+        // A borderless window that is not the panel: the window an open menu is drawn in is one of
+        // those, and resizing it is what turned the application menu into a strip.
+        let loose = panel(height: 90, contentHeight: 400)
+        let looseBefore = loose.frame
         let window = panel(height: 320, contentHeight: 200)
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
@@ -126,6 +130,7 @@ struct MenuBarPanelFitTests {
         #expect(window.frame.height == 200)
         #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
         #expect(other.frame == before)
+        #expect(loose.frame == looseBefore)
     }
 
     @Test("a panel shorter than its content is placed, never grown")
@@ -136,5 +141,44 @@ struct MenuBarPanelFitTests {
         #expect(window.frame.height == 120)
         guard let screen = window.screen ?? NSScreen.main else { return }
         #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+    }
+
+    @Test("a menu bar that hides itself is still a menu bar")
+    func aHiddenMenuBarStillHasABottom() {
+        // The display this was reported on: 1440 points tall, no room reserved for the menu bar
+        // because the bar hides itself. Answering with the top of the screen would draw the panel
+        // over the bar, and the strip it was sent to remove is the smaller of the two faults.
+        let height = WindowPresentation.menuBarBottom(
+            frame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
+            visibleFrame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
+            rowBottom: nil,
+            barThickness: 22
+        )
+
+        #expect(height == 1418)
+    }
+
+    @Test("the row the icon is drawn in beats what the display reports")
+    func theIconRowIsTheTruth() {
+        let height = WindowPresentation.menuBarBottom(
+            frame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
+            visibleFrame: CGRect(x: -2560, y: 0, width: 2560, height: 1440),
+            rowBottom: 1410,
+            barThickness: 22
+        )
+
+        #expect(height == 1410)
+    }
+
+    @Test("a display that reserves room for the menu bar keeps its visible frame")
+    func aReservedMenuBarIsUsed() {
+        let height = WindowPresentation.menuBarBottom(
+            frame: CGRect(x: 0, y: 0, width: 2560, height: 1440),
+            visibleFrame: CGRect(x: 0, y: 0, width: 2560, height: 1410),
+            rowBottom: nil,
+            barThickness: 22
+        )
+
+        #expect(height == 1410)
     }
 }

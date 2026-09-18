@@ -23,6 +23,8 @@ enum PanelWindow {
         guard let window else { return }
         observe(window)
         WindowPresentation.fitMenuBarPanel(window)
+        // The system places its own window while it appears, which can land after this fit.
+        WindowPresentation.fitAgainAsItSettles(window)
     }
 
     /// Fits the panel again after the window is moved or resized.
@@ -55,6 +57,36 @@ struct PanelWindowProbe: NSViewRepresentable {
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             PanelWindow.report(window)
+        }
+    }
+}
+
+/// The row of the menu bar the app's icon is drawn in.
+///
+/// The panel hangs under that row, and the row is not always where the display says the menu bar
+/// is: a menu bar that hides itself reserves no room in the screen's visible frame, and the panel
+/// would then be placed against the top of the screen, over the bar. The icon's own window is the
+/// one measure that is right on both kinds of display, and it is found the same way the panel is:
+/// by putting a view in the place whose window is wanted.
+@MainActor
+enum MenuBarRow {
+    private static weak var window: NSWindow?
+
+    static var current: NSWindow? { window }
+
+    static func report(_ window: NSWindow?) {
+        self.window = window
+    }
+}
+
+struct MenuBarRowProbe: NSViewRepresentable {
+    func makeNSView(context: Context) -> ProbeView { ProbeView() }
+    func updateNSView(_ view: ProbeView, context: Context) {}
+
+    final class ProbeView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            MenuBarRow.report(window)
         }
     }
 }

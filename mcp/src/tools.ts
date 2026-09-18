@@ -83,10 +83,19 @@ const CallSummarySchema = z.object({
   endedAt: z.iso.datetime().nullable(),
   status: CallStatusSchema,
   participants: z.array(ParticipantSchema),
+  hasBrief: z.boolean(),
 })
 const CallDetailSchema = CallSummarySchema.extend({
   audioPath: z.string().nullable(),
   audioAvailable: z.boolean(),
+  summary: z
+    .object({
+      text: z.string(),
+      modelId: z.string(),
+      generatedAt: z.iso.datetime(),
+      coveredSeconds: z.number().nonnegative(),
+    })
+    .nullable(),
   transcript: z
     .object({
       language: z.string(),
@@ -140,7 +149,7 @@ export const registerTools = (
     "list_calls",
     {
       description:
-        "List recent locally recorded calls with participants. Reports the total so a partial page is visible as one.",
+        "List recent locally recorded calls with participants, and whether each one has a brief. Reports the total so a partial page is visible as one.",
       inputSchema: z.object({ limit: LimitSchema, offset: OffsetSchema }),
       outputSchema: z.object({ calls: z.array(CallSummarySchema), ...paginationFields }),
       annotations: ReadAnnotations,
@@ -179,7 +188,8 @@ export const registerTools = (
   server.registerTool(
     "get_call",
     {
-      description: "Get one local call and its participant and transcript metadata.",
+      description:
+        "Get one local call: its participants, its transcript metadata, and its brief when the app has written one. The brief is the short written version of the call, so read it before the transcript.",
       inputSchema: z.object({ callId: CallIdSchema }),
       outputSchema: z.object({ call: CallDetailSchema }),
       annotations: ReadAnnotations,

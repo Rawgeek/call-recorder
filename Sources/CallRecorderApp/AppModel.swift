@@ -87,12 +87,26 @@ final class AppModel {
     private var sessionUnlockObserver: NSObjectProtocol?
     private var appTerminationObserver: NSObjectProtocol?
     private(set) var recentCalls: [RecentCallSummary] = []
+    /// The brief of each call on screen, keyed by call.
+    ///
+    /// A brief is written once and read many times, so the ones the list needs are held beside the
+    /// list rather than read from the store on every draw.
+    private(set) var briefs: [CallID: CallSummary] = [:]
+    /// The calls whose brief is being written right now.
+    private(set) var writingBriefs: Set<CallID> = []
+    /// Why the last brief was not written, in a sentence a person can act on.
+    private(set) var briefFailure: String?
     /// True once the first read of the database has finished, successfully or not.
     ///
     /// The menu bar can look empty for two different reasons: there is nothing to show, or the
     /// read has not finished. A render and a person both need to tell those apart.
     private(set) var metadataIsLoaded = false
     private(set) var copiedTranscriptCallID: CallID?
+    /// The call whose brief was just copied, so the button can say it worked.
+    ///
+    /// Kept apart from the transcript's copy: the two buttons sit next to each other, and one
+    /// tick for both would say the wrong one had been copied.
+    private(set) var copiedBriefCallID: CallID?
     private(set) var processingJobs: [ProcessingJob] = []
     /// The calls behind the unfinished jobs, so the Recovery rows can name them. A job carries
     /// only a call id, and four rows reading "Transcribing audio" identify nothing.
@@ -1343,6 +1357,184 @@ final class AppModel {
         }
     }
 
+    /// The llama.cpp binary that serves the brief model, when this Mac has one.
+    ///
+    /// It is looked for on every use rather than kept: a person who installs llama.cpp while the
+    /// app is running should not have to restart it to write their first brief.
+    private var briefRuntime: URL? {
+        ToolLocator.standard.locate("llama-server")
+    }
+
+    private var briefModel: SupportingModel? {
+        supportingManager.models.first { $0.id == CallBrief.modelID }
+    }
+
+    /// The downloaded file the brief model runs from, or nil when it is not installed.
+    private var briefModelFile: URL? {
+        guard let briefModel,
+            supportingManager.state(for: briefModel).isInstalled,
+            let directory = supportingManager.installedDirectory(for: briefModel),
+            let name = briefModel.ggufFileName
+        else { return nil }
+        return directory.appending(path: name)
+    }
+
+    /// Whether this Mac can write a brief, and what is missing when it cannot.
+    var briefReadiness: SummarizerError? {
+        Summarizer.readiness(runtime: briefRuntime, model: briefModelFile)
+    }
+
+    /// Copies the brief of a call, which is the part of it a person pastes somewhere else.
+    func copyBrief(for call: RecentCallSummary) {
+        guard let brief = briefs[call.id] else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(brief.text, forType: .string)
+        copiedBriefCallID = call.id
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if copiedBriefCallID == call.id { copiedBriefCallID = nil }
+        }
+    }
+
+    /// Writes the brief of a call now, because somebody asked for it again.
+    ///
+    /// The work is the same work the pipeline does after a call, so a transcript that was read
+    /// before the model was downloaded can be written up without re-recording anything.
+    func writeBriefNow(for callID: CallID) async {
+        guard let store else { return }
+        writingBriefs.insert(callID)
+        defer { writingBriefs.remove(callID) }
+        do {
+            let transcript = try await store.transcript(for: callID)
+            guard let transcript else { return }
+            let markdown = try String(contentsOf: URL(filePath: transcript.markdownPath),
+                encoding: .utf8)
+            let outcome = try await writeBrief(
+                callID: callID,
+                markdown: markdown,
+                language: transcript.language,
+                store: store,
+                cancellation: ProcessCancellation()
+            )
+            if case .skipped(let reason) = outcome { briefFailure = reason }
+        } catch {
+            report(error, context: "Write Brief", category: .models)
+        }
+    }
+
+    /// Writes the brief of a call whose transcript has just been saved.
+    ///
+    /// This runs inside the call's own processing, before the files are tidied, because the brief
+    /// is the last thing that needs the transcript and the first thing a person reads. It is not
+    /// allowed to fail the call: a Mac with no llama.cpp, or with the model half downloaded, still
+    /// has a complete transcript, and the sentence explaining what is missing belongs to the
+    /// Summary pane rather than to the call.
+    private func writeBriefAfterCall(
+        _ callID: CallID,
+        store: CallStore,
+        cancellation: ProcessCancellation
+    ) async {
+        guard settings.summarizesCalls else { return }
+        writingBriefs.insert(callID)
+        defer { writingBriefs.remove(callID) }
+        do {
+            guard let transcript = try await store.transcript(for: callID) else { return }
+            let markdown = try String(
+                contentsOf: URL(filePath: transcript.markdownPath),
+                encoding: .utf8
+            )
+            _ = try await writeBrief(
+                callID: callID,
+                markdown: markdown,
+                language: transcript.language,
+                store: store,
+                cancellation: cancellation
+            )
+        } catch is CancellationError {
+            // The user stopped the work, so there is nothing to explain and nothing to retry.
+        } catch {
+            briefFailure = SummarizerError.requestFailed(
+                DiagnosticsReporter.redacted(error: String(reflecting: error))
+            ).errorDescription
+            report(error, context: "Write Brief", category: .models)
+        }
+    }
+
+    /// What became of an attempt to write a brief.
+    private enum BriefOutcome: Equatable {
+        case written
+        /// Nothing was written, and this is why, in a sentence for the person who asked.
+        case skipped(String)
+    }
+
+    /// Writes the brief of one finished call, and never fails the call over it.
+    ///
+    /// The transcript is already saved and indexed by the time this runs, and a brief is a reading
+    /// of it rather than part of it: a Mac without llama.cpp, or without the model, still has a
+    /// complete transcript, and the only thing that is missing is the part somebody would have
+    /// read first. So every reason not to write one is a sentence kept for the Summary pane, not
+    /// an error that stops the call.
+    @discardableResult
+    private func writeBrief(
+        callID: CallID,
+        markdown: String,
+        language: String?,
+        store: CallStore,
+        cancellation: ProcessCancellation
+    ) async throws -> BriefOutcome {
+        guard settings.summarizesCalls else { return .skipped("Briefs are switched off.") }
+        if let missing = briefReadiness {
+            let reason = missing.errorDescription ?? "The brief model is not ready."
+            briefFailure = reason
+            return .skipped(reason)
+        }
+        guard let runtime = briefRuntime, let model = briefModelFile else {
+            return .skipped("The brief model is not ready.")
+        }
+        let transcript = SummaryTranscript.plainText(fromMarkdown: markdown)
+        guard CallBrief.isWorthWriting(transcriptCharacters: transcript.count) else {
+            // A call with a sentence in it does not need a brief, and asking for one would spend
+            // minutes of model time to say so.
+            return .skipped("This call held too little speech to write up.")
+        }
+        let call = try await store.call(id: callID)
+        let people = try await store.participants(for: callID)
+        // The length comes from the call's own row rather than from the transcript: the marks each
+        // turn used to carry were taken out of the saved file, and a number read out of it would be
+        // a zero that reads like a very short call.
+        let seconds = max(0, call?.endedAt?.timeIntervalSince(call?.startedAt ?? .now) ?? 0)
+        let context = CallContext(
+            startedAt: call?.startedAt,
+            durationSeconds: seconds,
+            participants: people.map(\.name),
+            language: language
+        )
+        let summarizer = Summarizer(
+            runtime: runtime,
+            model: model,
+            log: { message in
+                Logger(subsystem: "local.callrecorder.app", category: "brief")
+                    .debug("\(message, privacy: .public)")
+            }
+        )
+        let text = try await summarizer.writeBrief(
+            transcript: transcript,
+            context: context,
+            cancellation: cancellation
+        )
+        let summary = CallSummary(
+            callID: callID,
+            text: text,
+            modelID: summarizer.modelID,
+            generatedAt: Date(),
+            coveredSeconds: context.durationSeconds
+        )
+        try await store.saveSummary(summary)
+        briefs[callID] = summary
+        briefFailure = nil
+        return .written
+    }
+
     func addGlossaryTerm(preferred: String, aliases: [String]) async {
         guard let store else { return }
         do {
@@ -1450,6 +1642,26 @@ final class AppModel {
     var whisperVersionLabel: String? {
         whisperVersion
             ?? whisperCLIPath.flatMap { WhisperCLIVersion.fromInstallPath(URL(filePath: $0)) }
+    }
+
+    /// Where llama.cpp was found, when it was.
+    var llamaServerPath: String? { briefRuntime?.path }
+
+    /// What llama.cpp answered when it was last asked, if it has been asked.
+    private(set) var llamaVersion: String?
+
+    /// Asks llama.cpp for its version, which its own settings row shows.
+    func refreshLlamaVersion() async {
+        guard let executable = briefRuntime else {
+            llamaVersion = nil
+            return
+        }
+        llamaVersion = await Task.detached { LlamaServerVersion.read(from: executable) }.value
+    }
+
+    /// The version to show for llama.cpp, from the tool or from its install path until it answers.
+    var llamaVersionLabel: String? {
+        llamaVersion ?? briefRuntime.flatMap { LlamaServerVersion.fromInstallPath($0) }
     }
 
     /// True while a recording is running or a transcript is being produced.
@@ -2816,6 +3028,11 @@ final class AppModel {
             return .finalizingArtifacts
         case .finalizingArtifacts:
             try await promoteTranscript(for: job.callID, store: store)
+            await writeBriefAfterCall(
+                job.callID,
+                store: store,
+                cancellation: cancellation
+            )
             do {
                 _ = try await artifactRecovery.finalizeReadyCall(
                     job.callID,
@@ -3164,6 +3381,7 @@ final class AppModel {
         Logger(subsystem: "local.callrecorder.app", category: "speakers")
             .debug("speaker review candidates: \(callsWithPeople, privacy: .public) call(s) carry people, \(mostOnOneCall, privacy: .public) most")
         recentCalls = try await store.recentCalls(limit: 5)
+        briefs = try await store.summaries(for: recentCalls.map(\.id))
         processingJobs = try await store.processingJobs()
         processingCallSummaries = try await store.callSummaries(
             ids: processingJobs.map(\.callID)
@@ -3182,6 +3400,7 @@ final class AppModel {
     /// Hides the library from a render, so the first screen of a new install can be looked at.
     func clearLibraryForPreview() {
         recentCalls = []
+        briefs = [:]
         processingJobs = []
         processingCallSummaries = [:]
         unfinishableCallIDs = []
@@ -3390,6 +3609,35 @@ final class AppModel {
                 hasTranscript: true
             ),
         ]
+        // One of the invented calls has its brief, so a render shows what a call that has been
+        // written up looks like beside one that has not.
+        if let written = recentCalls.first {
+            briefs[written.id] = CallSummary(
+                callID: written.id,
+                text: """
+                    ## About
+                    Warehouse rates for the three Vietnam lanes, and a duplicated charge on the \
+                    July invoices.
+
+                    ## Decisions
+                    - The new rate card is applied from 1 October, agreed by Dana Holt.
+                    - The duplicate charge goes on the same ticket as the rate change.
+
+                    ## To do
+                    - Ilya Marsh applies the card and notes it on FS-20481.
+                    - Priya Raman sends the invoice numbers today.
+
+                    ## Open
+                    - The carrier has not answered about the damaged pallet.
+
+                    ## Numbers
+                    - FS-20481, 812 dollars, July invoices, 1 October.
+                    """,
+                modelID: CallBrief.modelID,
+                generatedAt: now,
+                coveredSeconds: 3_862
+            )
+        }
     }
 
     private func refreshMetadataFromProcessor() async {

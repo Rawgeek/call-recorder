@@ -20,7 +20,15 @@ struct SupportingModelTests {
         let models = SupportingModel.catalog
 
         // Then
-        #expect(models.map(\.id) == [SupportingModel.sileroVADID, SupportingModel.embeddingGemmaID])
+        // Every model the app downloads, in one list: the names are here so that adding one cannot
+        // quietly point these tests at a different model.
+        #expect(
+            models.map(\.id) == [
+                SupportingModel.sileroVADID,
+                SupportingModel.embeddingGemmaID,
+                SupportingModel.callBriefID,
+            ]
+        )
         let model = Self.embeddingModel
         #expect(model.repository == "onnx-community/embeddinggemma-300m-ONNX")
         #expect(model.files.allSatisfy { $0.sha256.count == 64 && $0.bytes > 0 })

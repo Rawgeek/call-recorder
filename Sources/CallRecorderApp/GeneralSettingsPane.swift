@@ -196,6 +196,31 @@ struct GeneralSettingsView: View {
             }
 
             CRSettingsCard(
+                title: "After a call",
+                footnote: "A brief is written on this Mac, by a model running on this Mac. "
+                    + "Nothing about the call leaves it."
+            ) {
+                CRSettingsRow(
+                    title: "Write a brief",
+                    detail: briefDetail,
+                    info: "A transcript is a record of everything that was said, which is the "
+                        + "wrong shape for the question somebody asks later: what was this call "
+                        + "about, and what am I to do about it? The brief answers that in under a "
+                        + "hundred and fifty words, in the language the call was held in, and it "
+                        + "is written from the finished transcript rather than while the call "
+                        + "runs. It is the same text the MCP server hands to Codex, so a task "
+                        + "that needs the call's context does not have to read the whole "
+                        + "transcript to find it.",
+                    warning: model.settings.summarizesCalls && model.briefReadiness != nil
+                ) {
+                    Toggle("", isOn: $model.settings.summarizesCalls)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+            }
+
+            CRSettingsCard(
                 title: "Storage",
                 footnote: model.settings.removeAudioAfterTranscription
                     ? "Transcripts are written here. Audio is moved out of the way once the transcript and its search index are verified."
@@ -456,6 +481,21 @@ struct GeneralSettingsView: View {
             ? systemMicrophone
             : selectedMicrophone)
             .map(AudioCaptureSession.isBluetooth) ?? false
+    }
+
+    /// The one line the brief setting says about itself.
+    ///
+    /// The three states are the three a person can act on: off, on with something missing, and on
+    /// and ready. Which model writes the brief and where it is downloaded are the Models pane's
+    /// business, so this points there rather than repeating it.
+    private var briefDetail: String {
+        guard model.settings.summarizesCalls else {
+            return "Finished calls are not written up."
+        }
+        if let missing = model.briefReadiness {
+            return (missing.errorDescription ?? "The brief model is not ready.") + " See Models."
+        }
+        return "Each finished call is written up in a short brief."
     }
 
     /// The device the system choice points at right now.

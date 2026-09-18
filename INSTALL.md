@@ -1,4 +1,4 @@
-# Call Recorder 0.1.14 — install, features, and Codex MCP
+# Call Recorder 0.1.15 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -9,6 +9,12 @@ the machine. Nothing is uploaded to a cloud service.
 
 ## What is new in this build
 
+- Every finished call now comes with a brief: what the call was about, what was agreed, who owes
+  what, and what is left open, written on this Mac in the language the call was held in. The
+  menu-bar row copies it, and Codex can read it from the MCP server. Settings > General >
+  "Write a brief" switches it off.
+- The menu-bar panel sits against the menu bar on a display whose menu bar hides itself, and the
+  app's own menu is no longer turned into a bar when it is opened from the menu bar.
 - A recording starts by itself only for a real call. The app that holds the microphone
   must also play the other side for five seconds, so a voice message or a dictation
   session no longer starts one. Every decision is logged with the app's name.
@@ -70,6 +76,8 @@ materials on macOS 15. No third-party design dependency is used.
 - Source audio stays until the transcript and index are verified, then moves to Recently
   Deleted for 24 hours and is cleaned up. Discarded calls are recoverable the same way.
   Nothing is deleted silently.
+- A brief of the call, in the menu-bar row and over MCP. It is written after the transcript, so it
+  appears a few seconds after a call ends.
 
 ## 5. Optional: speaker identification
 
@@ -166,9 +174,9 @@ at another database, set CALL_RECORDER_DB_PATH in the MCP configuration.
 
 Tool | Purpose
 --- | ---
-list_calls | Recent calls with date, status, and participants.
+list_calls | Recent calls with date, status, participants, and whether each one has a brief.
 search_calls | Hybrid BM25 and semantic search over every transcript, with date and participant filters.
-get_call | One call's metadata and transcript location.
+get_call | One call: its participants, its transcript location, and its brief when the app has written one.
 get_transcript | Paged transcript segments, optionally speaker-labelled.
 list_participants | People on record, with role, company, and email.
 upsert_participants | Add or update people so calls can be attributed.
@@ -231,4 +239,6 @@ Biome checks.
 | Some transcripts are missing | Settings -> Recovery -> check database, restore working files, or retry the failed call. |
 | Settings says a new version is ready, but the version did not change | The new version is installed when the app quits. Settings -> Updates -> Restart installs it now, without a manual download. |
 | One person is shown as two voices, or two people as one | In Review Speakers, set the number beside "Voices detected" and press Separate again. Settings -> General -> "Separate voices by the people on the call" controls whether the app asks for that number on its own. |
+| No brief after a call | Settings -> Models: download the brief model (2.4 GB) and install llama.cpp with brew install llama.cpp. The transcript is complete either way. |
+| The menu-bar panel sits below the menu bar | Update to 0.1.15 or newer: the panel is placed against the row the icon is drawn in, which is right on a display whose menu bar hides itself. |
 | A Mac with no microphone records the other side only | Expected on a Mac mini: Settings -> General -> "Record when there is no microphone" is on. Turn it off to refuse recordings without a microphone. |
