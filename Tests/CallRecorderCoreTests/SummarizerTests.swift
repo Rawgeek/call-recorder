@@ -25,7 +25,8 @@ struct SummarizerTests {
                 .init(role: "user", content: "Transcript:"),
             ],
             temperature: 0.3,
-            maxTokens: 512
+            maxTokens: 512,
+            chatTemplateKwargs: SummarizerRequest.plainAnswer
         )
 
         let data = try JSONEncoder().encode(request)
@@ -35,6 +36,10 @@ struct SummarizerTests {
 
         #expect(json["temperature"] as? Double == 0.3)
         #expect(json["max_tokens"] as? Int == 512)
+        // Qwen3.5 reasons before it answers unless its template is told not to, and the reasoning
+        // is not part of a brief.
+        let kwargs = try #require(json["chat_template_kwargs"] as? [String: Bool])
+        #expect(kwargs["enable_thinking"] == false)
         let messages = try #require(json["messages"] as? [[String: String]])
         #expect(messages.count == 2)
         #expect(messages[0]["role"] == "system")
@@ -59,6 +64,16 @@ struct SummarizerTests {
             from: Data(#"{"choices":[{"message":{"content":null}}]}"#.utf8)
         )
         #expect(empty.text == nil)
+    }
+
+    @Test("reasoning written in front of an answer is not part of the answer")
+    func reasoningIsStrippedFromTheBrief() {
+        let withOneBlock = "<think>\nThe call is about a launch.\n</think>\n\n## About\nThe launch."
+        #expect(Summarizer.withoutReasoning(withOneBlock) == "## About\nThe launch.")
+        // A model that stopped mid-thought left half a brief, and half a brief is not kept.
+        #expect(Summarizer.withoutReasoning("<think>\nThe call is about") == "")
+        // A template that ignores the setting writes no block, and its answer is left alone.
+        #expect(Summarizer.withoutReasoning("  ## About\nThe launch.  ") == "## About\nThe launch.")
     }
 
     @Test("the server is given a port that was free when it was chosen")

@@ -38,12 +38,16 @@ struct LlamaServerVersionTests {
     func theBriefModelKnowsItsFile() {
         let component = SupportingModel.catalog.first { $0.id == CallBrief.modelID }
 
-        #expect(component?.ggufFileName == "Qwen3-4B-Instruct-2507-Q4_K_M.gguf")
+        #expect(component?.ggufFileName == "Qwen3.5-4B-Q4_K_M.gguf")
         #expect(component?.files.count == 1)
         // The digest is the publisher's own for these bytes, taken from the model host rather than
         // composed here.
         #expect(component?.files.first?.sha256.count == 64)
-        #expect(component?.totalBytes == 2_497_281_120)
+        #expect(component?.totalBytes == 2_740_937_888)
+        // The row shows this label, and it is where the quantisation is named: the file that was
+        // pinned and the words that describe it have to keep saying the same thing.
+        #expect(component?.versionLabel.contains("4-bit") == true)
+        #expect(component?.versionLabel.contains("Q4_K_M") == true)
     }
 
     @Test("a model that fits is told from one that would swap, with room to spare")

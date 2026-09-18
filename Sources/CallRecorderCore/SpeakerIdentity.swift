@@ -208,7 +208,8 @@ public struct SpeakerReconcileSummary: Equatable, Sendable {
     public let voicesExamined: Int
     /// Voices returned to review because they did not sound like the person named on them.
     public let returnedToReview: Int
-    /// The closest voice that was kept, for judging whether the threshold is set right.
+    /// The closest match to the person's own voice among the fragments that returned to review,
+    /// for judging whether the threshold is set right.
     public let closestKeptSimilarity: Float?
     /// Set when the run could not complete, in place of the counts.
     public let failure: String?

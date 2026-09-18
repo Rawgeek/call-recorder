@@ -168,19 +168,19 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
         ),
         SupportingModel(
             id: callBriefID,
-            displayName: "Qwen3 4B Instruct 2507",
+            displayName: "Qwen3.5 4B Instruct",
             detail: "Writes the brief of a finished call: what it was about, what was agreed, who "
                 + "owes what. It is the one model here that reads, so it is the largest. "
                 + "Downloaded once, then used offline.",
-            repository: "unsloth/Qwen3-4B-Instruct-2507-GGUF",
-            revision: "a06e946bb6b655725eafa393f4a9745d460374c9",
+            repository: "unsloth/Qwen3.5-4B-GGUF",
+            revision: "e87f176479d0855a907a41277aca2f8ee7a09523",
             installPath: "models/call-brief",
-            versionLabel: "4B, Q4_K_M",
+            versionLabel: "4B, 4-bit Q4_K_M",
             files: [
                 SupportingModelFile(
-                    path: "Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
-                    bytes: 2_497_281_120,
-                    sha256: "3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+                    path: "Qwen3.5-4B-Q4_K_M.gguf",
+                    bytes: 2_740_937_888,
+                    sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
                 )
             ]
         )

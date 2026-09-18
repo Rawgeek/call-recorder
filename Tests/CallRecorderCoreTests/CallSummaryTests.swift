@@ -31,6 +31,9 @@ struct CallSummaryTests {
         #expect(prompt.contains("People on the call: Dana Holt, Ilya Marsh."))
         #expect(prompt.contains("The transcript says this language: en."))
         #expect(prompt.contains("Transcript:\nDana Holt: Let us start."))
+        // The language rule is repeated after the transcript, where the model that has just read
+        // the call still looks. A Russian call answered in English is the failure it prevents.
+        #expect(prompt.hasSuffix("Write the brief in English."))
     }
 
     @Test("a part says which part it is, and the last pass is given every part brief")
@@ -50,6 +53,27 @@ struct CallSummaryTests {
         #expect(merged.contains("Brief of part 1:\nfirst"))
         #expect(merged.contains("Brief of part 2:\nsecond"))
         #expect(merged.contains("People on the call: Dana Holt."))
+    }
+
+    @Test("a call whose language is known asks for the brief in that language")
+    func theBriefIsAskedForInTheLanguageOfTheCall() {
+        let russian = CallContext(language: "ru")
+        #expect(russian.languageInstruction == "Write the brief in Russian.")
+
+        let english = CallContext(language: "en")
+        #expect(english.languageInstruction == "Write the brief in English.")
+
+        let prompt = SummaryPrompt.user(
+            transcript: "Dana Holt: Let us start.",
+            context: russian
+        )
+        #expect(prompt.hasSuffix("\n\nWrite the brief in Russian."))
+
+        // A code no language answers to leaves the model to read the language off the call, and a
+        // context that never learned one asks for nothing at all.
+        #expect(CallContext(language: "not-a-language").languageInstruction == nil)
+        #expect(CallContext(language: "").languageInstruction == nil)
+        #expect(CallContext().languageInstruction == nil)
     }
 
     @Test("lengths are written the way a person writes them")

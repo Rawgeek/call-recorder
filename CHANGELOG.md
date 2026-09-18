@@ -4,6 +4,41 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.18] - 2026-09-18
+
+A name that was confirmed stays confirmed, and the brief of a long call is written by a newer model
+and finishes the sections it starts.
+
+### Fixed
+- **A confirmed voice no longer comes back to review at every launch.** The repair that takes a
+  person's name off a fragment that does not sound like them compared the fragments with each other,
+  so a voice the diarizer split across two fragments was handed back at the start after every
+  confirmation, and the hand-back deleted the voiceprint that confirmation had just stored. A
+  voiceprint does not move when the same comparison is run again, so no answer could end the loop:
+  the same voice was confirmed, returned, and confirmed again over two days. The repair now asks the
+  question its own message states -- whether the fragment sounds like the person at all -- and it
+  hands a fragment back once. The answer given after that stands until someone hands the fragment
+  back by hand.
+- **A call with many people on it is no longer cut off.** The brief of a long call is asked for
+  under 150 words and was capped at 512 tokens, which a fifteen-person call reached: the saved brief
+  stopped inside its last section, and one came back with a section heading and nothing under it.
+  Every run measured at the new cap of 700 tokens finished on its own.
+
+### Changed
+- **The brief is written by Qwen3.5 4B**, quantised the same way the model before it was (4-bit
+  Q4_K_M, 2.7 GB, Apache-2.0). On the call this was measured with, it read the transcript in 17
+  seconds where the previous model took 30 and wrote its answer in 10 where that one took 13; its
+  tokenizer spends about 15% fewer tokens on the same Russian, which is context and time both. The
+  model reasons before it answers unless its template is told not to, so the request asks it not to,
+  and a reasoning block that arrives anyway is removed before the brief is saved.
+- **The prompt names the language of the call after the transcript**, not only in the rules above
+  it. Handed a long Russian call and a sheet of English instructions, the new model answered in
+  English: a translation nobody asked for, and the failure the language rule exists to prevent.
+  Named in words, as the last thing read, it answered in Russian in every measured run.
+- **A supporting model's row says which copy is installed.** The model's own version -- the size and
+  the quantisation, which is what decides how much memory the run needs -- was written in the
+  catalog and shown nowhere, so one download could not be read apart from another.
+
 ## [0.1.17] - 2026-09-18
 
 The Models pane stops saying the host does not publish a file it does publish, and the runtime the

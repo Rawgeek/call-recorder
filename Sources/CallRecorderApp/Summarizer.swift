@@ -148,7 +148,8 @@ struct Summarizer: Sendable {
                 .init(role: "user", content: user),
             ],
             temperature: CallBrief.temperature,
-            maxTokens: CallBrief.maximumTokens
+            maxTokens: CallBrief.maximumTokens,
+            chatTemplateKwargs: SummarizerRequest.plainAnswer
         )
         let answer: String
         do {
@@ -164,9 +165,27 @@ struct Summarizer: Sendable {
         } catch {
             throw SummarizerError.requestFailed(error.localizedDescription)
         }
-        let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw SummarizerError.answerEmpty }
-        return trimmed
+        let brief = Self.withoutReasoning(answer)
+        guard !brief.isEmpty else { throw SummarizerError.answerEmpty }
+        return brief
+    }
+
+    /// The answer with any reasoning the model wrote in front of it taken away.
+    ///
+    /// The request asks the template for a plain answer, and a runtime that follows it generates
+    /// no reasoning. This is here for the one that does not: a brief that opens with the model
+    /// talking to itself is not a brief. A block that never closes is dropped whole, and an answer
+    /// that held nothing else is reported as empty rather than saved.
+    static func withoutReasoning(_ text: String) -> String {
+        var answer = text
+        while let open = answer.range(of: "<think>") {
+            if let close = answer.range(of: "</think>", range: open.upperBound..<answer.endIndex) {
+                answer.removeSubrange(open.lowerBound..<close.upperBound)
+            } else {
+                answer.removeSubrange(open.lowerBound..<answer.endIndex)
+            }
+        }
+        return answer.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
 
@@ -180,11 +199,21 @@ struct SummarizerRequest: Encodable {
     let messages: [Message]
     let temperature: Double
     let maxTokens: Int
+    let chatTemplateKwargs: [String: Bool]
+
+    /// The template is asked for a plain answer with no reasoning in front of it.
+    ///
+    /// Qwen3.5 reasons before it answers unless its template is told not to, and reasoning written
+    /// into a brief is not a brief. A template that does not read the setting ignores it, so the
+    /// request is sent to every model: one swapped in later cannot quietly start writing down its
+    /// thoughts.
+    static let plainAnswer = ["enable_thinking": false]
 
     enum CodingKeys: String, CodingKey {
         case messages
         case temperature
         case maxTokens = "max_tokens"
+        case chatTemplateKwargs = "chat_template_kwargs"
     }
 }
 

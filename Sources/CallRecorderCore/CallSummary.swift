@@ -56,8 +56,11 @@ public enum CallBrief {
     /// The most tokens a brief may run to.
     ///
     /// The prompt asks for under a hundred and fifty words. This is the backstop that stops a model
-    /// that ignores the instruction from writing a second transcript.
-    public static let maximumTokens = 512
+    /// that ignores the instruction from writing a second transcript. It was 512, which a call with
+    /// fifteen people on it reached: the saved brief stopped inside its last section, and the
+    /// Numbers section of one came back as a heading with nothing under it. Every measured run at
+    /// this number finished on its own.
+    public static let maximumTokens = 700
 
     /// The temperature a brief is written at: enough variation to read as prose, not enough to
     /// wander.
@@ -134,6 +137,10 @@ public enum SummaryPrompt {
         lines.append("")
         lines.append("Transcript:")
         lines.append(transcript)
+        if let instruction = context.languageInstruction {
+            lines.append("")
+            lines.append(instruction)
+        }
         return lines.joined(separator: "\n")
     }
 
@@ -142,7 +149,7 @@ public enum SummaryPrompt {
         let body = briefs.enumerated()
             .map { "Brief of part " + String($0.offset + 1) + ":\n" + $0.element }
             .joined(separator: "\n\n")
-        return [
+        var lines = [
             context.line,
             "",
             "The call was too long to read in one pass, so it was read in " + String(briefs.count),
@@ -150,7 +157,12 @@ public enum SummaryPrompt {
             "what the parts agree on and leave out what a later part corrected.",
             "",
             body,
-        ].joined(separator: "\n")
+        ]
+        if let instruction = context.languageInstruction {
+            lines.append("")
+            lines.append(instruction)
+        }
+        return lines.joined(separator: "\n")
     }
 }
 
@@ -190,6 +202,22 @@ public struct CallContext: Equatable, Sendable {
             parts.append("The transcript says this language: " + language + ".")
         }
         return parts.isEmpty ? "A work call." : parts.joined(separator: " ")
+    }
+
+    /// The last line of a prompt: the language the brief has to be written in, in words.
+    ///
+    /// The rule above the transcript was not enough on its own. Handed a long Russian call and a
+    /// sheet of English instructions, a model answered in English, which is a translation nobody
+    /// asked for. Naming the language, after the transcript rather than before it, is what holds
+    /// the answer in the language of the call: a model that has just read eighty thousand
+    /// characters of one language follows the line it read last.
+    public var languageInstruction: String? {
+        guard
+            let language, !language.isEmpty,
+            let name = Locale(identifier: "en_US_POSIX").localizedString(forLanguageCode: language),
+            !name.isEmpty
+        else { return nil }
+        return "Write the brief in " + name + "."
     }
 
     static func duration(_ seconds: Double) -> String {
