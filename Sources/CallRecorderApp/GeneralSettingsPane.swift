@@ -173,6 +173,26 @@ struct GeneralSettingsView: View {
                     }
                     .fixedSize()
                 }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Separate voices by the people on the call",
+                    detail: model.settings.diarizationUsesParticipantCount
+                        ? "The detector is told how many remote voices to find."
+                        : "The detector decides how many voices the call holds.",
+                    info: "The detector counts voices on its own, and on one long standup it counted "
+                        + "one too many: fourteen remote voices came back as sixteen, and two of "
+                        + "them had to be named with a name the transcript already used. Given the "
+                        + "number it answers exactly that, in a third less time. The count is the "
+                        + "people on the call less you, and it is used only when the recording held "
+                        + "room for that many voices to have spoken. Turn this off if the people "
+                        + "list is often incomplete: a count that is too low writes two people into "
+                        + "one voice."
+                ) {
+                    Toggle("", isOn: $model.settings.diarizationUsesParticipantCount)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
             }
 
             CRSettingsCard(

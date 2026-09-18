@@ -366,6 +366,11 @@ final class AppModel {
     private(set) var backgroundState = BackgroundFinalizationState()
     private var backgroundCompletedCallIDs: Set<CallID> = []
     private var backgroundDiagnosedFailures: Set<CallID> = []
+    /// The number of voices a person asked for, for one call, until the app quits.
+    ///
+    /// Kept beside the call rather than in the settings because it is a judgement about one
+    /// recording: this call held four voices, whatever the list of people on it said.
+    private var speakerCountOverrides: [CallID: Int] = [:]
     private var launchStartConsumed = false
     private var stopGraceTask: Task<Void, Never>?
     /// The wait between a busy microphone and a recording that starts by itself.
@@ -1168,6 +1173,18 @@ final class AppModel {
         } catch {
             report(error, context: "Retry Speaker Detection", category: .processing)
         }
+    }
+
+    /// Separates the voices of one call again, into the number of voices a person counted.
+    ///
+    /// The detector answers exactly the number it is given, so this is the fix for a call whose
+    /// voices came out wrong in either direction: two voices where one person spoke, or one voice
+    /// holding two people. The number is remembered for this call while the app runs, and the
+    /// transcript is written again from the new separation.
+    func redetectSpeakers(for callID: CallID, voices: Int) async {
+        guard voices >= 1 else { return }
+        speakerCountOverrides[callID] = voices
+        await retrySpeakerAnalysis(for: callID)
     }
 
     func openTranscript(for callID: CallID) {
@@ -2781,6 +2798,9 @@ final class AppModel {
                 audioDirectory: URL(filePath: audioPath).deletingLastPathComponent(),
                 using: diarizer, speakerStore: speakerStore,
                 revisionManager: transcriptRevisionManager,
+                localParticipantID: settings.localParticipantID,
+                usesParticipantCount: settings.diarizationUsesParticipantCount,
+                speakerCountOverride: speakerCountOverrides[job.callID],
                 cancellation: cancellation
             )
             return .attributing

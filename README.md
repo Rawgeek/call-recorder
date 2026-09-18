@@ -105,7 +105,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.13.zip` from the
+1. Download `CallRecorder-0.1.14.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -119,8 +119,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
      runs locally.
    - **General**: choose the microphone or follow the system's own choice, the recordings folder
      (default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
-     microphone, whether a Mac with no audio input records the other side alone, and whether a
-     finished call keeps its audio.
+     microphone, whether a Mac with no audio input records the other side alone, whether the people
+     on a call decide how many voices are separated, and whether a finished call keeps its audio.
    - **Participants**: add the people you meet with, and mark which one is you.
 6. Leave **Start at login** on if you want it always available.
 
@@ -178,6 +178,9 @@ recording into voices, and the app learns a voice profile when you confirm a nam
    Review Speakers...**), then **Speaker setup -> Choose Python Environment**, and select
    `~/pyannote-env/bin/python3`. Press **Check Speaker Setup**; the panel should report that
    the local speaker model is ready.
+
+If a call comes out with one person as two voices, or two people as one, Review Speakers shows how
+many voices the call was separated into, and separates it again with the number you count.
 
 Without this step the app still transcribes everything, with speakers shown as Speaker 1,
 Speaker 2, and so on.

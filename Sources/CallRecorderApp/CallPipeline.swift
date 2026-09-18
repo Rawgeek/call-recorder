@@ -71,6 +71,9 @@ struct CallPipeline: Sendable {
         speakerStore: SpeakerStore?,
         revisionManager: TranscriptRevisionManager,
         policy: SpeakerMatchPolicy = .default,
+        localParticipantID: ParticipantID? = nil,
+        usesParticipantCount: Bool = true,
+        speakerCountOverride: Int? = nil,
         cancellation: ProcessCancellation? = nil
     ) async throws {
         guard let record = try await store.transcript(for: callID) else {
@@ -89,8 +92,27 @@ struct CallPipeline: Sendable {
         guard FileManager.default.fileExists(atPath: source.path) else {
             throw BackgroundProcessingError.audioUnavailable
         }
+        // A count chosen for this call wins over one the list suggests, and the list is only used
+        // when the recording held room for that many voices. See DiarizationSpeakerCount.
+        let speakers: Int?
+        if let speakerCountOverride {
+            speakers = speakerCountOverride
+        } else {
+            let people = try await store.participants(for: callID)
+            speakers = DiarizationSpeakerCount.expected(
+                participants: people.map(\.id),
+                localParticipant: localParticipantID,
+                recordingSeconds: Self.recordingSeconds(of: document),
+                usesParticipantCount: usesParticipantCount
+            )
+        }
         let result = try await Task.detached {
-            try diarizer.run(audio: source, ffmpeg: finalizer.ffmpeg, cancellation: cancellation)
+            try diarizer.run(
+                audio: source,
+                ffmpeg: finalizer.ffmpeg,
+                numberOfSpeakers: speakers,
+                cancellation: cancellation
+            )
         }.value
         guard !result.turns.isEmpty, !result.clusters.isEmpty else {
             throw DiarizerError.noSpeakersDetected
@@ -137,5 +159,14 @@ struct CallPipeline: Sendable {
             try revisionManager.restore(revision)
             throw error
         }
+    }
+
+    /// How long the recording runs, read from the text it produced.
+    ///
+    /// The last segment ends where the speech ended, which is the measure the speaker count needs: a
+    /// call that ran for ten minutes of silence holds no more voices than the minute somebody spoke
+    /// in. The audio is not read again to answer this.
+    static func recordingSeconds(of document: NormalizedTranscript) -> Double {
+        Double(document.segments.map(\.endMs).max() ?? 0) / 1000
     }
 }

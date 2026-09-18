@@ -1,4 +1,4 @@
-# Call Recorder 0.1.13 — install, features, and Codex MCP
+# Call Recorder 0.1.14 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -230,4 +230,5 @@ Biome checks.
 | Wrong microphone (headset instead of laptop) | Settings -> General -> Recording microphone. |
 | Some transcripts are missing | Settings -> Recovery -> check database, restore working files, or retry the failed call. |
 | Settings says a new version is ready, but the version did not change | The new version is installed when the app quits. Settings -> Updates -> Restart installs it now, without a manual download. |
+| One person is shown as two voices, or two people as one | In Review Speakers, set the number beside "Voices detected" and press Separate again. Settings -> General -> "Separate voices by the people on the call" controls whether the app asks for that number on its own. |
 | A Mac with no microphone records the other side only | Expected on a Mac mini: Settings -> General -> "Record when there is no microphone" is on. Turn it off to refuse recordings without a microphone. |

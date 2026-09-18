@@ -4,6 +4,39 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.14] - 2026-09-18
+
+A release about how many people were speaking. The detector counts voices on its own, and on a long
+standup it counted one too many: fourteen remote voices came back as sixteen, and two of those
+voices had to be named by hand with a name the transcript already used.
+
+### Added
+- **Settings -> General -> Separate voices by the people on the call**, on by default. The detector
+  answers exactly the number it is given, and the count is the people on the call less the person
+  recording. Measured on a real thirty-four minute standup: sixteen voices in a hundred and
+  forty-four seconds before, fourteen voices in eighty-six seconds after, with no hand naming.
+- **Review Speakers counts the voices of a call and can separate them again.** The number beside
+  the count is used for that call ahead of the list of people, so a call that came out wrong in
+  either direction - two voices where one person spoke, or one voice holding two people - is fixed
+  from the window that showed the problem.
+
+### Fixed
+- The count is only asked for when the recording held room for that many voices to have spoken:
+  fifteen seconds each. A two-minute call with fourteen people named on it is left to the detector,
+  because a count that is too low writes two people into one voice, and that is the mistake that
+  costs a transcript.
+
+### Verified
+- 616 tests pass in 78 suites. Nine are new: the count the app asks for on a standup, a small
+  call, a short call, a call with one other person, no local participant, the setting off, and the
+  floor measured against the number of voices rather than the length of the call - plus one that
+  the count reaches the speaker script under the name it knows.
+- The count was measured, not guessed. On the standup: sixteen voices in a hundred and forty-four
+  seconds with the detector deciding, fourteen in eighty-six with the count. On a three-person
+  call: four voices with two fragments with the detector deciding, exactly two with the count.
+- Loose bounds were tried and do nothing: asking for between ten and sixteen voices returned the
+  same sixteen as asking for nothing.
+
 ## [0.1.13] - 2026-09-18
 
 A release about the two sides of a call. A recording that held one side said nothing about why, and

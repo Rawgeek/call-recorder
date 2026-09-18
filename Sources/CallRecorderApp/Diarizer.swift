@@ -115,6 +115,7 @@ struct Diarizer: Sendable {
     func run(
         audio: URL,
         ffmpeg: URL,
+        numberOfSpeakers: Int? = nil,
         cancellation: ProcessCancellation? = nil
     ) throws -> DiarizationResult {
         let wave = FileManager.default.temporaryDirectory.appending(
@@ -127,8 +128,12 @@ struct Diarizer: Sendable {
                 "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wave.path,
             ],
             cancellation: cancellation)
+        var arguments = [wave.path]
+        if let numberOfSpeakers {
+            arguments += ["--num-speakers", String(numberOfSpeakers)]
+        }
         return try execute(
-            arguments: [wave.path],
+            arguments: arguments,
             cancellation: cancellation,
             ffmpegOverride: ffmpeg
         )

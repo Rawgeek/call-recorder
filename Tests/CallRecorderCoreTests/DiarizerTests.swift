@@ -4,6 +4,49 @@ import Testing
 @testable import CallRecorderApp
 
 struct DiarizerTests {
+    @Test(
+        "the voice count a call was given reaches the speaker script",
+        .enabled(if: TestEnvironment.canRunSpeakerScript)
+    )
+    func passesTheVoiceCount() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "diarizer-count-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        // The script writes down what it was asked for, and answers with an empty separation.
+        let script = directory.appending(path: "count.py")
+        try """
+        import json, os, sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        open(os.path.join(here, "arguments.txt"), "w").write(" ".join(sys.argv[1:]))
+        print(json.dumps({"model": "stub@1", "segments": [], "speakers": []}))
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        // A stand-in for ffmpeg: it writes the file it was asked for and does nothing else.
+        let ffmpeg = directory.appending(path: "ffmpeg")
+        try "#!/bin/sh\nfor last in \"$@\"; do :; done\n: > \"$last\"\n"
+            .write(to: ffmpeg, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755], ofItemAtPath: ffmpeg.path
+        )
+        let audio = directory.appending(path: "call.m4a")
+        try Data("audio".utf8).write(to: audio)
+
+        func recordedArguments(voices: Int?) throws -> String {
+            _ = try Diarizer(python: URL(filePath: "/usr/bin/python3"), script: script)
+                .run(audio: audio, ffmpeg: ffmpeg, numberOfSpeakers: voices)
+            return try String(
+                contentsOf: directory.appending(path: "arguments.txt"), encoding: .utf8
+            )
+        }
+
+        // Then the count is asked for by the name the script knows.
+        #expect(try recordedArguments(voices: 14).contains("--num-speakers 14"))
+        // And a call the app has no count for asks for nothing.
+        #expect(try !recordedArguments(voices: nil).contains("--num-speakers"))
+    }
+
     @Test("speaker runtime receives the selected FFmpeg library directory")
     func addsFFmpegLibrariesToChildEnvironment() throws {
         let directory = FileManager.default.temporaryDirectory

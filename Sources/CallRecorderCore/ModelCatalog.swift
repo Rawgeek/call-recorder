@@ -28,6 +28,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// detection. The list is `NonCallMicrophoneApps`.
     public var ignoresNonCallApps: Bool
     public var selectedMicrophoneID: String?
+    /// Whether the people on a call decide how many voices the detector separates.
+    ///
+    /// The detector answers exactly the number it is given, and the list the app holds is usually
+    /// right: fourteen remote voices in a standup stayed fourteen rather than becoming sixteen. A
+    /// list that is missing someone is the mistake to mind — the count then writes two people into
+    /// one voice — so a library whose lists are often incomplete can turn this off and let the
+    /// detector decide on its own.
+    public var diarizationUsesParticipantCount: Bool
     /// Whether a recording goes ahead on a Mac that has no audio input at all.
     ///
     /// ScreenCaptureKit records a call's system audio without a microphone, so a Mac mini with no
@@ -88,6 +96,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case silenceStopMinutes
         case ignoresNonCallApps
         case selectedMicrophoneID
+        case diarizationUsesParticipantCount
         case recordsWithoutMicrophone
         case localParticipantID
         case selectedWhisperModelID
@@ -110,6 +119,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             silenceStopMinutes: AutomaticRecordingRails.defaultSilenceMinutes,
             ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
+            diarizationUsesParticipantCount: true,
             recordsWithoutMicrophone: true,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
@@ -164,6 +174,11 @@ extension AppSettings {
             ?? fallback.ignoresNonCallApps
         selectedMicrophoneID =
             try container.decodeIfPresent(String.self, forKey: .selectedMicrophoneID)
+        // Added after the first release. Absent means the behaviour this release introduced: the
+        // people on the call decide how many voices are separated.
+        diarizationUsesParticipantCount =
+            try container.decodeIfPresent(Bool.self, forKey: .diarizationUsesParticipantCount)
+            ?? fallback.diarizationUsesParticipantCount
         // Added after the first release. Absent means the behaviour this release introduced: a Mac
         // with no audio input records the other side of the call instead of refusing to record.
         recordsWithoutMicrophone =

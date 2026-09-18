@@ -16,6 +16,7 @@ struct SpeakerReviewView: View {
     @State private var playbackError: String?
     @State private var playingSampleStart: Int?
     @State private var expandedSpeakers: Set<SpeakerClusterID> = []
+    @State private var voiceCounts: [CallID: Int] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -190,10 +191,68 @@ struct SpeakerReviewView: View {
                 }
             }
             callRoster(callID)
+            callVoiceCount(callID)
             ForEach(reviews) { review in
                 reviewCard(review)
             }
         }
+    }
+
+    /// How many voices this call was separated into, and a way to ask for a different number.
+    ///
+    /// The count is the one lever on how the detector behaves, and it is what explains a call whose
+    /// voices came out wrong in either direction: two voices where one person spoke, or one voice
+    /// holding two people. The number here is used for this call ahead of the people on it, and the
+    /// audio is separated again from the copy the call kept.
+    @ViewBuilder
+    private func callVoiceCount(_ callID: CallID) -> some View {
+        let detected = namedVoiceCount(callID).total
+        let issue = model.speakerAnalysisIssues.first { $0.callID == callID }
+        let available = issue?.audioAvailable ?? true
+        // The audio is there and the call cannot be retried: the only thing that means is a pass
+        // over this call that is already running.
+        let busy = available && !(issue?.canRetry ?? true)
+        if detected > 0 {
+            HStack(alignment: .firstTextBaseline, spacing: CR.Space.snug) {
+                Text("Voices detected")
+                    .font(CR.Font.caption)
+                    .foregroundStyle(CR.Ink.readable)
+                Stepper(value: voiceCountBinding(callID, detected: detected), in: 1...24) {
+                    Text("\(voiceCounts[callID] ?? detected)")
+                        .font(CR.Font.caption)
+                        .monospacedDigit()
+                }
+                .fixedSize()
+                .disabled(!available || busy)
+                CRButton(
+                    title: busy ? "Separating…" : "Separate again",
+                    icon: "person.2.badge.gearshape",
+                    help: available
+                        ? "Separates the voices of this call again, into the number shown. "
+                            + "The count wins over the people on the call."
+                        : "The audio of this call has been given up, so its voices cannot be "
+                            + "separated again."
+                ) {
+                    Task {
+                        await model.redetectSpeakers(
+                            for: callID,
+                            voices: voiceCounts[callID] ?? detected
+                        )
+                    }
+                }
+                .disabled(!available || busy)
+                Spacer(minLength: 0)
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    /// The number of voices for a call: what the person chose, or what the detector found.
+    private func voiceCountBinding(_ callID: CallID, detected: Int) -> Binding<Int> {
+        Binding(
+            get: { voiceCounts[callID] ?? detected },
+            set: { voiceCounts[callID] = $0 }
+        )
     }
 
     /// Who was on the call, in front of the voices that need naming.

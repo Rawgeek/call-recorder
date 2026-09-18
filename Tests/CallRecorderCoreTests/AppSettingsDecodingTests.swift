@@ -39,6 +39,20 @@ struct AppSettingsDecodingTests {
         // A Mac that has never been asked about a missing microphone records the other side of the
         // call, which is the behaviour this release introduced.
         #expect(decoded.recordsWithoutMicrophone)
+        // And a library whose lists have never been trusted with the voice count has the count
+        // asked for, which is what this release does by default.
+        #expect(decoded.diarizationUsesParticipantCount)
+    }
+
+    @Test("leaving the voice count to the detector survives a save")
+    func leavingTheVoiceCountAloneSurvivesASave() throws {
+        var settings = AppSettings.default
+        settings.diarizationUsesParticipantCount = false
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+
+        #expect(decoded.diarizationUsesParticipantCount == false)
+        #expect(decoded == settings)
     }
 
     @Test("refusing to record without a microphone survives a save")
