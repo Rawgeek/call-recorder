@@ -90,13 +90,58 @@ final class SupportingModelManager {
     }
 
     /// The folder the installed copy lives in, which is the revision the record names.
+    ///
+    /// The catalog's repository is tried first, and then the folders beside it are searched for the
+    /// revision the record names. A model whose repository was renamed by an update lives under the
+    /// name it was downloaded with: the revision is what tells the copy apart from a stale one, and
+    /// reading the copy that is already on disk is worth more than downloading the same bytes again
+    /// under a name it never had.
     func installedDirectory(for model: SupportingModel) -> URL? {
         if let record = manifest.record(for: model.id) {
             let directory = model.directory(in: applicationDirectory, revision: record.revision)
             if Self.directoryExists(directory) { return directory }
+            if let renamed = directoryHolding(revision: record.revision, of: model) { return renamed }
         }
         let pinned = model.directory(in: applicationDirectory)
         return Self.directoryExists(pinned) ? pinned : nil
+    }
+
+    /// The paths of the files the installed copy is made of.
+    ///
+    /// The installed record describes the copy that is on disk. The catalog describes the copy
+    /// being published, and its file names change when the model does: reading the catalog's names
+    /// against an older copy reports a model that is installed as one that is not.
+    func installedFilePaths(of model: SupportingModel) -> [String] {
+        manifest.record(for: model.id)?.files.map(\.path) ?? model.files.map(\.path)
+    }
+
+    /// The file inside the installed copy that a GGUF runtime loads, or nil when there is none.
+    func installedGGUFFile(for model: SupportingModel) -> URL? {
+        guard let directory = installedDirectory(for: model) else { return nil }
+        let name = manifest.record(for: model.id)?.ggufFileName ?? model.ggufFileName
+        guard let name else { return nil }
+        return directory.appending(path: name)
+    }
+
+    /// A folder under the model's install path that holds the given revision, whichever repository
+    /// directory it sits in.
+    private func directoryHolding(revision: String, of model: SupportingModel) -> URL? {
+        let root = applicationDirectory.appending(
+            path: model.installPath,
+            directoryHint: .isDirectory
+        )
+        guard let enumerator = FileManager.default.enumerator(
+            at: root,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else { return nil }
+        for case let candidate as URL in enumerator {
+            guard candidate.lastPathComponent == revision, Self.directoryExists(candidate) else {
+                continue
+            }
+            return candidate
+        }
+        return nil
     }
 
     /// The disk space the installed copy occupies.
@@ -547,8 +592,8 @@ final class SupportingModelManager {
                 states[model.id] = .notInstalled
                 continue
             }
-            let present = model.files.allSatisfy {
-                FileManager.default.fileExists(atPath: directory.appending(path: $0.path).path)
+            let present = installedFilePaths(of: model).allSatisfy {
+                FileManager.default.fileExists(atPath: directory.appending(path: $0).path)
             }
             states[model.id] = present ? .installed : .notInstalled
         }

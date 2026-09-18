@@ -4,6 +4,20 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.19] - 2026-09-18
+
+The model that is already on disk keeps being used after the catalog renames it, so briefs keep
+working across the 0.1.18 model change.
+
+### Fixed
+- **An installed model is read under the name it was downloaded with.** 0.1.18 moved the brief to
+  Qwen3.5, which renamed both the repository and the file. The installed copy was looked for under
+  the catalog's new names and found nowhere: the brief model was reported as not downloaded while
+  2.5 GB of it sat on the disk, and the pane offered to download the same weights again under a
+  name they never had. The installed record is what describes the copy on disk, so its repository,
+  revision, and file names are what the app reads. The copy already there is used until the update
+  is taken, and the pane's own "A newer copy is published" row is where taking it is offered.
+
 ## [0.1.18] - 2026-09-18
 
 A name that was confirmed stays confirmed, and the brief of a long call is written by a newer model

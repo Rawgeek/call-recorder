@@ -46,6 +46,15 @@ public struct InstalledSupportingModel: Codable, Equatable, Sendable {
     public func file(_ path: String) -> InstalledSupportingFile? {
         files.first { $0.path == path }
     }
+
+    /// The file inside this installed copy that a GGUF runtime loads, when it has one.
+    ///
+    /// Read from this record rather than from the catalog: the record describes the copy that is on
+    /// disk, and an update that renames the file leaves that copy under the name it was downloaded
+    /// with until the update is taken.
+    public var ggufFileName: String? {
+        files.first { $0.path.hasSuffix(".gguf") }?.path
+    }
 }
 
 /// The set of supporting models this Mac has installed and verified.

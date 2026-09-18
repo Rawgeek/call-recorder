@@ -114,7 +114,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.18.zip` from the
+1. Download `CallRecorder-0.1.19.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not

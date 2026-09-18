@@ -1371,12 +1371,11 @@ final class AppModel {
 
     /// The downloaded file the brief model runs from, or nil when it is not installed.
     private var briefModelFile: URL? {
-        guard let briefModel,
-            supportingManager.state(for: briefModel).isInstalled,
-            let directory = supportingManager.installedDirectory(for: briefModel),
-            let name = briefModel.ggufFileName
-        else { return nil }
-        return directory.appending(path: name)
+        // The installed copy's own file is used, not the one the catalog names. A model update that
+        // renames the file leaves the copy on disk under the name it was downloaded with, and the
+        // brief would be refused as "not downloaded" with its model sitting on the disk.
+        guard let briefModel, supportingManager.state(for: briefModel).isInstalled else { return nil }
+        return supportingManager.installedGGUFFile(for: briefModel)
     }
 
     /// Whether this Mac can write a brief, and what is missing when it cannot.
