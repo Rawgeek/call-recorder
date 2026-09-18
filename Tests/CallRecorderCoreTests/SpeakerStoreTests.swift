@@ -386,6 +386,114 @@ struct SpeakerStoreTests {
         #expect(try await harness.speakers.unresolvedReviews().map(\.clusterID) == [other.cluster.id])
     }
 
+    @Test("a name the person kept stays when the two fragments do not sound alike")
+    func keepsConfirmedFragmentThatMatchesTheVoice() async throws {
+        let harness = try await Harness()
+        let participant = try await harness.store.upsertParticipant(name: "Sudhan")
+        // The learned voice comes from another call, so neither fragment here shapes it.
+        let learnedCallID = CallID(rawValue: UUID())
+        try await harness.store.createCall(.started(id: learnedCallID, at: Date()))
+        let learned = harness.pending(
+            id: SpeakerClusterID(rawValue: UUID()),
+            callID: learnedCallID,
+            createdAt: Date(),
+            embedding: [1, 0, 0, 0]
+        )
+        try await harness.speakers.savePending(learned)
+        try await harness.speakers.confirm(
+            clusterID: learned.cluster.id,
+            participantID: participant.id
+        )
+        let profile = try #require(
+            try await harness.speakers.profiles(modelVersion: "model-v1")
+                .first { $0.participantID == participant.id }
+        )
+
+        // One recording, two fragments the diarizer split apart. Each one reaches the bar at which
+        // the app offers the name, and the two do not reach the bar for one voice. Comparing the
+        // fragments with each other used to decide this pair, so the name came back to review at
+        // every launch and the person answered the same question again and again.
+        let first = harness.pending(createdAt: Date(), embedding: [1, 0, 0, 0], speakerIndex: 0)
+        let second = harness.pending(
+            createdAt: Date(),
+            embedding: [0.7, 0.714, 0, 0],
+            speakerIndex: 1
+        )
+        let match = try #require(SpeakerMatcher.similarity(of: second.cluster, to: profile))
+        let mutual = try #require(SpeakerMatcher.similarity(first.cluster, second.cluster))
+        #expect(match >= Double(SpeakerMatchPolicy.default.reviewSimilarity))
+        #expect(mutual < Double(SpeakerMatchPolicy.default.splitVoiceSimilarity))
+
+        for pending in [first, second] {
+            try await harness.speakers.savePending(pending)
+            try await harness.speakers.confirm(
+                clusterID: pending.cluster.id,
+                participantID: participant.id
+            )
+        }
+
+        let report = try await harness.speakers.reconcileSharedSpeakers()
+
+        #expect(report.reopened.isEmpty)
+        #expect(report.groups == 1)
+        #expect(report.fragments == 2)
+        #expect(
+            try await harness.speakers.review(clusterID: second.cluster.id)?.state == .confirmed
+        )
+        #expect(try await harness.speakers.unresolvedReviews().isEmpty)
+    }
+
+    @Test("a fragment the person confirmed again does not return to review a second time")
+    func keepsTheAnswerGivenAfterTheRepair() async throws {
+        let harness = try await Harness()
+        let participant = try await harness.store.upsertParticipant(name: "Marta")
+        let learnedCallID = CallID(rawValue: UUID())
+        try await harness.store.createCall(.started(id: learnedCallID, at: Date()))
+        let learned = harness.pending(
+            id: SpeakerClusterID(rawValue: UUID()),
+            callID: learnedCallID,
+            createdAt: Date(),
+            embedding: [1, 0, 0, 0]
+        )
+        try await harness.speakers.savePending(learned)
+        try await harness.speakers.confirm(
+            clusterID: learned.cluster.id,
+            participantID: participant.id
+        )
+
+        // The second fragment does not sound like the person, so the repair is right to ask about
+        // it. The answer to that question is what has to last.
+        let first = harness.pending(createdAt: Date(), embedding: [1, 0, 0, 0], speakerIndex: 0)
+        let second = harness.pending(createdAt: Date(), embedding: [0, 1, 0, 0], speakerIndex: 1)
+        for pending in [first, second] {
+            try await harness.speakers.savePending(pending)
+            try await harness.speakers.confirm(
+                clusterID: pending.cluster.id,
+                participantID: participant.id
+            )
+        }
+
+        let firstReport = try await harness.speakers.reconcileSharedSpeakers()
+
+        #expect(firstReport.reopened.map(\.clusterID) == [second.cluster.id])
+        #expect(
+            try await harness.speakers.review(clusterID: second.cluster.id)?.state == .suggested
+        )
+
+        // The person reads it again and keeps the name.
+        try await harness.speakers.confirm(
+            clusterID: second.cluster.id,
+            participantID: participant.id
+        )
+        let secondReport = try await harness.speakers.reconcileSharedSpeakers()
+
+        #expect(secondReport.reopened.isEmpty)
+        #expect(
+            try await harness.speakers.review(clusterID: second.cluster.id)?.state == .confirmed
+        )
+        #expect(try await harness.speakers.unresolvedReviews().isEmpty)
+    }
+
     @Test("a decided speaker reopens when the person is stored under another casing")
     func reopensAcrossStoredCase() async throws {
         let harness = try await Harness()

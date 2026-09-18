@@ -527,8 +527,8 @@ struct RecoverySettingsView: View {
                 }
                 CRSettingsDivider()
                 CRSettingsRow(
-                    title: "Keep a name when the fragments are one voice",
-                    detail: "Returns the rest of the fragments to review."
+                    title: "Check every name against its voice",
+                    detail: "A fragment that does not sound like the person returns to review once."
                 ) {
                     CRButton(title: "Fix Speaker Names", icon: "person.wave.2") {
                         model.reconcileSharedSpeakers()
@@ -1088,16 +1088,21 @@ struct ModelSettingsView: View {
     }
 
     /// The one line a component row says out loud, and only when something needs doing.
+    ///
+    /// The model's own version leads it. Which copy of a model is on disk -- a size, and for the
+    /// brief model the quantisation that decides how much memory it needs -- was only ever written
+    /// in the catalog, so the row could not be read to tell one download from another.
     private func componentRowDetail(_ component: SupportingModel) -> String? {
         switch model.supportingManager.state(for: component) {
         case .failed:
-            return "The download did not finish."
+            return component.versionLabel + ". The download did not finish."
         case .notInstalled:
-            return component.id == SupportingModel.sileroVADID
+            let waiting = component.id == SupportingModel.sileroVADID
                 ? "Transcription waits for this."
                 : "Search finds passages by keyword until this is downloaded."
+            return component.versionLabel + ". " + waiting
         case .installed, .downloading:
-            return nil
+            return component.versionLabel
         }
     }
 

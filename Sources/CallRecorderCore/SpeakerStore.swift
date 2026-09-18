@@ -23,7 +23,8 @@ public struct SpeakerReconcileReport: Equatable, Sendable {
     public let groups: Int
     public let fragments: Int
     public let reopened: [SpeakerReviewItem]
-    /// The closest fragment that failed the same-voice test, for diagnosing the threshold.
+    /// The closest match to the person's own voice among the fragments that returned to review,
+    /// for diagnosing the threshold.
     public let highestRejectedSimilarity: Float?
 
     public init(
@@ -225,9 +226,14 @@ public struct SpeakerStore: Sendable {
     }
 
 
-    /// Repairs calls where one person was named on fragments that do not sound like them.
-    /// The fragment closest to the learned voice keeps the name, fragments of that same
-    /// voice keep the name too, and every other fragment returns to review.
+    /// Repairs calls where one person was named on a fragment that does not sound like them.
+    ///
+    /// The fragment closest to the learned voice keeps the name, and so does a fragment whose own
+    /// match to that voice reaches the bar at which the app offers the name: the repair holds no
+    /// evidence against a fragment the app itself would have suggested. Every fragment below the
+    /// bar returns to review, and it returns once. A fragment that is handed back and answered by
+    /// a person keeps that answer, because a voiceprint does not move when the same comparison is
+    /// run again -- which is what made one confirmed name come back at every launch.
     @discardableResult
     public func reconcileSharedSpeakers(
         at date: Date = Date(),
@@ -253,16 +259,25 @@ public struct SpeakerStore: Sendable {
                 guard let score = SpeakerMatcher.similarity(of: cluster, to: profile) else { return nil }
                 return (cluster, score)
             }.sorted { $0.score > $1.score }
-            guard let keeper = scored.first else { continue }
+            guard !scored.isEmpty else { continue }
             fragments += scored.count
+            let answered = try await store.fragmentsAnsweredAfterRepair(
+                callID: group.callID,
+                participantID: group.participantID
+            )
             for candidate in scored.dropFirst() {
-                let mutual = SpeakerMatcher.similarity(keeper.cluster, candidate.cluster)
-                if let mutual, mutual >= Double(policy.splitVoiceSimilarity) { continue }
-                if let mutual { highestRejected = max(highestRejected ?? 0, Float(mutual)) }
+                // The question here is whether the fragment sounds like the person at all. Whether
+                // two fragments sound like one voice answers a different question, and it was the
+                // wrong one to ask: a diarizer splits one voice across fragments that stay apart,
+                // so the person's own two fragments were compared with each other and the name
+                // they had just confirmed was handed back again.
+                if candidate.score >= Double(policy.reviewSimilarity) { continue }
+                if answered.contains(candidate.cluster.id) { continue }
+                highestRejected = max(highestRejected ?? 0, Float(candidate.score))
                 guard let stored = try await store.speakerReview(clusterID: candidate.cluster.id) else {
                     continue
                 }
-                try await store.reopenSpeakerReview(stored, at: date)
+                try await store.reopenSpeakerReview(stored, at: date, byRepair: true)
                 if let updated = try await store.speakerReview(clusterID: candidate.cluster.id) {
                     reopened.append(updated)
                 }

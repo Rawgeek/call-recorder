@@ -3903,8 +3903,9 @@ final class AppModel {
     }
 
 
-    /// Repairs calls where one person was named on several speakers that do not sound alike.
-    /// The voiceprints decide, so a wrong name never stays just because it was confirmed once.
+    /// Repairs calls where one person was named on a fragment that does not sound like them.
+    /// A fragment that does not match the learned voice returns to review once. The answer a
+    /// person gives after that stands, so a confirmation is not undone at every launch.
     func reconcileSharedSpeakers() {
         Task { await reconcileSharedSpeakersNow() }
     }

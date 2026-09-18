@@ -51,6 +51,7 @@ public actor CallStore {
         try migrateSpeakerLineRequestSchema()
         try migrateSystemAudioSchema()
         try migrateCallSummarySchema()
+        try migrateSpeakerRepairSchema()
     }
 
     public func schemaVersion() throws -> Int {
@@ -1094,6 +1095,24 @@ public actor CallStore {
         ).map { try SpeakerClusterID(rawValue: Self.uuid(from: $0.getString(0))) }
     }
 
+    /// The fragments of one call that the automatic repair has handed back and that a person has
+    /// answered since.
+    ///
+    /// A voiceprint does not move when the same comparison runs again, so a fragment in this state
+    /// returned to review at every launch and threw away the answer it was given. The answer that
+    /// follows a hand-back is the newest evidence the app can hold, and the repair leaves it alone.
+    func fragmentsAnsweredAfterRepair(
+        callID: CallID,
+        participantID: ParticipantID
+    ) throws -> Set<SpeakerClusterID> {
+        Set(try connection.query(
+            "SELECT cluster_id FROM speaker_assignments WHERE call_id = ? "
+                + "AND participant_id = ? COLLATE NOCASE "
+                + "AND reviewed_at IS NOT NULL AND repair_reopened_at IS NOT NULL",
+            [callID.rawValue.uuidString, participantID.rawValue.uuidString]
+        ).map { try SpeakerClusterID(rawValue: Self.uuid(from: $0.getString(0))) })
+    }
+
     /// Participants already named for a call, keyed by call. The review window uses this to warn
     /// before the same person is given a second voice in a call, which is how one name ends up on
     /// several speakers.
@@ -1408,7 +1427,8 @@ public actor CallStore {
 
     func reopenSpeakerReview(
         _ review: SpeakerReviewItem,
-        at date: Date
+        at date: Date,
+        byRepair: Bool = false
     ) async throws {
         try await withWriteRetry {
             let transaction = try connection.transaction()
@@ -1438,13 +1458,15 @@ public actor CallStore {
                 let confidenceBand = reopenedState == .suggested ? "review" : "none"
                 let changed = try transaction.execute(
                     "UPDATE speaker_assignments SET participant_id = ?, state = ?, "
-                        + "confidence_band = ?, reviewed_at = NULL, updated_at = ? "
+                        + "confidence_band = ?, reviewed_at = NULL, updated_at = ?, "
+                        + "repair_reopened_at = COALESCE(?, repair_reopened_at) "
                         + "WHERE cluster_id = ?",
                     [
                         suggestion ?? Value.null,
                         reopenedState.rawValue,
                         confidenceBand,
                         date.timeIntervalSince1970,
+                        byRepair ? Value.real(date.timeIntervalSince1970) : Value.null,
                         review.clusterID.rawValue.uuidString,
                     ]
                 )
@@ -2515,6 +2537,42 @@ public actor CallStore {
         }
     }
 
+    /// Adds the column that records a fragment the automatic repair has already handed back.
+    ///
+    /// The repair compares each named fragment with the voice the person has learned. Returning a
+    /// fragment to review deletes that fragment's learned sample, so the comparison the repair made
+    /// can never change: with no note of what it already did, the same fragment came back at every
+    /// launch and undid the confirmation that answered it, forever. The note makes the answer a
+    /// person gives afterwards final until someone hands the fragment back by hand.
+    private func migrateSpeakerRepairSchema() throws {
+        let migrationConnection = try database.connect()
+        try migrationConnection.executeBatch(Self.connectionPragmas)
+        guard try migrationConnection.query(
+            "SELECT 1 FROM call_recorder_migrations WHERE id = ? LIMIT 1",
+            [Self.speakerRepairMigrationID]
+        ).next() == nil else { return }
+
+        let transaction = try migrationConnection.transaction()
+        do {
+            do {
+                for statement in Self.speakerRepairMigrationStatements {
+                    _ = try transaction.execute(statement)
+                }
+            } catch {
+                throw CallStoreError.migrationStepFailed(11, String(reflecting: error))
+            }
+            try Self.ensureForeignKeyIntegrity(transaction)
+            _ = try transaction.execute(
+                "INSERT INTO call_recorder_migrations (id, applied_at) VALUES (?, ?)",
+                [Self.speakerRepairMigrationID, Date().timeIntervalSince1970]
+            )
+            transaction.commit()
+        } catch {
+            transaction.rollback()
+            throw error
+        }
+    }
+
     public func processingJob(callID: CallID) throws -> ProcessingJob? {
         guard let row = try connection.query(
             "SELECT call_id, stage, execution_state, attempt_count, created_at, updated_at, "
@@ -2850,6 +2908,16 @@ public actor CallStore {
     private static let systemAudioMigrationID = "call-system-audio-v1"
 
     private static let callSummaryMigrationID = "call-summary-v1"
+
+    private static let speakerRepairMigrationID = "speaker-repair-v1"
+
+    /// The moment the automatic repair last handed this fragment back to review.
+    ///
+    /// NULL means the repair has not handed it back. A hand-back done by a person leaves the stamp
+    /// alone, but it clears the decision, which is what lets the repair look at the fragment again.
+    private static let speakerRepairMigrationStatements = [
+        "ALTER TABLE speaker_assignments ADD COLUMN repair_reopened_at REAL;",
+    ]
 
     /// The brief of a call, one row per call.
     private static let callSummarySchema = """
