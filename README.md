@@ -105,7 +105,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.11.zip` from the
+1. Download `CallRecorder-0.1.12.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -126,6 +126,9 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 From 0.1.4 on, later versions install themselves: the check runs in the background, and the new
 version is put in place when the app quits or when Restart is pressed, so there is no download and
 no reinstall to do by hand.
+
+A version that Settings calls ready is installed the next time the app is reopened. Nothing moves
+while it runs. **Settings -> Updates -> Restart** closes the app and reopens the new version.
 
 ### From source
 

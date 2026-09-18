@@ -241,3 +241,4 @@ Biome checks.
 | Nothing recorded from the other side | System Settings -> Privacy & Security -> Screen & System Audio Recording: enable Call Recorder, then restart the app. |
 | Wrong microphone (headset instead of laptop) | Settings -> General -> Recording microphone. |
 | Some transcripts are missing | Settings -> Recovery -> check database, restore working files, or retry the failed call. |
+| Settings says a new version is ready, but the version did not change | The new version is installed when the app quits. Settings -> Updates -> Restart installs it now, without a manual download. |

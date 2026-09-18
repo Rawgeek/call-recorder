@@ -4,6 +4,32 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.12] - 2026-09-18
+
+A correction to when the recorder starts by itself. It started for any app that took the
+microphone, and two recordings in the recent list carry one side and no speech because of it. A
+voice message, a dictation session, and a voice search all take the microphone and play nothing.
+
+### Fixed
+- A recording that starts by itself now needs a two-way call. The app that holds the microphone
+  must also play audio, and it must do both for five seconds. A call lasts longer than that; a
+  voice message usually does not. The recorder's own capture never counts, and the ignore list for
+  the voice recorder, dictation, and the assistant still applies.
+- Every decision is written down, and the app that took the microphone is named in it:
+  `starting by itself: <app> held the microphone and played the other side for 5 seconds`, or
+  `not starting: <app> holds the microphone and plays nothing`. Read them in Console under the
+  subsystem `local.callrecorder.app`, category `automatic`.
+
+### Verified
+- 599 tests pass in 77 suites. Five of them are new: a microphone alone is not a call, a
+  microphone with the other side is, the recorder's own audio never qualifies, the holder is
+  named, and the window is longer than a voice message.
+- The rule was seen to fail before it was trusted. With the playing side ignored, "a process that
+  holds the microphone and plays nothing is not a call" fails.
+- Not covered, and said plainly: an app that holds the microphone **and** plays audio still
+  qualifies an automatic start. An assistant in a voice chat and a read-aloud are two of them. The
+  log line names the app, so the ignore list can grow from evidence instead of from a guess.
+
 ## [0.1.11] - 2026-09-18
 
 The discarding question answers again. It was a system confirmation dialog, drawn as a window of
