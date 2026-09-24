@@ -105,6 +105,18 @@ public enum VoiceprintKeyStoreError: Error, Equatable {
     /// The file a development run keeps its key in could not be written. The number is the error
     /// the file system reported.
     case fileUnavailable(Int32)
+
+    /// Whether the keychain asked for the key and the person said no.
+    ///
+    /// A dialog that was cancelled is a decision rather than a fault: nothing is broken, the key
+    /// stays where it was, and the next attempt asks again. Told apart from the other failures
+    /// because it used to be recorded as the app's last error, where a deliberately cancelled
+    /// dialog read as a defect for days -- on 2026-09-24 it woke the fault watcher, which is built
+    /// to wake on faults and not on choices.
+    public var isUserDecline: Bool {
+        guard case .inaccessible(let status) = self else { return false }
+        return status == errSecUserCanceled
+    }
 }
 
 /// Where the key that opens stored voice profiles is kept.

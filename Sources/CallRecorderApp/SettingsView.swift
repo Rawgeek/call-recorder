@@ -500,12 +500,14 @@ struct RecoverySettingsView: View {
                     )
                 case .waitingForPermission:
                     // A keychain dialog does not expire, and the read waits behind it with nothing
-                    // on screen to say so. Naming the wait is what lets the user look for it.
+                    // on screen to say so. Naming the wait is what lets the user look for it. An
+                    // answer that was cancelled leaves the same state, because the key still needs
+                    // permission, so the sentence says what is true of both: no answer yet.
                     CRSettingsRow(
                         title: "Waiting for keychain permission",
-                        detail: "macOS is waiting for an answer to a dialog asking whether Call Recorder "
-                            + "may read its key. Look for it on screen; it can open behind another "
-                            + "window. Answering once allows every later read.",
+                        detail: "macOS asked whether Call Recorder may read its key and has no answer "
+                            + "yet. Look for the dialog on screen; it can open behind another window. "
+                            + "Answering once allows every later read.",
                         warning: true
                     ) {
                         CRButton(title: "Try Again") {

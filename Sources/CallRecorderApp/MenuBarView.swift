@@ -508,9 +508,10 @@ struct MenuBarView: View {
         case .waitingForPermission:
             return (
                 "Voice matching is paused",
-                "The keychain is waiting for an answer to a dialog. It can open behind another "
-                    + "window or on another display, both of which hid it for a day on this Mac. "
-                    + "Choose Always Allow: Allow answers once, and the question returns."
+                "The keychain has no answer yet to a dialog asking whether Call Recorder may read "
+                    + "the key. It can open behind another window or on another display, both of "
+                    + "which hid it for a day on this Mac. Choose Always Allow: Allow answers once, "
+                    + "and the question returns."
             )
         case .unavailable:
             return (

@@ -4,6 +4,30 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.26] - 2026-09-24
+
+A keychain dialog answered with Cancel is read as a decision rather than as a fault, and the calls
+that were waiting on that key are asked about again the moment it is read.
+
+### Fixed
+
+- **A cancelled keychain dialog is no longer recorded as the app's last error.** The keychain
+  answers -128 when the person presses Cancel in the access dialog, and the app treated it the way
+  it treats a locked keychain or a refused password: the error was written to the diagnostics
+  record, kept as the app's last error, and shown as a fault. Nothing is broken when a dialog is
+  cancelled, the key stays where it was, and the next attempt asks again; the state now says the
+  keychain has no answer yet, which is what is true, and the surfaces offer the same Try Again.
+  On 2026-09-24 a cancelled dialog woke the fault watcher this lane runs on, which is built to wake
+  on faults and not on choices.
+- **A call that could not be separated while the key was locked finishes once the key is read.**
+  The separation needs the stored voice profiles to name the voices it finds, so while the
+  keychain had not answered it failed the call outright: the 2026-09-24 11:13 call was refused
+  five times over half an hour, and when the key was read thirty seconds later nothing asked again,
+  so a call whose only problem had been a locked keychain stayed failed. Reading the key is the
+  moment that reason goes away, so it is now the moment the calls that failed for want of it are
+  queued again. A call that failed for its own reasons is left alone: the record of the failure is
+  what says which of the two it was, and guessing would start work nobody asked for.
+
 ## [0.1.25] - 2026-09-24
 
 A recorded call is read by Parakeet, which reads Russian and English in one pass on the Neural

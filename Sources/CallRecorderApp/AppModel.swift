@@ -15,9 +15,25 @@ struct SpeakerAnalysisIssue: Identifiable {
     let startedAt: Date
     let canRetry: Bool
     let audioAvailable: Bool
+    /// Whether this call failed for want of the voice-profile key rather than for a reason of its
+    /// own, which is what makes it worth asking about again the moment the key is read.
+    let waitedForVoiceIdentity: Bool
     let message: String
     let details: String?
     var id: CallID { callID }
+
+    /// Whether a failed separation failed for want of the voice-profile key.
+    ///
+    /// The recorded words are what say so: the stage writes its error there, and the identity error
+    /// names itself. Asked here rather than inside the loop that builds the list, because the
+    /// answer decides whether a call is asked about again on its own, and a wrong answer either
+    /// strands the call or starts work nobody asked for.
+    static func waitedForVoiceIdentity(details: String?, summary: String?) -> Bool {
+        [details, summary]
+            .compactMap { $0 }
+            .joined(separator: " ")
+            .contains("identityUnavailable")
+    }
 }
 
 /// Something the app has just finished, or has just refused to do, and how to say it.
@@ -1380,18 +1396,28 @@ final class AppModel {
                 guard document.needsSpeakerDetection || (job?.stage == .diarizing && job?.executionState == .failed) else { continue }
                 let directory = storedCall.audioPath.map { URL(filePath: $0).deletingLastPathComponent() }
                 let name = document.segments.contains { $0.source == .system } ? "system.m4a" : "call.m4a"
-                let candidates = [directory?.appending(path: name),
-                    recovery.first { $0.callID == call.id }?.payloadDirectory.appending(path: name)]
+                let candidates = [
+                    directory?.appending(path: name),
+                    recovery.first { $0.callID == call.id }?.payloadDirectory.appending(path: name),
+                ]
                 let hasAudio = candidates.compactMap { $0 }.contains { FileManager.default.fileExists(atPath: $0.path) }
                 let busy = job?.executionState == .pending || job?.executionState == .running
                 let event = events.first { $0.callID == call.id && $0.stage == .diarizing }
+                // A separation that could not open the stored voice profiles failed for a reason
+                // that goes away when they are opened, and the record says so in the words the
+                // error carries. Any other failure is left alone: guessing that a call failed for
+                // want of the key would start work nobody asked for.
                 issues.append(SpeakerAnalysisIssue(
                     callID: call.id, startedAt: call.startedAt, canRetry: hasAudio && !busy,
                     audioAvailable: hasAudio,
+                    waitedForVoiceIdentity: SpeakerAnalysisIssue.waitedForVoiceIdentity(
+                        details: event?.details,
+                        summary: event?.summary,
+                    ),
                     message: busy ? "Detecting speakers…" : hasAudio
                         ? "Speaker detection failed. Audio and text are safe."
                         : "Speaker labels are missing. The original audio is no longer available.",
-                    details: event?.details ?? event?.summary
+                    details: event?.details ?? event?.summary,
                 ))
             }
             speakerAnalysisIssues = issues
@@ -3958,13 +3984,59 @@ final class AppModel {
         await refreshSpeakerReviews()
         await refreshSpeakerReviewEvidence()
         await reconcileSharedSpeakersNow(announceWhenClean: false)
+        await finishCallsWaitingForVoiceIdentity()
+    }
+
+    /// Asks again for the calls that were waiting for the voice-profile key to be read.
+    ///
+    /// A separation that ran while the profiles could not be opened failed the call outright. On
+    /// 2026-09-24 the 11:13 call was refused five times over half an hour while macOS waited for an
+    /// answer to its dialog, and when the key was finally read nothing asked again, so a call whose
+    /// only problem had been the locked key stayed failed. Reading the key is the moment that
+    /// reason goes away, which makes it the moment to ask.
+    private func finishCallsWaitingForVoiceIdentity() async {
+        guard let store else { return }
+        await refreshSpeakerAnalysisIssues()
+        let waiting = speakerAnalysisIssues.filter { $0.canRetry && $0.waitedForVoiceIdentity }
+        guard !waiting.isEmpty else { return }
+        var queued = 0
+        for issue in waiting {
+            do {
+                _ = try await store.requestSpeakerAnalysis(callID: issue.callID)
+                queued += 1
+            } catch {
+                report(error, context: "Speaker Detection After Key Read", category: .processing)
+            }
+        }
+        guard queued > 0 else { return }
+        recoveryMessage = queued == 1
+            ? "Separating the voices of the call that was waiting for the key."
+            : "Separating the voices of " + String(queued) + " calls that were waiting for the key."
+        await processor?.processNext()
     }
 
     private func speakerStoreUnavailable(_ error: any Error) {
         speakerStore = nil
+        guard !Self.isDeclinedKeychainRead(error) else {
+            // The dialog was answered with Cancel. Nothing is broken and the key is where it was,
+            // so this is a wait for permission rather than a fault, and it is not written down as
+            // the app's last error: on 2026-09-24 a cancelled dialog did that and woke the fault
+            // watcher, which is built to wake on faults and not on choices.
+            voiceIdentityError = nil
+            setVoiceIdentityState(.waitingForPermission)
+            return
+        }
         voiceIdentityError = DiagnosticsReporter.redacted(error: String(reflecting: error))
         setVoiceIdentityState(.unavailable)
         report(error, context: "Voice Identity Startup", category: .processing)
+    }
+
+    /// Whether a keychain read was declined rather than failed.
+    ///
+    /// Written out because both places that read the key need the same answer: the launch read and
+    /// the one the user starts from a surface.
+    private static func isDeclinedKeychainRead(_ error: any Error) -> Bool {
+        (error as? VoiceprintKeyStoreError)?.isUserDecline == true
     }
 
     private func ensureLocalParticipant(in store: CallStore) async throws {
@@ -4206,6 +4278,7 @@ final class AppModel {
                 startedAt: Date(timeIntervalSinceNow: -3_600 * 20),
                 canRetry: true,
                 audioAvailable: true,
+                waitedForVoiceIdentity: false,
                 message: "Speaker detection failed. Audio and text are safe.",
                 details: nil
             )
@@ -5193,7 +5266,15 @@ final class AppModel {
             voiceIdentityError = nil
             setVoiceIdentityState(.available)
             recoveryMessage = "Voice identity recovered."
+            await finishCallsWaitingForVoiceIdentity()
         } catch {
+            guard !Self.isDeclinedKeychainRead(error) else {
+                // Answered with Cancel: the key stays where it is and the next attempt asks again.
+                voiceIdentityError = nil
+                setVoiceIdentityState(.waitingForPermission)
+                recoveryMessage = "Voice profiles were not unlocked. Try again when you are ready."
+                return
+            }
             voiceIdentityError = DiagnosticsReporter.redacted(
                 error: String(reflecting: error)
             )

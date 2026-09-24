@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import Testing
 @testable import CallRecorderCore
 
@@ -29,6 +30,21 @@ struct VoiceprintCipherTests {
         #expect(throws: VoiceprintCipherError.invalidEnvelope) {
             try cipher?.open(Data("not-an-envelope".utf8), modelVersion: "model-v1")
         }
+    }
+
+    @Test("a cancelled keychain dialog is read as a decision rather than as a fault")
+    func aCancelledDialogIsADecision() {
+        // -128 is what the keychain answers when the person pressed Cancel in the access dialog.
+        #expect(VoiceprintKeyStoreError.inaccessible(errSecUserCanceled).isUserDecline)
+
+        // Everything else is a fault that has to be reported: a locked keychain, a refused
+        // password, a key that is not there, a key of the wrong size.
+        #expect(!VoiceprintKeyStoreError.inaccessible(errSecInteractionNotAllowed).isUserDecline)
+        #expect(!VoiceprintKeyStoreError.inaccessible(errSecAuthFailed).isUserDecline)
+        #expect(!VoiceprintKeyStoreError.missingKey.isUserDecline)
+        #expect(!VoiceprintKeyStoreError.invalidStoredKey.isUserDecline)
+        #expect(!VoiceprintKeyStoreError.generationFailed(errSecUserCanceled).isUserDecline)
+        #expect(!VoiceprintKeyStoreError.fileUnavailable(-128).isUserDecline)
     }
 
     private func littleEndianData(_ value: Float) -> Data {
