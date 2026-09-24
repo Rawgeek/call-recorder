@@ -43,6 +43,21 @@ public struct SpeakerProfile: Equatable, Sendable {
     }
 }
 
+/// What a voice is called when nobody has named it.
+///
+/// The number is the transcript's, which counts a call's voices from one in the order they were
+/// first heard. The stored label is the separation's own name for a voice ("SPEAKER_07"), and it
+/// does not follow that count: the separation renumbers its voices by when each one first spoke, so
+/// the first voice of a call can carry the label SPEAKER_07. On 2026-09-24 the picture was numbered
+/// by the voice's place and the card under it by that label, so one voice read as "Speaker 0" above
+/// and "Speaker 7" below, and the transcript of the call called it a third thing.
+public enum SpeakerVoiceName {
+    /// The number a transcript writes for a voice with no name: its place plus one.
+    public static func numbered(_ speakerIndex: Int) -> String {
+        "Speaker \(speakerIndex + 1)"
+    }
+}
+
 /// The cards one call shows: the voice the user just clicked, then the voices still waiting.
 ///
 /// A voice named on an earlier pass has no card of its own, so a row on the picture that opened
@@ -52,6 +67,21 @@ public struct SpeakerProfile: Equatable, Sendable {
 /// listed twice: the click asks for that voice's samples and its picker under the picture, and a
 /// voice that is already waiting has both, so leaving it where it was answers with nothing.
 public enum SpeakerReviewList {
+    /// The voices of a call the window has to be ready to act on: every voice it draws.
+    ///
+    /// A named voice has no card until it is clicked on the picture, and the card it gets then reads
+    /// its samples out of the evidence the window loaded for it. Loading evidence for the waiting
+    /// voices alone drew "Loading samples…" under a clicked name on 2026-09-24 and nothing ever
+    /// loaded it. The store answers with every voice of the call; when it cannot be read, the
+    /// waiting voices are what is left to draw.
+    public static func windowVoices(
+        waiting: [SpeakerReviewItem],
+        everyVoice: [SpeakerReviewItem]?
+    ) -> [SpeakerReviewItem] {
+        guard let everyVoice, !everyVoice.isEmpty else { return waiting }
+        return everyVoice
+    }
+
     public static func cards(
         waiting: [SpeakerReviewItem],
         selected: SpeakerReviewItem?,

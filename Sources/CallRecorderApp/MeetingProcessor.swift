@@ -134,23 +134,51 @@ actor MeetingProcessor {
                     await onChange?()
                 } catch is CancellationError {
                     // A stopped stage is not a failure: the call goes back to the queue with
-                    // everything it already has, and the surface that stopped it is told.
-                    try await store.stopProcessingJob(
-                        callID: job.callID,
-                        stage: job.stage
-                    )
+                    // everything it already has, and the surface that stopped it is told. The claim
+                    // can already be back in the queue by the time the stage notices, because the
+                    // surface that stopped it puts it there: that is the same answer and not a
+                    // second fault. On 2026-09-24 it was thrown out of here, which ended the drain
+                    // and logged "Processor loop failed" over a call that was exactly where it
+                    // belonged, and left the surface that stopped it waiting for an answer that
+                    // never came.
+                    do {
+                        try await store.stopProcessingJob(
+                            callID: job.callID,
+                            stage: job.stage
+                        )
+                    } catch CallStoreError.processingJobNotClaimed(let callID) {
+                        logger.notice(
+                            """
+                            Call \(callID.rawValue.uuidString, privacy: .public) was already back \
+                            in the queue when its stopped stage ended
+                            """
+                        )
+                    }
                     await onStageCancelled?(job.callID)
                     await onChange?()
                     return
                 } catch {
                     let details = DiagnosticsReporter.redacted(error: String(reflecting: error))
-                    _ = try await store.failProcessingJob(
-                        callID: job.callID,
-                        stage: job.stage,
-                        summary: "Background processing failed.",
-                        errorType: String(describing: type(of: error)),
-                        details: details
-                    )
+                    // A stage whose claim is already gone is not this stage's failure to record: a
+                    // pass that rewrote the transcript while it ran has queued the call again, and
+                    // the queue holds it. Throwing out of here ended the drain over a call that was
+                    // in the right state, so it is reported and the loop goes on.
+                    do {
+                        _ = try await store.failProcessingJob(
+                            callID: job.callID,
+                            stage: job.stage,
+                            summary: "Background processing failed.",
+                            errorType: String(describing: type(of: error)),
+                            details: details
+                        )
+                    } catch CallStoreError.processingJobNotClaimed(let callID) {
+                        logger.notice(
+                            """
+                            Call \(callID.rawValue.uuidString, privacy: .public) was queued again \
+                            while its stage failed; the queue keeps it
+                            """
+                        )
+                    }
                     await onChange?()
                     logger.error("Call \(job.callID.rawValue.uuidString, privacy: .public) stage \(job.stage.rawValue, privacy: .public) failed: \(details, privacy: .public)")
                 }

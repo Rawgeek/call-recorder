@@ -1170,6 +1170,63 @@ final class AppModel {
         }
     }
 
+    /// One call's voices, read once: which voice is which, where each one spoke, and what to play.
+    struct SpeakerCallReading {
+        /// Every voice the window can draw, by cluster.
+        var voices: [SpeakerClusterID: SpeakerReviewItem] = [:]
+        /// The samples of every one of those voices, by cluster.
+        var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
+        var timeline = SpeakerTimeline(lanes: [], durationMs: 0)
+        var audioURL: URL?
+    }
+
+    /// Reads one call's voices for the window.
+    ///
+    /// Shared by the window's own load and by the invented call a render draws, so a render runs the
+    /// rule the window runs rather than a kinder one of its own. The rule is that the samples of
+    /// every voice the picture draws are loaded, not only the ones still waiting to be named: a
+    /// named voice has no card until it is clicked, and the card it gets then reads its samples out
+    /// of this evidence. Loading it for the waiting voices alone left a clicked name saying "Loading
+    /// samples…" for ever on 2026-09-24, and a seed that built evidence for all of its own voices
+    /// drew a picture in which that fault could not be seen.
+    func speakerCallReading(
+        callID: CallID,
+        document: NormalizedTranscript,
+        callDirectory: URL,
+        waiting: [SpeakerReviewItem],
+        everyVoice: [SpeakerReviewItem]?,
+        overrides: [SpeakerLineOverride] = []
+    ) -> SpeakerCallReading {
+        let windowVoices = SpeakerReviewList.windowVoices(
+            waiting: waiting,
+            everyVoice: everyVoice
+        )
+        var reading = SpeakerCallReading()
+        for voice in windowVoices { reading.voices[voice.clusterID] = voice }
+        reading.timeline = SpeakerTimeline.build(
+            segments: document.segments,
+            reviews: windowVoices
+        )
+        reading.audioURL = SpeakerReviewPlayback.resolveAudio(
+            callID: callID,
+            callDirectory: callDirectory,
+            recoverableArtifacts: recoverableArtifacts,
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+        )
+        for voice in windowVoices {
+            var item = SpeakerReviewPlayback.evidence(
+                for: voice,
+                transcript: document,
+                callDirectory: callDirectory,
+                recoverableArtifacts: recoverableArtifacts,
+                fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+            )
+            item.overrides = overrides
+            reading.evidence[voice.clusterID] = item
+        }
+        return reading
+    }
+
     func refreshSpeakerReviewEvidence() async {
         guard let store else {
             speakerReviewEvidence = [:]
@@ -1203,40 +1260,20 @@ final class AppModel {
                 let callDirectory = call.audioPath
                     .map { URL(filePath: $0).deletingLastPathComponent() }
                     ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
-                // The picture the user names voices from: every voice the call holds, against
-                // the recording they are in. The reviews are the voices still waiting, so a row
-                // can say which one it belongs to; the voices already named are read as well, or
-                // their rows would be the only ones on the picture that cannot be corrected.
-                var timelineVoices = reviews
-                if let speakerStore, let everyVoice = try? await speakerStore.reviews(for: callID) {
-                    timelineVoices = everyVoice
-                }
-                for voice in timelineVoices { byCluster[voice.clusterID] = voice }
-                timelines[callID] = SpeakerTimeline.build(
-                    segments: document.segments,
-                    reviews: timelineVoices
-                )
-                if let audio = SpeakerReviewPlayback.resolveAudio(
-                    callID: callID,
-                    callDirectory: callDirectory,
-                    recoverableArtifacts: recoverableArtifacts,
-                    fileExists: { FileManager.default.fileExists(atPath: $0.path) }
-                ) {
-                    audioURLs[callID] = audio
-                }
-                for review in reviews {
-                    evidence[review.clusterID] = SpeakerReviewPlayback.evidence(
-                        for: review,
-                        transcript: document,
-                        callDirectory: callDirectory,
-                        recoverableArtifacts: recoverableArtifacts,
-                        fileExists: { FileManager.default.fileExists(atPath: $0.path) }
-                    )
-                }
+                let everyVoice = try? await speakerStore?.reviews(for: callID)
                 let overrides = (try? await store.speakerLineOverrides(callID: callID)) ?? []
-                for review in reviews {
-                    evidence[review.clusterID]?.overrides = overrides
-                }
+                let reading = speakerCallReading(
+                    callID: callID,
+                    document: document,
+                    callDirectory: callDirectory,
+                    waiting: reviews,
+                    everyVoice: everyVoice,
+                    overrides: overrides
+                )
+                byCluster.merge(reading.voices) { _, new in new }
+                evidence.merge(reading.evidence) { _, new in new }
+                timelines[callID] = reading.timeline
+                audioURLs[callID] = reading.audioURL
             } catch {
                 report(error, context: "Speaker Review Evidence", category: .processing)
             }
@@ -4325,20 +4362,28 @@ final class AppModel {
             if person == nil { waitingItems.append(review) }
         }
         speakerReviews = waitingItems
-        speakerReviewsByCluster = byCluster
-        for review in byCluster.values {
-            speakerReviewEvidence[review.clusterID] = SpeakerReviewPlayback.Evidence(
-                excerpts: SpeakerReviewPlayback.excerpts(
-                    from: segments,
-                    speakerIndex: review.speakerIndex
-                ),
-                audioURL: nil
-            )
-        }
-        speakerTimelines[callID] = SpeakerTimeline.build(
-            segments: segments,
-            reviews: Array(byCluster.values)
+        // The samples, the picture, and the recording of every voice, read by the same rule the
+        // window reads a real call by. A seed that built its own evidence for every one of its
+        // voices drew a picture the window could not draw, and the fault in the rule (evidence
+        // loaded for the waiting voices alone, so a clicked name said "Loading samples…" for ever)
+        // stayed invisible in every render of this window.
+        let reading = speakerCallReading(
+            callID: callID,
+            document: NormalizedTranscript(
+                callId: callID.rawValue.uuidString,
+                language: "en",
+                model: "preview",
+                participants: [],
+                glossary: [],
+                segments: segments
+            ),
+            callDirectory: Self.previewHomeDirectory() ?? URL(filePath: NSTemporaryDirectory()),
+            waiting: waitingItems,
+            everyVoice: Array(byCluster.values)
         )
+        speakerReviewsByCluster = reading.voices
+        speakerReviewEvidence = reading.evidence
+        speakerTimelines[callID] = reading.timeline
         previewSeededReviewCard = true
     }
 

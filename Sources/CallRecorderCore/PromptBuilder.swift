@@ -404,9 +404,9 @@ public enum TranscriptRenderer {
             if let name = segment.speakerName {
                 speakerTag = "**\(name)**: "
             } else if let idx = segment.speakerIndex {
-                speakerTag = "**Speaker \(idx + 1)**: "
+                speakerTag = "**\(SpeakerVoiceName.numbered(idx))**: "
             } else if segment.source == .system {
-                speakerTag = "**Speaker 1**: "
+                speakerTag = "**\(SpeakerVoiceName.numbered(0))**: "
             } else if segment.source == nil && !hasDiarization && participants.count == 1 {
                 speakerTag = "**\(participants[0].name)**: "
             } else {

@@ -223,6 +223,80 @@ struct MeetingProcessorTests {
         #expect(await stopped.callIDs == [fixture.callID])
     }
 
+    @Test("a stage stopped after its claim is already back in the queue still tells the surface")
+    func aStopAfterTheClaimIsGoneKeepsTheLoop() async throws {
+        // Given a call whose transcription is running, and a surface that put the claim back in the
+        // queue before the stage noticed it had been stopped
+        let fixture = try await processorFixture()
+        let store = fixture.store
+        _ = try #require(try await store.claimNextProcessingJob(executableOnly: true))
+        _ = try await store.advanceProcessingJob(
+            callID: fixture.callID,
+            from: .queued,
+            to: .transcribing
+        )
+        let stopped = CancelledStageRecorder()
+
+        // When the stage ends as stopped
+        let processor = MeetingProcessor(
+            store: store,
+            runStage: { job in
+                guard job.stage == .transcribing else { throw FixtureProcessingError(message: "unexpected stage") }
+                try await store.stopProcessingJob(callID: job.callID, stage: job.stage)
+                throw CancellationError()
+            },
+            onStageCancelled: { callID in await stopped.record(callID) }
+        )
+        await processor.processNext()
+        await processor.waitUntilIdle()
+
+        // Then the surface that stopped it is told, and the loop went on instead of ending: the
+        // second put-back found the claim already in the queue, and throwing that out of the loop
+        // logged "Processor loop failed" over a call that was exactly where it belonged.
+        #expect(await stopped.callIDs == [fixture.callID])
+        let job = try #require(try await store.processingJobs().first)
+        #expect(job.executionState == .pending)
+    }
+
+    @Test("a stage that fails after its claim is gone does not fail the processor loop")
+    func aFailureAfterTheClaimIsGoneKeepsTheLoop() async throws {
+        // Given a call whose transcription is running, and a pass that queued it again while the
+        // stage ran, so the claim it holds is gone
+        let fixture = try await processorFixture()
+        let store = fixture.store
+        _ = try #require(try await store.claimNextProcessingJob(executableOnly: true))
+        _ = try await store.advanceProcessingJob(
+            callID: fixture.callID,
+            from: .queued,
+            to: .transcribing
+        )
+        let changes = ChangeCounter()
+        let runs = RunCounter()
+
+        // When the first pass of the stage fails on its own account, and the pass the queue asks
+        // for afterwards is the one that does the work
+        let processor = MeetingProcessor(
+            store: store,
+            runStage: { job in
+                guard job.stage == .transcribing else { throw FixtureProcessingError(message: "unexpected stage") }
+                guard try await runs.next() > 1 else {
+                    try await store.stopProcessingJob(callID: job.callID, stage: job.stage)
+                    throw FixtureProcessingError(message: "boom")
+                }
+                return .diarizing
+            },
+            onChange: { await changes.record() }
+        )
+        await processor.processNext()
+        await processor.waitUntilIdle()
+
+        // Then the call moved on rather than the drain ending: the failure the store could not
+        // record (its claim was gone) did not take the loop with it.
+        let job = try #require(try await store.processingJobs().first)
+        #expect(job.stage == .diarizing)
+        #expect(await changes.count > 0)
+    }
+
     private func processorFixture() async throws -> (
         store: CallStore,
         callID: CallID,
@@ -282,6 +356,24 @@ private actor CancelledStageRecorder {
 
     func record(_ callID: CallID) {
         callIDs.append(callID)
+    }
+}
+
+private actor ChangeCounter {
+    private(set) var count = 0
+
+    func record() {
+        count += 1
+    }
+}
+
+private actor RunCounter {
+    private var runs = 0
+
+    /// The number of the run that is starting, counting from one.
+    func next() -> Int {
+        runs += 1
+        return runs
     }
 }
 

@@ -4,6 +4,34 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.29] - 2026-09-24
+
+A voice on the picture carries one number wherever it is read, the samples are ready for every voice
+the picture draws, and a stage stopped while its claim is already back in the queue no longer ends
+the processor loop.
+
+### Fixed
+
+- **A voice clicked on the picture has its samples.** The window loaded the samples of the voices
+  still waiting to be named, and a voice named on an earlier pass has no card until it is clicked.
+  The card it gets then said "Loading samples…" and nothing ever loaded it, which is what it did on
+  the 2026-09-24 calls. The samples of every voice the picture draws are loaded now, by the same
+  rule that builds the picture, so a row and the card it opens cannot disagree about which voice
+  they are.
+- **One voice, one number.** The picture numbered a voice by its place, the card under it by the
+  separation's own label, and the transcript counted from one. A real call made all three disagree:
+  the first voice of the 2026-09-23 14:16 call carries the label SPEAKER_07, so its row read
+  "Speaker 0" and the card opened from it read "Speaker 7", while the transcript said "Speaker 1".
+  Every surface now writes the number the transcript writes, which is the voice's place plus one,
+  and the stored label stays what it always was: the separation's internal name for a voice.
+- **A stopped stage whose claim is already back in the queue no longer ends the processor loop.**
+  The surface that stops a stage puts the claim back in the queue, and the stage then ends itself;
+  the loop asked the store to put that same claim back a second time, was told no row was running,
+  and threw that out of the loop, which ended the drain and logged "Processor loop failed" over a
+  call that was exactly where it belonged: the 2026-09-24 report. The same is true of a stage that
+  fails after its claim has gone, which a transcript rewrite causes. Both are reported and the loop
+  goes on, and the surface that stopped the work is still told.
+
 ## [0.1.28] - 2026-09-24
 
 The picture of a call draws every voice the call holds, and clicking one opens that voice directly

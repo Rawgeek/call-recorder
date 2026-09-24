@@ -318,11 +318,14 @@ enum SnapshotRunner {
         // which is the other state a pointer reaches and a render cannot: the stroke on the row and
         // on its card, the card moved to the top of the list, and what a voice that already carries
         // a name offers. Both ask for the same seed, because both draw the invented call.
+        // A clicked voice is drawn without the seed on purpose: the invented call carries evidence
+        // for every one of its voices, so a render of it cannot show whether the window a real
+        // library opens has the samples ready for the voice that was clicked.
         let movedLines = ProcessInfo.processInfo.environment["CALL_RECORDER_MOVED_LINES"] == "1"
         let clickedVoice = ProcessInfo.processInfo.environment["CALL_RECORDER_CLICKED_VOICE"]
             .flatMap(Int.init)
         if movedLines || clickedVoice != nil {
-            settle { await model.seedPreviewReviewCard() }
+            if movedLines { settle { await model.seedPreviewReviewCard() } }
             if movedLines {
                 render(
                     SpeakerReviewView(model: model),

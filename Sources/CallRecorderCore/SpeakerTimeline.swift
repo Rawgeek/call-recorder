@@ -64,7 +64,7 @@ public struct SpeakerTimeline: Equatable, Sendable {
         /// otherwise. The number is the one the transcript carries, which is also the one the
         /// card for this voice shows.
         public var label: String {
-            guard let name, !name.isEmpty else { return "Speaker \(speakerIndex)" }
+            guard let name, !name.isEmpty else { return SpeakerVoiceName.numbered(speakerIndex) }
             return name
         }
 

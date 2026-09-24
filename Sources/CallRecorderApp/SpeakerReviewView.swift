@@ -632,7 +632,7 @@ struct SpeakerReviewView: View {
                 ) {
                     participantPill(for: review)
                 }
-                .accessibilityLabel("Participant for \(review.speakerLabel)")
+                .accessibilityLabel("Participant for \(displayLabel(review))")
 
                 CRButton(
                     title: busy ? "Saving…" : (isDecided(review) ? "Reassign" : "Confirm"),
@@ -644,7 +644,7 @@ struct SpeakerReviewView: View {
                 }
                 .disabled(selection(for: review).wrappedValue == nil || busy)
                 .help(confirmHelp(review))
-                .accessibilityLabel("Confirm \(review.speakerLabel)")
+                .accessibilityLabel("Confirm \(displayLabel(review))")
 
                 if isDecided(review) {
                     // The only way back for a name that was decided on an earlier pass. Without it
@@ -654,13 +654,13 @@ struct SpeakerReviewView: View {
                     }
                     .disabled(busy)
                     .help("Takes the name off this voice and puts it back among the voices to name.")
-                    .accessibilityLabel("Return \(review.speakerLabel) to review")
+                    .accessibilityLabel("Return \(displayLabel(review)) to review")
                 } else {
                     CRButton(title: "Keep Anonymous", kind: .secondary) {
                         model.keepSpeakerUnknown(review)
                     }
                     .disabled(busy)
-                    .accessibilityLabel("Keep \(review.speakerLabel) anonymous")
+                    .accessibilityLabel("Keep \(displayLabel(review)) anonymous")
                 }
             }
             if let taken = alreadyNamedWarning(for: review) {
@@ -1052,10 +1052,13 @@ struct SpeakerReviewView: View {
 
     /// Turns the diarizer's "SPEAKER_02" into "Speaker 2". The raw label is an internal
     /// identifier, and a person naming a voice should not have to read one.
+    /// What this voice is called on its card.
+    ///
+    /// The number is the transcript's, so a card and the row it was opened from carry the same one,
+    /// and the words of that voice in the saved transcript are numbered the same way. The stored
+    /// label is the separation's own name for the voice and does not follow that count.
     private func displayLabel(_ review: SpeakerReviewItem) -> String {
-        let raw = review.speakerLabel
-        guard let number = Int(raw.filter(\.isNumber)) else { return raw }
-        return "Speaker \(number)"
+        SpeakerVoiceName.numbered(review.speakerIndex)
     }
 
     /// The colour the timeline draws this voice in.

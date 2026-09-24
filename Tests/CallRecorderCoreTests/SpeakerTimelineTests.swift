@@ -359,7 +359,58 @@ struct SpeakerTimelineTests {
         ])
 
         #expect(timeline.lane(for: 3)?.label == "Dana Holt")
-        // The other voice has no name yet, and a row that cannot be read is not a row.
-        #expect(timeline.lane(for: 4)?.label == "Speaker 4")
+        // The other voice has no name yet, and a row that cannot be read is not a row. It is
+        // numbered the way the transcript numbers it: the fifth voice of the call is Speaker 5.
+        #expect(timeline.lane(for: 4)?.label == "Speaker 5")
+    }
+
+    @Test("a voice is numbered the way the transcript numbers it, not the way its label reads")
+    func aVoiceIsNumberedLikeTheTranscript() {
+        // The separation names its own clusters and renumbers them by when each voice first spoke,
+        // so the twelfth voice of a call can carry the label SPEAKER_13. The stored label is not
+        // what the transcript writes and not what the picture draws: a card opened from a row said
+        // "Speaker 13" over a row that said "Speaker 11" on 2026-09-24.
+        let review = SpeakerReviewItem(
+            clusterID: SpeakerClusterID(rawValue: UUID()),
+            callID: CallID(rawValue: UUID()),
+            speakerIndex: 11,
+            speakerLabel: "SPEAKER_13",
+            speechDurationMilliseconds: 23_660,
+            suggestedParticipantID: nil,
+            state: .unknown,
+            createdAt: Date()
+        )
+        let timeline = SpeakerTimeline.build(
+            segments: [turn(1_000, 2_000, voice: 11)],
+            reviews: [review]
+        )
+
+        #expect(SpeakerVoiceName.numbered(11) == "Speaker 12")
+        #expect(timeline.lane(for: 11)?.label == "Speaker 12")
+    }
+
+    @Test("the window loads samples for every voice it draws, not only the waiting ones")
+    func theWindowIsReadyForEveryVoiceItDraws() {
+        let callID = CallID(rawValue: UUID())
+        let waiting = item(callID: callID, voice: 3, state: .unknown)
+        let named = item(callID: callID, voice: 12, state: .automatic)
+        let everyVoice = [waiting, named]
+
+        // A named voice has no card until it is clicked, and the card it gets reads its samples out
+        // of the evidence loaded for it: a window that loaded only the waiting voices drew "Loading
+        // samples…" under a clicked name and never loaded it.
+        #expect(
+            SpeakerReviewList.windowVoices(waiting: [waiting], everyVoice: everyVoice)
+                .map(\.clusterID) == [waiting.clusterID, named.clusterID]
+        )
+        // A store that cannot be read leaves the waiting voices as the voices to draw.
+        #expect(
+            SpeakerReviewList.windowVoices(waiting: [waiting], everyVoice: nil)
+                .map(\.clusterID) == [waiting.clusterID]
+        )
+        #expect(
+            SpeakerReviewList.windowVoices(waiting: [waiting], everyVoice: [])
+                .map(\.clusterID) == [waiting.clusterID]
+        )
     }
 }
