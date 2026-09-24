@@ -21,27 +21,58 @@ enum MediaFinalizerError: LocalizedError {
 struct FinalizedAudioSources: Equatable, Sendable {
     let system: URL?
     let microphone: URL?
-    let compatibilityMix: URL
 }
 
 struct MediaFinalizer: Sendable {
     let ffmpeg: URL
     let ffprobe: URL
 
-    func finalize(segments: [CaptureSegment], destination: URL) async throws -> URL {
-        try await finalizeSources(segments: segments, destination: destination).compatibilityMix
-    }
-
-    func finalizeSources(
+    /// Writes the two sides of a call as files anything can read, and nothing else.
+    ///
+    /// This is what the pipeline reads: the transcriber takes the system and microphone files
+    /// apart, and the diarizer works on the system side. Nothing is mixed here,
+    /// because a mix is a second encode of the whole call and no part of the transcript needs it —
+    /// see `writeCompatibilityMix`.
+    func finalizeTracks(
         segments: [CaptureSegment],
         destination: URL
     ) async throws -> FinalizedAudioSources {
         try await Task.detached {
-            try finalizeSourcesSynchronously(segments: segments, destination: destination)
+            try finalizeTracksSynchronously(segments: segments, destination: destination)
         }.value
     }
 
-    private func finalizeSourcesSynchronously(
+    /// Writes the one file a person plays a call from, out of the two sides already on disk.
+    ///
+    /// This is the expensive half: both sides are decoded, mixed, and encoded again, and an hour of
+    /// call costs minutes of work. It is therefore not part of finalizing a recording. It runs once
+    /// the person has chosen to keep the audio, after the transcript is written, and it returns the
+    /// file that is already there rather than writing it twice.
+    func writeCompatibilityMix(
+        system: URL?,
+        microphone: URL?,
+        destination: URL
+    ) async throws -> URL {
+        try await Task.detached {
+            try finalizeCompatibilityMix(
+                system: system,
+                microphone: microphone,
+                destination: destination
+            )
+        }.value
+    }
+
+    /// The sides of a finished call that are on disk, under the names this class writes.
+    static func existingTracks(in directory: URL) -> (system: URL?, microphone: URL?) {
+        let system = directory.appending(path: "system.m4a")
+        let microphone = directory.appending(path: "microphone.m4a")
+        return (
+            FileManager.default.fileExists(atPath: system.path) ? system : nil,
+            FileManager.default.fileExists(atPath: microphone.path) ? microphone : nil
+        )
+    }
+
+    private func finalizeTracksSynchronously(
         segments: [CaptureSegment],
         destination: URL
     ) throws -> FinalizedAudioSources {
@@ -64,16 +95,7 @@ struct MediaFinalizer: Sendable {
             timelineOrigin: timelineOrigin
         )
         guard system != nil || microphone != nil else { throw MediaFinalizerError.noSegments }
-        let compatibilityMix = try finalizeCompatibilityMix(
-            system: system,
-            microphone: microphone,
-            destination: destination
-        )
-        return FinalizedAudioSources(
-            system: system,
-            microphone: microphone,
-            compatibilityMix: compatibilityMix
-        )
+        return FinalizedAudioSources(system: system, microphone: microphone)
     }
 
     private func finalizeTrack(
@@ -96,7 +118,15 @@ struct MediaFinalizer: Sendable {
         let partialURL = destination.appending(path: ".\(stem)-\(token).partial.m4a")
         defer { try? FileManager.default.removeItem(at: partialURL) }
 
-        if
+        // One source is the whole track, so it is copied rather than decoded and written out as a
+        // wave. A copy is a remux, which finishes at once; a wave is a gigabyte of writes with a
+        // second encode behind it. This is the shape of every call without a pause, and the copy
+        // used to be taken only when the manifest arrived with durations — which a finished
+        // recording never has. The 2026-09-21 call paid for that: the wait before its transcript
+        // started was three passes over an hour and twelve minutes of audio.
+        if sources.count == 1, try canBeCopiedIntoM4A(sources[0].fileURL) {
+            try copyTrack(sources[0].fileURL, to: partialURL)
+        } else if
             let timelineOrigin,
             sources.allSatisfy({
                 $0.durationSeconds > 0
@@ -104,15 +134,9 @@ struct MediaFinalizer: Sendable {
                     && $0.firstPresentationSeconds.isFinite
             })
         {
-            // One segment needs no timeline work, so nothing here has to be decoded. Copying gives
-            // the same audio without a second lossy pass, and it turns an encode that runs for as
-            // long as the call did into a remux that finishes at once. Every call without a pause
-            // arrives here.
-            if sources.count == 1, try canBeCopiedIntoM4A(sources[0].fileURL) {
-                try copyTrack(sources[0].fileURL, to: partialURL)
-            } else {
-                try renderTimeline(sources, origin: timelineOrigin, to: partialURL)
-            }
+            // Several pieces of one side are laid on the timeline of the recording and encoded
+            // once, rather than each being written out as a wave and read back to be joined.
+            try renderTimeline(sources, origin: timelineOrigin, to: partialURL)
         } else {
             let waveURLs = sources.indices.map {
                 destination.appending(path: ".finalizing-\(stem)-\(token)-\($0).wav")

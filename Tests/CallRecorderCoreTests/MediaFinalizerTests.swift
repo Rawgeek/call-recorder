@@ -28,9 +28,16 @@ struct MediaFinalizerTests {
             return CaptureSegment(index: index + 1, fileURL: url)
         }
 
-        // When
-        let finalURL = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
-            .finalize(segments: segments, destination: directory)
+        // When the recording is finalized, and then the file a person plays it from is asked for.
+        // The mix is a separate step on purpose: it is a second encode of the whole call, and the
+        // transcript is written from the two sides rather than from it.
+        let finalizer = MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
+        let tracks = try await finalizer.finalizeTracks(segments: segments, destination: directory)
+        let finalURL = try await finalizer.writeCompatibilityMix(
+            system: tracks.system,
+            microphone: tracks.microphone,
+            destination: directory
+        )
 
         // Then
         #expect(finalURL == directory.appending(path: "call.m4a"))
@@ -90,13 +97,12 @@ struct MediaFinalizerTests {
 
         // When
         let result = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
-            .finalizeSources(segments: segments, destination: directory)
+            .finalizeTracks(segments: segments, destination: directory)
 
         // Then
         #expect(result.system == directory.appending(path: "system.m4a"))
         #expect(result.microphone == directory.appending(path: "microphone.m4a"))
-        #expect(result.compatibilityMix == directory.appending(path: "call.m4a"))
-        for output in [result.system, result.microphone, result.compatibilityMix].compactMap({ $0 }) {
+        for output in [result.system, result.microphone].compactMap({ $0 }) {
             let probe = try ProcessRunner.run(
                 executable: ffprobe,
                 arguments: [
@@ -141,7 +147,7 @@ struct MediaFinalizerTests {
         }
 
         let result = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
-            .finalizeSources(segments: segments, destination: directory)
+            .finalizeTracks(segments: segments, destination: directory)
         let output = try #require(result.system)
         let probe = try ProcessRunner.runChecked(
             executable: ffprobe,
@@ -194,8 +200,8 @@ struct MediaFinalizerTests {
         ]
 
         // When
-        let result = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
-            .finalizeSources(segments: segments, destination: directory)
+        let finalizer = MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
+        let result = try await finalizer.finalizeTracks(segments: segments, destination: directory)
 
         // Then each track is the recorded stream packet for packet, so nothing was decoded and
         // encoded again on the way to disk.
@@ -207,7 +213,11 @@ struct MediaFinalizerTests {
                 == packetHash(of: microphoneSource, ffmpeg: ffmpeg)
         )
         // And the mix still carries both sides.
-        let mix = try #require(result.compatibilityMix)
+        let mix = try await finalizer.writeCompatibilityMix(
+            system: result.system,
+            microphone: result.microphone,
+            destination: directory
+        )
         let probe = try ProcessRunner.runChecked(
             executable: ffprobe,
             arguments: [
@@ -218,6 +228,48 @@ struct MediaFinalizerTests {
         #expect(
             (Double(probe.standardOutput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0) > 0.15
         )
+    }
+
+    @Test("a track is copied even when the manifest arrives without durations", .enabled(if: TestEnvironment.hasFFmpeg))
+    func copiesATrackWithoutDurations() async throws {
+        // Given one source per side, shaped the way a finished recording hands it over: the URLs,
+        // and no durations, because a queue that carries only paths loses the numbers.
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "no-durations-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let ffmpeg = URL(filePath: "/opt/homebrew/bin/ffmpeg")
+        let ffprobe = URL(filePath: "/opt/homebrew/bin/ffprobe")
+        let systemSource = directory.appending(path: "system-001.m4a")
+        try ProcessRunner.runChecked(
+            executable: ffmpeg,
+            arguments: [
+                "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2",
+                "-c:a", "aac", systemSource.path,
+            ]
+        )
+        let segments = [
+            try CaptureSegment(
+                index: 1,
+                system: CapturedAudioSource(
+                    fileURL: systemSource,
+                    firstPresentationSeconds: 0,
+                    durationSeconds: 0
+                ),
+                microphone: nil
+            )
+        ]
+
+        // When
+        let result = try await MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
+            .finalizeTracks(segments: segments, destination: directory)
+
+        // Then the file is the recorded stream packet for packet: a remux rather than a decode into
+        // a wave with an encode behind it. A zero duration used to send this exact shape to the
+        // wave renderer — the 2026-09-21 call spent minutes there, and the phase it was in read
+        // "Writing the audio file" while it did.
+        let system = try #require(result.system)
+        #expect(try packetHash(of: system, ffmpeg: ffmpeg) == packetHash(of: systemSource, ffmpeg: ffmpeg))
     }
 
     /// The hash of a file's audio packets as they are, without decoding them.

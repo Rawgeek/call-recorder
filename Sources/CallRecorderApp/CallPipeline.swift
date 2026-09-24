@@ -1,5 +1,6 @@
 import CallRecorderCore
 import Foundation
+import OSLog
 
 struct CallPipeline: Sendable {
     let store: CallStore
@@ -14,9 +15,24 @@ struct CallPipeline: Sendable {
         callID: CallID,
         segments: [CaptureSegment],
         destination: URL,
-        endedAt: Date
+        endedAt: Date,
+        keepsAudio: Bool
     ) async throws -> URL {
-        let audio = try await finalizer.finalize(segments: segments, destination: destination)
+        let tracks = try await finalizer.finalizeTracks(
+            segments: segments,
+            destination: destination
+        )
+        // The path the call is played from, and the one the rest of the app reads a call's audio by.
+        //
+        // A call whose audio is kept points at the mixed file, and the pipeline writes that file
+        // once the transcript exists: mixing is a second encode of the whole call, and no stage of
+        // the pipeline reads it — the transcriber reads the two sides apart. A call whose audio is
+        // removed after the transcript points at a side that is on disk right now, so nothing waits
+        // for a file that the next stage moves to Recently Deleted.
+        let audio =
+            keepsAudio
+            ? destination.appending(path: "call.m4a")
+            : (tracks.system ?? tracks.microphone ?? destination.appending(path: "system.m4a"))
         try await store.finalizeAndQueue(
             id: callID,
             endedAt: endedAt,
@@ -74,6 +90,7 @@ struct CallPipeline: Sendable {
         localParticipantID: ParticipantID? = nil,
         usesParticipantCount: Bool = true,
         speakerCountOverride: Int? = nil,
+        timestamps: Bool = false,
         cancellation: ProcessCancellation? = nil
     ) async throws {
         guard let record = try await store.transcript(for: callID) else {
@@ -84,6 +101,16 @@ struct CallPipeline: Sendable {
         )
         let remote = document.segments.filter { $0.source != .microphone }
         guard !remote.isEmpty else { return }
+        // A system track that was written and held no sound is not a side to separate, and it can
+        // still leave a fragment of noise behind: the 2026-09-22 13:44 call holds one period at 104
+        // seconds. A separation over it finds a single voice whose centroid comes back empty, which
+        // ended the pass on that call six times and left a transcribed call that could never be
+        // finished. A fragment too short to hold a turn of its own carries no voice to name, and the
+        // call already carries the one voice that spoke.
+        if SystemAudioCheck.state(in: audioDirectory) == .missing,
+            !remote.contains(where: SegmentMerger.runsLongEnoughForATurn) {
+            return
+        }
         guard let diarizer else { throw DiarizerError.runtimeUnavailable }
         guard let speakerStore else { throw SpeakerReviewError.identityUnavailable }
         let source = audioDirectory.appending(
@@ -93,7 +120,9 @@ struct CallPipeline: Sendable {
             throw BackgroundProcessingError.audioUnavailable
         }
         // A count chosen for this call wins over one the list suggests, and the list is only used
-        // when the recording held room for that many voices. See DiarizationSpeakerCount.
+        // when the recording held room for that many voices. See DiarizationSpeakerCount. A count
+        // is answered exactly, by the slower of the two separations, so a call with no count is
+        // separated by the detector that counts the voices it hears.
         let speakers: Int?
         if let speakerCountOverride {
             speakers = speakerCountOverride
@@ -106,7 +135,7 @@ struct CallPipeline: Sendable {
                 usesParticipantCount: usesParticipantCount
             )
         }
-        let result = try await Task.detached {
+        let detected = try await Task.detached {
             try diarizer.run(
                 audio: source,
                 ffmpeg: finalizer.ffmpeg,
@@ -114,14 +143,64 @@ struct CallPipeline: Sendable {
                 cancellation: cancellation
             )
         }.value
-        guard !result.turns.isEmpty, !result.clusters.isEmpty else {
-            throw DiarizerError.noSpeakersDetected
+        // A separation that answers no voice is an answer, not a fault. The words of the call are
+        // already transcribed, and a track that holds almost no speech has no voice to name: the
+        // 2026-09-24 11:13 call is seventeen seconds of a system track holding one short sound,
+        // which the count-aware separation answered with no voice at all, and this stage failed the
+        // call for that answer. A separation that breaks still throws, because a script that failed
+        // and a script that found nothing are different answers.
+        guard !detected.turns.isEmpty, !detected.clusters.isEmpty else {
+            Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
+                .notice("no voice found on \(callID.rawValue.uuidString, privacy: .public)")
+            return
         }
+        // A voice the pipeline could not embed comes back with its turns and no centroid. It keeps
+        // its place in the transcript and can be named by hand. The count is logged because a
+        // missing centroid is otherwise invisible: the voice is simply never matched to a person,
+        // and the 2026-09-22 13:44 call was stuck at this stage over exactly one such voice.
+        let voicesWithoutCentroid = Set(detected.turns.map(\.speakerLabel))
+            .subtracting(detected.clusters.map(\.speakerLabel))
+        if !voicesWithoutCentroid.isEmpty {
+            Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
+                .notice(
+                    """
+                    \(voicesWithoutCentroid.count, privacy: .public) voice(s) came back with no \
+                    centroid and can only be named by hand
+                    """
+                )
+        }
+        // A voice can come back in pieces: the 2026-09-18 17:47 call has one speaker separated into
+        // two clusters of a hundred and fifty seconds each next to a cluster of twelve minutes of
+        // somebody else. Joining the pieces before anything is named is what stops the review window
+        // offering two people where there is one, and the transcript drawing two names for one voice.
+        let joined = DiarizationVoiceMerge.mergingSplitVoices(detected, policy: policy)
+        if joined.mergedClusters > 0 {
+            Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
+                .notice(
+                    """
+                    joined \(joined.mergedClusters, privacy: .public) voice fragments that sound like one person
+                    """
+                )
+        }
+        let result = joined.result
         let identities = try await SpeakerIdentityAttributor(
             store: store, speakerStore: speakerStore,
             participants: try await store.listParticipants(), policy: policy
         ).resolve(callID: callID, diarization: result)
-        let labelled = SegmentMerger.merge(whisperSegments: remote, diarization: result.turns)
+        // Label the segments with the turn-continuity rules, and say what they changed. The counts
+        // are the evidence a later reading of a bad call needs: a merge that reports 257 label
+        // changes in 277 turns is one whose input was the problem, and one that reports a low number
+        // after the same input is the fix working.
+        let merged = SegmentMerger.merging(whisperSegments: remote, diarization: result.turns)
+        Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
+            .notice(
+                """
+                speaker merge: \(merged.labelChanges, privacy: .public) label changes, \
+                \(merged.snappedSegments, privacy: .public) short fragments held to the voice \
+                before them, \(merged.absorbedRuns, privacy: .public) short runs absorbed
+                """
+            )
+        let labelled = merged.segments
         guard labelled.contains(where: { $0.speakerIndex != nil }) else {
             throw DiarizerError.noSpeakersDetected
         }
@@ -145,7 +224,7 @@ struct CallPipeline: Sendable {
             callID: callID,
             markdownURL: URL(filePath: record.markdownPath), jsonURL: URL(filePath: record.jsonPath),
             renderedMarkdown: TranscriptRenderer.markdown(
-                transcript: transcript, participants: participants
+                transcript: transcript, participants: participants, timestamps: timestamps
             ),
             normalizedJSON: try encoder.encode(updated)
         )

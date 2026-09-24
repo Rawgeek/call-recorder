@@ -153,6 +153,43 @@ struct MeetingProcessorTests {
         #expect(try await fixture.store.indexIsReady(for: fixture.callID) == false)
     }
 
+    @Test("a call queued again while its stage ran stays queued instead of ending the drain")
+    func aSupersededStageDoesNotEndTheDrain() async throws {
+        // Given a call that has reached the indexing stage, and a pass that rewrites its transcript
+        // while that stage runs. Saving a transcript queues the stage again, which takes away the
+        // claim the drain was holding.
+        let fixture = try await processorFixture()
+        var stage = ProcessingStage.queued
+        for nextStage in [ProcessingStage.transcribing, .diarizing, .attributing, .indexing] {
+            _ = try #require(try await fixture.store.claimNextProcessingJob(executableOnly: true))
+            _ = try await fixture.store.advanceProcessingJob(
+                callID: fixture.callID,
+                from: stage,
+                to: nextStage
+            )
+            stage = nextStage
+        }
+        let attemptsBefore = try #require(try await fixture.store.processingJobs().first).attemptCount
+        let requeued = RequeueOnceDuringStage(store: fixture.store, callID: fixture.callID)
+        let processor = MeetingProcessor(store: fixture.store) { _ in
+            guard try await requeued.requeueOnFirstRun() else { throw CancellationError() }
+            return .finalizingArtifacts
+        }
+
+        // When
+        await processor.processNext()
+        await processor.waitUntilIdle()
+
+        // Then the queue kept the call, and the drain reclaimed it: the second claim is what the
+        // count shows, and it is the difference between a call that waits its turn and one that sat
+        // at "Indexing" with every call behind it waiting until the next launch.
+        let job = try #require(try await fixture.store.processingJobs().first)
+        #expect(job.stage == .indexing)
+        #expect(job.executionState == .pending)
+        #expect(job.attemptCount == attemptsBefore + 2)
+        #expect(try await fixture.store.call(id: fixture.callID)?.status == .indexing)
+    }
+
     @Test("a stopped stage waits for the user, and the surface is told")
     func aStoppedStageWaitsForTheUser() async throws {
         // Given a call whose transcription is the stage that is running
@@ -208,6 +245,35 @@ struct MeetingProcessorTests {
         )
         try await store.setParticipants([], for: callID)
         return (store, callID, audio)
+    }
+}
+
+private actor RequeueOnceDuringStage {
+    private let store: CallStore
+    private let callID: CallID
+    private var hasRequeued = false
+
+    init(store: CallStore, callID: CallID) {
+        self.store = store
+        self.callID = callID
+    }
+
+    /// Queues the call's stage again the way a rewritten transcript does, and only once, so the
+    /// drain reclaims the work instead of looping over it.
+    func requeueOnFirstRun() async throws -> Bool {
+        guard !hasRequeued else { return false }
+        hasRequeued = true
+        try await store.saveTranscript(
+            TranscriptRecord(
+                callID: callID,
+                language: "en",
+                model: "test",
+                text: "test",
+                markdownPath: "/tmp/queued-again.md",
+                jsonPath: "/tmp/queued-again.json"
+            )
+        )
+        return true
     }
 }
 

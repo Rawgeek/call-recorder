@@ -36,6 +36,7 @@ final class AudioSampleWriter: @unchecked Sendable {
     private var lastPresentationEnd: CMTime?
     private var appendError: (any Error)?
     private var droppedSamples = 0
+    private var saidUnreadableFormat = false
     private let logger = Logger(subsystem: "local.callrecorder.app", category: "capture")
 
     /// How long a sample may wait for the encoder before it is dropped.
@@ -59,6 +60,17 @@ final class AudioSampleWriter: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         if let appendError { throw appendError }
+        // A description with no rate or no channel in it is not a track that failed: it is one
+        // buffer the capture handed over while the input device was settling, and it is skipped the
+        // way a sample the encoder was late for is skipped below. This writer is asked for its
+        // format by the first buffer it ever sees, so without this the first microphone buffer of a
+        // browser call opens no track and the router cancels that whole side: measured on
+        // 2026-09-23, two calls that had started by themselves carried no channel in that buffer.
+        guard Self.describesATrack(sampleBuffer) else {
+            droppedSamples += 1
+            noteUnreadableFormat()
+            return
+        }
         do {
             let input = try prepareWriter(for: sampleBuffer)
             guard waitForReadiness(input) else {
@@ -210,5 +222,29 @@ final class AudioSampleWriter: @unchecked Sendable {
         firstPresentationTime = presentation
         lastPresentationEnd = presentation
         return input
+    }
+
+    /// Whether a captured buffer carries a format a track can be opened with.
+    ///
+    /// The same two numbers the track's own format hint needs, asked before anything is created: a
+    /// sample rate and at least one channel. A description missing either is one the capture
+    /// handed over while the input device was settling, and it describes no audio to write.
+    private static func describesATrack(_ sampleBuffer: CMSampleBuffer) -> Bool {
+        guard
+            let format = CMSampleBufferGetFormatDescription(sampleBuffer),
+            CMFormatDescriptionGetMediaType(format) == kCMMediaType_Audio,
+            let description = CMAudioFormatDescriptionGetStreamBasicDescription(format)
+        else { return false }
+        return description.pointee.mSampleRate > 0 && description.pointee.mChannelsPerFrame > 0
+    }
+
+    /// Says once what a buffer this writer could not open a track from was made of.
+    ///
+    /// Called with the lock held, and only the first time: the buffers come in real time, and the
+    /// first line already carries the numbers that say which device was settling.
+    private func noteUnreadableFormat() {
+        guard !saidUnreadableFormat else { return }
+        saidUnreadableFormat = true
+        logger.notice("capture skipped a buffer with no usable format; the track waits for one")
     }
 }

@@ -127,15 +127,15 @@ actor BackgroundAudioFinalization {
                 system: snapshot.systemURL.map {
                     CapturedAudioSource(
                         fileURL: $0,
-                        firstPresentationSeconds: 0,
-                        durationSeconds: 0
+                        firstPresentationSeconds: snapshot.systemStartSeconds ?? 0,
+                        durationSeconds: snapshot.systemDurationSeconds ?? 0
                     )
                 },
                 microphone: snapshot.microphoneURL.map {
                     CapturedAudioSource(
                         fileURL: $0,
-                        firstPresentationSeconds: 0,
-                        durationSeconds: 0
+                        firstPresentationSeconds: snapshot.microphoneStartSeconds ?? 0,
+                        durationSeconds: snapshot.microphoneDurationSeconds ?? 0
                     )
                 }
             )
@@ -147,7 +147,8 @@ actor BackgroundAudioFinalization {
             callID: job.callID,
             segments: segments,
             destination: job.destination,
-            endedAt: job.endedAt
+            endedAt: job.endedAt,
+            keepsAudio: job.keepsAudio
         )
     }
 

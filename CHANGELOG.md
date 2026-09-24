@@ -4,6 +4,110 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.23] - 2026-09-24
+
+The voices of a call are named by Nemotron 3, which counts them in seconds where the older separation
+took minutes, and the voice prints the library is taught with are measured by the same embedder as
+before, so the people already named keep matching.
+
+### Changed
+- **The separation is answered by Nemotron 3 Diarization.** The older separation read a call twice
+  over, through a segmentation model and then an embedder, and on this Mac ten minutes of a
+  two-voice call took 57 seconds of that. Nemotron answers who spoke when in one pass: the same ten
+  minutes come back in 24 seconds, and it holds no count to be told. On a system track that was
+  written and holds no sound, and on thirty seconds of digital silence, it answers no voice at all,
+  which is the failure the previous release met with a guard, and the guard now has nothing to
+  guard.
+- **A voice print is still measured by the pyannote community-1 embedder, and its name is
+  unchanged.** A voice print is only compared with one stored under the same name, and the embedder
+  did not change -- only the moments it is asked about. Measured against the older separation on the
+  same calls, one voice's print from its turns and from the older turns is 0.986 to 0.999 alike, and
+  two different people are 0.10 to 0.56 alike, so a person confirmed on an older call is still
+  matched on a call recorded today: the acceptance threshold is 0.82 and the review threshold 0.68.
+- **The number of voices on a call still picks the count-aware separation, and that setting is now
+  off by default.** Only the older separation can be held to a number, and it is the slower one, so
+  a call is separated by the turn model unless the count is asked for: with the setting on, the
+  people on the call decide how many voices are separated, and a number counted in the review window
+  is answered exactly, both as before.
+
+### Added
+- **A call longer than twenty minutes is separated in eight-minute windows, and one voice keeps one
+  name across them.** The turn model's cost grows with the square of the length it is handed:
+  a seventy-minute recording built from two recorded calls took 4.3 GB of memory in one piece and 80
+  seconds, against 2.0 GB and 79 seconds in windows, and the library holds calls of two and a half
+  hours. The voices of one window
+  are joined to the voices of the windows before them by the same rule the app already uses for two
+  pieces of one voice. A voice that never talks alone for a fifth of one ten-second window is
+  measured over every window it talks in, because a voice with no value cannot be joined to its own
+  name and comes back as a second person: that alone turned 11 voices into 9 on the seventy-minute
+  recording, whose older separation found 6.
+
+### Fixed
+- **A separation that answers no voice no longer fails the call.** The 2026-09-24 11:13 call is
+  seventeen seconds long and its other side holds one short sound; the count-aware separation
+  answered no voice at all, and the stage reported the call as failed rather than finishing it.
+  Its words were already transcribed, so the call now finishes with the one voice that spoke, the
+  same way a call whose other side was never captured already did. A separation that breaks still
+  fails: a script that found nothing and a script that stopped are different answers.
+
+## [0.1.22] - 2026-09-23
+
+A call whose other side was never captured is finished with the words it has, instead of asking for
+a separation that can only be given up.
+
+### Fixed
+- **A system track that holds no sound is not a side to separate.** The 2026-09-22 13:44 call had a
+  microphone track and a system track that was written and held nothing; the only thing the other
+  side left in the transcript is one period at 104 seconds. pyannote found a single voice on that
+  track and its centroid came back empty, which ended the pass -- six times, four days apart -- so a
+  call whose words were already transcribed could never be finished. The size of the track is what
+  says it carried no sound, which is the same rule the row's "one side only" note uses, and a
+  remote fragment too short to hold a turn of its own is not a voice to name. The call now finishes
+  with the one voice that spoke, and its audio is cleaned up like any other finished call.
+- **A fragment too short to hold a turn no longer asks for a separation.** The list of calls that
+  need speaker detection counted every remote word with no voice over it, including a fragment that
+  no separation would ever label. Such a call stayed in the list with a Retry that could answer
+  nothing. A remote piece longer than two seconds is a turn waiting for a voice and still counts;
+  anything shorter is passed by, as the separation itself already passes it.
+
+## [0.1.21] - 2026-09-23
+
+A repair the queue already holds is an answer, and one voice the model cannot measure no longer ends
+a call's separation.
+
+### Fixed
+- **A speaker retry on work that is already on its way is no longer kept as a failure.** The store
+  refuses a second request while a pass is queued or running, which is what keeps a retry from
+  interrupting work in flight. The window reported that refusal as an error, so "Retry Speaker
+  Detection" on the 2026-09-18 14:01 call stayed as the app's last error for five days while the job
+  it named finished on its own on 21 September and the call came out fine. The retry now says the
+  voices of the call are already being separated, and it goes ahead as before once the work has
+  stopped. The repair that runs at launch reads the same answer the same way, so a queued job there
+  is no longer reported as a launch failure.
+- **A voice pyannote cannot measure no longer ends the whole separation.** pyannote returns a
+  centroid of the wrong size, or one holding a value that is not a number, for a voice it heard too
+  little of. Raising on it ended the pass, so the 2026-09-22 13:44 call stood at the speaker stage
+  for five attempts, every one of them stopped by a single such voice. The voice is passed over
+  instead: its turns stay in the transcript and it can be named by hand, which is what already
+  happened for a centroid of no length. Only matching that voice to a person is given up, and the
+  app logs how many voices a pass could not measure.
+
+## [0.1.20] - 2026-09-23
+
+A call is kept when the only thing wrong with it is a line the cleaning pass could not have touched.
+
+### Fixed
+- **Six "да" in one breath are speech, not a decoder loop.** The repetition guard, which exists to
+  stop a call being saved full of one phrase the model could not stop saying, counted every start
+  position of a phrase instead of the copies a person would say. Six "да" in a row held four
+  overlapping three-word runs and 53% of the line, so the guard refused it -- and the cleaning pass
+  it is measured against removes copies that sit end to end, so it could remove none of them and the
+  line stayed exactly as it was. On 2026-09-23 the 68 minute call that ran from 14:16 to 15:24 failed
+  transcription twice on one such line in the system track, and its transcript was never written at
+  all. Copies are now counted the way they are taken out: the same line holds three pairs end to
+  end, under the floor, and the recording is transcribed. A word the model really does repeat
+  eighteen times is six pairs end to end, and is still refused.
+
 ## [0.1.19] - 2026-09-18
 
 The model that is already on disk keeps being used after the catalog renames it, so briefs keep

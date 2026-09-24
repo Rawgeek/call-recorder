@@ -35,7 +35,11 @@ public enum TranscriptArtifacts {
     /// that were said twice, because a chunk seam and a room echo write the same sentence into a
     /// transcript once per copy. It travels with this version because it rewrites the same files in
     /// the same pass, and because a library recorded before it exists is owed the same repair.
-    public static let ruleVersion = 5
+    /// Six adds the phrase loop inside a single line: the 2026-09-18 call holds
+    /// "межми грешен был межми грешен межми грешен", three copies of one two-word phrase in one
+    /// segment, which the cross-segment rule could not see. A line that repeats a phrase that many
+    /// times is a decoder stuck on its own output, so the copies after the first go.
+    public static let ruleVersion = 6
 
     /// The time range an early version of the app printed at the front of every paragraph.
     ///
@@ -74,12 +78,135 @@ public enum TranscriptArtifacts {
     /// ordinary and a sentence said five times is a model that has stopped listening.
     public static let loopMinimumRun = 5
 
+    /// The bounds of the phrase the loop search looks for inside one line, in words.
+    ///
+    /// Two words is the shortest phrase that can read as a loop rather than as emphasis: a person
+    /// does say "no, no, no", and a single word is left alone for exactly that reason. Eight keeps
+    /// the search cheap and stops it from calling a long stretch of ordinary speech a loop.
+    static let phraseLoopMinimumWords = 2
+    static let phraseLoopMaximumWords = 8
+
+    /// How many copies of one phrase inside a single line are a fault.
+    static let phraseLoopMinimumCopies = 3
+
+    /// How much of the line the extra copies have to make up before they are a fault.
+    ///
+    /// The 2026-09-18 line spends 4 of its 10 words on copies after the first. A threshold that low
+    /// would fire on a two-word echo in a long paragraph, so the copies must also be a third of the
+    /// line. A person repeating a phrase for effect keeps the rest of the sentence around it; a
+    /// decoder loop has nothing else to say.
+    static let phraseLoopMinimumShare = 0.35
+
+    /// The phrase a line repeats, and how many times, or nil when the line does not loop.
+    ///
+    /// The longest phrase wins. A four-word loop is also two two-word loops, and cutting the long
+    /// one out is what leaves the line as one statement instead of four pieces of shorthand.
+    ///
+    /// The share is a parameter because the two callers weigh the risk differently: the cleaning
+    /// pass shortens the line and can afford to be generous, while the quality guard below throws
+    /// the whole recording away and only fires when the loop is most of what the line says.
+    static func repeatedPhrase(
+        in words: [String],
+        minimumShare: Double = phraseLoopMinimumShare
+    ) -> (phrase: [String], copies: Int)? {
+        guard words.count >= phraseLoopMinimumWords * phraseLoopMinimumCopies else { return nil }
+        let longest = min(phraseLoopMaximumWords, words.count / phraseLoopMinimumCopies)
+        guard longest >= phraseLoopMinimumWords else { return nil }
+        for length in stride(from: longest, through: phraseLoopMinimumWords, by: -1) {
+            // Copies are counted the way the cleaning pass removes them: laid end to end, each one
+            // taken whole. Counting every start position instead made overlapping runs of a short
+            // phrase look like a loop, which is how a person agreeing six times in one breath --
+            // "да да да да да да" on the 2026-09-23 call -- held four overlapping "да да да" runs,
+            // 53% of the line, and cost the whole 68 minute recording, twice. The cleaner can only
+            // take out copies that do not overlap, so the guard must count the same ones.
+            var copies: [[String]: Int] = [:]
+            for start in 0...(words.count - length) {
+                let phrase = Array(words[start..<(start + length)])
+                guard copies[phrase] == nil else { continue }
+                let count = nonOverlappingCopies(of: phrase, in: words)
+                guard count >= phraseLoopMinimumCopies else { continue }
+                copies[phrase] = count
+            }
+            let duplicated = copies.values.map { ($0 - 1) * length }.max() ?? 0
+            guard Double(duplicated) / Double(words.count) >= minimumShare else {
+                // A shorter phrase may still carry a large enough share, so the search goes on
+                // rather than stopping at the first length with a hit.
+                continue
+            }
+            let best = copies.max { left, right in
+                left.value == right.value
+                    ? left.key.count < right.key.count
+                    : left.value < right.value
+            }
+            guard let best else { continue }
+            return (best.key, best.value)
+        }
+        return nil
+    }
+
+    /// How many copies of one phrase sit end to end in a line.
+    private static func nonOverlappingCopies(of phrase: [String], in words: [String]) -> Int {
+        var count = 0
+        var index = 0
+        while index + phrase.count <= words.count {
+            if Array(words[index..<(index + phrase.count)]) == phrase {
+                count += 1
+                index += phrase.count
+            } else {
+                index += 1
+            }
+        }
+        return count
+    }
+
+    /// Removes the copies of a repeated phrase after the first, keeping the line's order.
+    ///
+    /// Repeats until no phrase is left to collapse, because cutting out the outer loop can expose
+    /// the next one. The bound is a guard against a line nobody has seen, not an expected limit:
+    /// every round strictly shortens the line.
+    static func collapsingPhraseLoops(in line: String) -> (line: String, collapsed: Int) {
+        guard !line.isEmpty else { return (line, 0) }
+        var words = line.split(separator: " ").map(String.init)
+        var collapsed = 0
+        for _ in 0..<4 {
+            guard let loop = repeatedPhrase(in: words) else { break }
+            var kept: [String] = []
+            kept.reserveCapacity(words.count)
+            var index = 0
+            var keptTheFirst = false
+            while index < words.count {
+                let end = index + loop.phrase.count
+                if end <= words.count, Array(words[index..<end]) == loop.phrase {
+                    if keptTheFirst {
+                        collapsed += 1
+                    } else {
+                        keptTheFirst = true
+                        kept.append(contentsOf: loop.phrase)
+                    }
+                    index = end
+                    continue
+                }
+                kept.append(words[index])
+                index += 1
+            }
+            words = kept
+        }
+        guard collapsed > 0 else { return (line, 0) }
+        return (words.joined(separator: " "), collapsed)
+    }
+
     /// What a cleaned transcript lost, so a repair can report what it did rather than a boolean.
     public struct Outcome: Equatable, Sendable {
         public let text: String
         public let promptEchoes: Int
         public let nonSpeechTags: Int
         public let loopDuplicates: Int
+        /// Copies of a short phrase removed from inside one line.
+        ///
+        /// Counted apart from the whole-line duplicates because the two rules see different shapes:
+        /// a duplicate is a line that came back, and a phrase loop is one line that says the same
+        /// thing many times over. Both are the decoder repeating itself.
+        public let collapsedPhrases: Int
         /// Blank lines that ran together once the lines between them were removed.
         ///
         /// Counted separately from the removals because it is a different kind of change: nothing
@@ -99,6 +226,7 @@ public enum TranscriptArtifacts {
         public var removedLines: Int { promptEchoes + nonSpeechTags + loopDuplicates }
         public var didChange: Bool {
             removedLines > 0 || blankLinesCollapsed > 0 || strippedTimestamps > 0
+                || collapsedPhrases > 0
         }
 
         public init(
@@ -106,6 +234,7 @@ public enum TranscriptArtifacts {
             promptEchoes: Int = 0,
             nonSpeechTags: Int = 0,
             loopDuplicates: Int = 0,
+            collapsedPhrases: Int = 0,
             blankLinesCollapsed: Int = 0,
             strippedTimestamps: Int = 0
         ) {
@@ -113,6 +242,7 @@ public enum TranscriptArtifacts {
             self.promptEchoes = promptEchoes
             self.nonSpeechTags = nonSpeechTags
             self.loopDuplicates = loopDuplicates
+            self.collapsedPhrases = collapsedPhrases
             self.blankLinesCollapsed = blankLinesCollapsed
             self.strippedTimestamps = strippedTimestamps
         }
@@ -186,6 +316,7 @@ public enum TranscriptArtifacts {
         var echoes = 0
         var tags = 0
         var loops = 0
+        var phrases = 0
         var blanks = 0
         var stamps = 0
         for _ in 0..<8 {
@@ -193,6 +324,7 @@ public enum TranscriptArtifacts {
             echoes += pass.promptEchoes
             tags += pass.nonSpeechTags
             loops += pass.loopDuplicates
+            phrases += pass.collapsedPhrases
             blanks += pass.blankLinesCollapsed
             stamps += pass.strippedTimestamps
             guard pass.text != current else { break }
@@ -206,6 +338,7 @@ public enum TranscriptArtifacts {
             promptEchoes: echoes,
             nonSpeechTags: tags,
             loopDuplicates: loops,
+            collapsedPhrases: phrases,
             blankLinesCollapsed: blanks,
             strippedTimestamps: stamps
         )
@@ -213,9 +346,18 @@ public enum TranscriptArtifacts {
 
     /// One round: every rule applied once, in the order a transcript reads.
     private static func singlePass(_ text: String) -> Outcome {
-        let lines = text
+        // The timestamp comes off, and a phrase loop inside the line is cut down, before the rules
+        // below judge the line. A line that says the same two words three times is a decoder stuck
+        // on its own output, and cutting it here means the duplicate rule and the search index see
+        // the same text the reader will.
+        let lines: [(line: String, hadStamp: Bool, collapsed: Int)] = text
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { rawLine in
+                let raw = rawLine.trimmingCharacters(in: .whitespaces)
+                let (withoutStamp, hadStamp) = strippingTimestamp(raw)
+                let (line, collapsed) = collapsingPhraseLoops(in: withoutStamp)
+                return (line, hadStamp, collapsed)
+            }
         guard !lines.isEmpty else { return Outcome(text: text) }
 
         var kept: [String] = []
@@ -223,21 +365,21 @@ public enum TranscriptArtifacts {
         var echoes = 0
         var tags = 0
         var loops = 0
+        var phrases = 0
         var blanksCollapsed = 0
         var stamps = 0
         var index = 0
         while index < lines.count {
-            // The timestamp comes off first, so the rules below see the words a line actually
-            // holds. A paragraph whose whole content was a marker is a marker once the time in
-            // front of it is gone, and the next round of the fixed point removes it.
-            let raw = lines[index]
-            let (line, hadStamp) = strippingTimestamp(raw)
+            let entry = lines[index]
+            let line = entry.line
+            let hadStamp = entry.hadStamp
             var last = index
-            while last + 1 < lines.count, strippingTimestamp(lines[last + 1]).line == line {
+            while last + 1 < lines.count, lines[last + 1].line == line {
                 last += 1
             }
             let run = last - index + 1
             if hadStamp { stamps += run }
+            for position in index...last { phrases += lines[position].collapsed }
 
             if !line.isEmpty, isPromptEcho(line) {
                 echoes += run
@@ -290,6 +432,7 @@ public enum TranscriptArtifacts {
             promptEchoes: echoes,
             nonSpeechTags: tags,
             loopDuplicates: loops,
+            collapsedPhrases: phrases,
             blankLinesCollapsed: blanksCollapsed,
             strippedTimestamps: stamps
         )
@@ -308,15 +451,21 @@ public enum TranscriptArtifacts {
         var echoes = 0
         var tags = 0
         var loops = 0
+        var phrases = 0
         var index = 0
         var stamps = 0
         // The timestamp comes off each segment first, so the two rules below judge the words a
         // segment holds rather than the time in front of them, and the text that reaches the index
         // is the text a person reads.
         let stamped = segments.map { segment -> TranscriptSegment in
-            let (text, stripped) = strippingTimestamp(segment.text)
-            guard stripped else { return segment }
-            stamps += 1
+            let (withoutStamp, stripped) = strippingTimestamp(segment.text)
+            if stripped { stamps += 1 }
+            // The phrase loop is cut down here, before the duplicate rule measures runs and before
+            // anything is written: a segment that holds the same phrase three times is one stuck
+            // line, and only the first copy of it was said.
+            let (text, collapsed) = collapsingPhraseLoops(in: withoutStamp)
+            phrases += collapsed
+            guard stripped || collapsed > 0 else { return segment }
             return TranscriptSegment(
                 startMs: segment.startMs,
                 endMs: segment.endMs,
@@ -358,6 +507,7 @@ public enum TranscriptArtifacts {
             promptEchoes: echoes,
             nonSpeechTags: tags,
             loopDuplicates: loops,
+            collapsedPhrases: phrases,
             strippedTimestamps: stamps
         )
         return (kept, outcome)

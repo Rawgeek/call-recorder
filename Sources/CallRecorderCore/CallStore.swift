@@ -860,6 +860,39 @@ public actor CallStore {
         }
     }
 
+    /// Removes the voices of a call that a new separation of it did not produce.
+    ///
+    /// A pass writes one cluster per voice it found, keyed by the place that voice had in the pass.
+    /// A pass that finds fewer voices than the one before it -- or finds the same number in another
+    /// order -- leaves the rows of the older pass behind. No segment points at their index any more,
+    /// so they are invisible in the transcript, and they are not invisible in the review window:
+    /// they sit there as voices waiting to be named, or as voices already named, for a call whose
+    /// transcript never mentions them.
+    ///
+    /// The 2026-09-18 17:47 call holds one of these. Its first pass produced a voice of 160 seconds
+    /// that was named for one person; the second pass produced three voices and used the same
+    /// diarization label for a different person, so the call ended up with two voices of the same
+    /// name and one of them holding no segment at all.
+    ///
+    /// Deleting a cluster keeps everything that was learned from it: a voice sample belongs to the
+    /// person, not to the fragment, and the reference from a sample back to its fragment is set to
+    /// null rather than removed.
+    @discardableResult
+    func retireSpeakerClusters(
+        callID: CallID,
+        keeping clusterIDs: [SpeakerClusterID]
+    ) async throws -> Int {
+        try await withWriteRetry {
+            let kept = clusterIDs.map { $0.rawValue.uuidString }
+            let placeholders = kept.isEmpty ? "''" : kept.map { _ in "?" }.joined(separator: ", ")
+            return try connection.execute(
+                "DELETE FROM pending_speaker_clusters WHERE call_id = ? "
+                    + "AND id NOT IN (\(placeholders))",
+                [callID.rawValue.uuidString] + kept
+            )
+        }
+    }
+
     func encryptedPendingSpeakerClusters(
         for callID: CallID,
         at date: Date = Date()
@@ -1322,6 +1355,15 @@ public actor CallStore {
                     + "ON CONFLICT(call_id, start_ms, end_ms) DO UPDATE SET "
                     + "participant_id = excluded.participant_id, created_at = excluded.created_at",
                 [callID.rawValue.uuidString, startMs, endMs, stored, date.timeIntervalSince1970]
+            )
+            // The person is on the call now: their words are in this transcript, put there by hand.
+            // Leaving them out of the roster meant the transcript they speak in did not name them in
+            // its header, and everything that reads the roster -- the header, the matcher's "was on
+            // this call" list, the review window's ordering -- could not see them either.
+            _ = try connection.execute(
+                "INSERT OR IGNORE INTO call_participants (call_id, participant_id) "
+                    + "VALUES (?, ?)",
+                [callID.rawValue.uuidString, stored]
             )
             return SpeakerLineOverride(
                 callID: callID,
@@ -1932,7 +1974,15 @@ public actor CallStore {
         callID: CallID,
         at date: Date = Date()
     ) async throws {
-        guard let job = try processingJob(callID: callID), job.executionState == .failed else {
+        guard let job = try processingJob(callID: callID) else {
+            throw CallStoreError.processingJobNotClaimed(callID)
+        }
+        // A job that is queued needs no change of state: it runs as soon as the queue is drained,
+        // which is what the caller does next. Refusing it made Retry say nothing at all on a call
+        // whose stage a later pass had queued again. Waiting for participants is the one queued
+        // stage the drain skips, so it is still refused here.
+        if job.executionState == .pending, job.stage != .awaitingParticipants { return }
+        guard job.executionState == .failed else {
             throw CallStoreError.processingJobNotClaimed(callID)
         }
         try await withWriteRetry {
@@ -1961,6 +2011,13 @@ public actor CallStore {
         }
     }
 
+    /// Puts one call back to its speaker-detection stage.
+    ///
+    /// A job that has not been claimed yet is re-queued too, as long as its stage is at or after
+    /// the speaker analysis. Separating the voices of the 2026-09-18 14:01 call again was refused
+    /// because a naming pass had queued its indexing stage: the guard accepted a job that was
+    /// complete or failed, so the button did nothing while a queued stage stood in the way. A job
+    /// that is running is left alone, because something holds its claim.
     public func retrySpeakerAnalysis(callID: CallID, at date: Date = Date()) async throws {
         try await withWriteRetry {
             let transaction = try connection.transaction()
@@ -1968,9 +2025,12 @@ public actor CallStore {
                 let changed = try transaction.execute(
                     "UPDATE processing_jobs SET stage = 'diarizing', execution_state = 'pending', "
                         + "updated_at = ?, started_at = NULL, completed_at = NULL, claim_token = NULL "
-                        + "WHERE call_id = ? AND execution_state IN ('complete','failed') "
+                        + "WHERE call_id = ? AND (execution_state IN ('complete','failed') "
+                        + "OR (execution_state = 'pending' AND stage IN "
+                        + "('diarizing','attributing','indexing','finalizingArtifacts','ready'))) "
                         + "AND EXISTS (SELECT 1 FROM transcripts WHERE call_id = ?) "
-                        + "AND EXISTS (SELECT 1 FROM calls WHERE id = ? AND status IN ('ready','failed'))",
+                        + "AND EXISTS (SELECT 1 FROM calls WHERE id = ? "
+                        + "AND status IN ('ready','failed','indexing'))",
                     [date.timeIntervalSince1970, callID.rawValue.uuidString,
                      callID.rawValue.uuidString, callID.rawValue.uuidString]
                 )
@@ -2013,6 +2073,32 @@ public actor CallStore {
                 transaction.rollback()
                 throw error
             }
+        }
+    }
+
+    /// Puts a call back in the queue for its voices to be separated again, and says when there was
+    /// nothing to do.
+    ///
+    /// `retrySpeakerAnalysis` refuses a call whose job is moving, which is what keeps a retry from
+    /// interrupting a pass that is running. This is the same request for a caller with a person
+    /// waiting on the answer: a job that is already pending or running is reported as
+    /// `.alreadyUnderway` rather than thrown, because the work the person asked for is on its way.
+    /// The 2026-09-18 retry on the 14:01 call was refused that way and was kept as the app's last
+    /// error for five days. Anything else the store refuses -- no transcript, a call still
+    /// recording -- is still thrown.
+    public func requestSpeakerAnalysis(
+        callID: CallID,
+        at date: Date = Date()
+    ) async throws -> SpeakerAnalysisRequest {
+        do {
+            try await retrySpeakerAnalysis(callID: callID, at: date)
+            return .queued
+        } catch CallStoreError.processingJobNotClaimed(let refused) {
+            guard
+                let job = try processingJob(callID: refused),
+                job.executionState.isUnderway
+            else { throw CallStoreError.processingJobNotClaimed(refused) }
+            return .alreadyUnderway
         }
     }
 

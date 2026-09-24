@@ -35,6 +35,48 @@ struct TranscriptionBoundaryTests {
         ])
     }
 
+    @Test func whisperArgumentsKeepHardeningFlagsWithoutVad() {
+        // The three hardening flags used to travel with the VAD block, so a run without a VAD model
+        // carried the decoder's own context from chunk to chunk. The 2026-09-18 call holds the
+        // result of that: "межми грешен" three times in one segment. They are part of the command
+        // whether or not voice activity is configured.
+        let arguments = WhisperCommand.arguments(
+            model: URL(filePath: "/models/ggml-small.bin"),
+            audio: URL(filePath: "/calls/input.wav"),
+            outputBase: URL(filePath: "/calls/transcript.partial"),
+            prompt: "",
+            vadModel: nil
+        )
+
+        #expect(arguments.contains("--max-context"))
+        #expect(arguments.contains("--no-fallback"))
+        #expect(arguments.contains("--temperature"))
+        #expect(!arguments.contains("--vad"))
+    }
+
+    @Test func whisperArgumentsCarryThePinnedLanguage() {
+        // "auto" is the default and is what the app shipped with. A call that is in one language
+        // with English product names in it is decoded better when the language is pinned, so the
+        // choice the settings pane offers has to reach the command line.
+        let pinned = WhisperCommand.arguments(
+            model: URL(filePath: "/models/ggml-small.bin"),
+            audio: URL(filePath: "/calls/input.wav"),
+            outputBase: URL(filePath: "/calls/transcript.partial"),
+            prompt: "",
+            language: "ru"
+        )
+        let automatic = WhisperCommand.arguments(
+            model: URL(filePath: "/models/ggml-small.bin"),
+            audio: URL(filePath: "/calls/input.wav"),
+            outputBase: URL(filePath: "/calls/transcript.partial"),
+            prompt: ""
+        )
+
+        #expect(pinned.contains("ru"))
+        #expect(pinned.firstIndex(of: "--language").map { pinned[$0 + 1] } == "ru")
+        #expect(automatic.firstIndex(of: "--language").map { automatic[$0 + 1] } == "auto")
+    }
+
     @Test func parsesCurrentWhisperJSONAcrossLanguages() throws {
         // Given
         let json = """
@@ -96,6 +138,72 @@ struct TranscriptQualityValidatorTests {
             "all right", "ok", "thanks",
         ]
         #expect(!TranscriptQualityValidator.isRepetitive(transcript(normal)))
+    }
+
+    @Test func rejectsAPhraseLoopInsideOneSegment() {
+        func transcript(_ texts: [String]) -> WhisperTranscript {
+            WhisperTranscript(
+                language: "ru",
+                segments: texts.enumerated().map { index, text in
+                    TranscriptSegment(
+                        startMs: index * 1000,
+                        endMs: index * 1000 + 500,
+                        text: text
+                    )
+                }
+            )
+        }
+
+        // One segment holding the same two-word phrase three times. The cross-segment checks see a
+        // single line and pass it; the 2026-09-18 call was saved with this shape in it.
+        #expect(
+            TranscriptQualityValidator.isRepetitive(
+                transcript(["межми грешен межми грешен межми грешен"])
+            )
+        )
+
+        // A sentence that uses the same two words twice is ordinary speech, and a phrase said twice
+        // for emphasis is not a loop either.
+        #expect(
+            !TranscriptQualityValidator.isRepetitive(
+                transcript(["я не знаю, что с этим заказом делать, если честно, не знаю."])
+            )
+        )
+    }
+
+    @Test func acceptsAPersonAgreeingSixTimesInOneLine() {
+        func transcript(_ texts: [String]) -> WhisperTranscript {
+            WhisperTranscript(
+                language: "ru",
+                segments: texts.enumerated().map { index, text in
+                    TranscriptSegment(
+                        startMs: index * 1000,
+                        endMs: index * 1000 + 500,
+                        text: text
+                    )
+                }
+            )
+        }
+
+        // The 2026-09-23 call, verbatim. Six "да" in one line hold four overlapping three-word
+        // runs, which the guard used to count as a loop and throw the whole 68 minute recording
+        // away for -- twice, and the cleaning pass it judges for cannot remove copies that overlap.
+        // The copies laid end to end are three pairs, under the floor.
+        #expect(
+            !TranscriptQualityValidator.isRepetitive(
+                transcript([
+                    "да да да да да да просто действительно столько стоит конечно лучше казаться они а может быть"
+                ])
+            )
+        )
+
+        // The same word, said by a model that cannot stop: eighteen of them are six pairs end to
+        // end, which is most of the line, and the guard still refuses it.
+        #expect(
+            TranscriptQualityValidator.isRepetitive(
+                transcript([Array(repeating: "да", count: 18).joined(separator: " ")])
+            )
+        )
     }
 }
 

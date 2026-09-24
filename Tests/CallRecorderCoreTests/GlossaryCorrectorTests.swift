@@ -461,4 +461,130 @@ struct GlossaryCorrectorTests {
         }
     }
 
+    // MARK: - The spellings the model invented for a declared term
+
+    /// The six terms the 2026-09-18 call's glossary declares, and the six spellings its body
+    /// actually holds. None of the spellings was a declared alias; every one is what the decoder
+    /// heard.
+    private var callTerms: [GlossaryTerm] {
+        [
+            term("Salla", aliases: []),
+            term("DeepSeek", aliases: []),
+            term("Whisper", aliases: []),
+            term("Rasa", aliases: []),
+            term("Airhouse", aliases: []),
+            term("CartRover", aliases: []),
+        ]
+    }
+
+    @Test("a term the decoder misheard is read back from its sound and its context")
+    func readsBackTheMisheardTerms() {
+        // The keys first, because everything else rests on them.
+        #expect(GlossaryCorrector.phoneticKey("Whisper") == GlossaryCorrector.phoneticKey("биспер"))
+        #expect(GlossaryCorrector.phoneticKey("Airhouse") == GlossaryCorrector.phoneticKey("Айрхаус"))
+        #expect(
+            GlossaryCorrector.phoneticKey("CartRover")
+                == GlossaryCorrector.phoneticKey("карт-ровер")
+        )
+        #expect(
+            GlossaryCorrector.phoneticDistance(
+                GlossaryCorrector.phoneticKey("DeepSeek") ?? "",
+                GlossaryCorrector.phoneticKey("DeepSecret") ?? ""
+            ) == 2
+        )
+        // Each line names a term the glossary already matches, which is the context rule: the call
+        // is talking about Salla and CartRover, so "салют" on the same line is Salla.
+        let text = [
+            "Мы интегрируем CartRover, и салют будет нашим партнёром.",
+            "Сало и салай тоже подключатся к CartRover через API.",
+            "DeepSecret работает лучше, но CartRover дешевле.",
+            "В CartRover есть биспер для транскрипции.",
+            "Роза утверждает, что CartRover быстрее.",
+            "Айрхаус и карт-ровер уже в проде.",
+        ].joined(separator: "\n")
+
+        let (corrected, suggestions) = GlossaryCorrector.applyingSuggestedAliases(
+            text,
+            terms: callTerms
+        )
+
+        #expect(corrected.contains("Salla будет нашим партнёром"))
+        #expect(corrected.contains("Salla и Salla тоже подключатся"))
+        #expect(corrected.contains("DeepSeek работает лучше"))
+        #expect(corrected.contains("Whisper для транскрипции"))
+        #expect(corrected.contains("Rasa утверждает"))
+        #expect(corrected.contains("Airhouse и CartRover уже в проде"))
+        // Three spellings of Salla, and one of each other term: eight in all, and no ordinary word
+        // of the call among them.
+        #expect(suggestions.map(\.preferred).sorted()
+            == [
+                "Airhouse", "CartRover", "DeepSeek", "Rasa", "Salla", "Salla", "Salla", "Whisper",
+            ].sorted())
+        #expect(suggestions.map(\.found).sorted()
+            == ["DeepSecret", "Айрхаус", "биспер", "карт-ровер", "Роза", "Сало", "салай", "салют"]
+                .sorted())
+    }
+
+    @Test("a word that only sounds like a term is left alone away from the term's context")
+    func keepsAWordWithNoContext() {
+        // No declared term in these lines, so the sound rule never gets to speak. This is the guard
+        // that keeps a meeting about anything else from having its words rewritten.
+        let text = [
+            "Мы обсудим это завтра и решим, что делать.",
+            "Салют, коллеги, приветствую всех на созвоне.",
+            "Роза расцвела в саду, и это было красиво.",
+        ].joined(separator: "\n")
+
+        let (corrected, suggestions) = GlossaryCorrector.applyingSuggestedAliases(
+            text,
+            terms: callTerms
+        )
+
+        #expect(corrected == text)
+        #expect(suggestions.isEmpty)
+    }
+
+    @Test("an ordinary word used many times is the call's vocabulary, not a misheard name")
+    func keepsAFrequentWord() {
+        // The rarity rule. "салют" here comes back on more lines than the floor allows, all of them
+        // next to a declared term, and the call is still not corrected: a word repeated that often
+        // is a word this call means.
+        let lines = (0..<6).map { "CartRover и салют, строка \($0)." }
+
+        let (corrected, suggestions) = GlossaryCorrector.applyingSuggestedAliases(
+            lines.joined(separator: "\n"),
+            terms: callTerms
+        )
+
+        #expect(corrected == lines.joined(separator: "\n"))
+        #expect(suggestions.isEmpty)
+    }
+
+    @Test("a short word is never taken for a term, however close its sound is")
+    func keepsShortWords() {
+        // "сто" is one edit from the key of Salla and one letter from the Russian word for a
+        // hundred. Three characters is below the floor this pass will work with.
+        let text = "CartRover просит сто единиц на складе."
+
+        let (corrected, _) = GlossaryCorrector.applyingSuggestedAliases(text, terms: callTerms)
+
+        #expect(corrected == text)
+    }
+
+    @Test("a spelling the glossary already declares is left as it is")
+    func leavesDeclaredSpellingsAlone() {
+        let withAlias = term("Salla", aliases: ["Sallla"])
+        let text = "Sallla и CartRover работают вместе."
+
+        let (corrected, suggestions) = GlossaryCorrector.applyingSuggestedAliases(
+            text,
+            terms: [withAlias, term("CartRover", aliases: [])]
+        )
+
+        // The declared alias is the declared pass's business, not this one's: this pass adds no
+        // suggestion for a spelling the user already wrote down.
+        #expect(corrected == text)
+        #expect(suggestions.isEmpty)
+    }
+
 }

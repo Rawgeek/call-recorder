@@ -23,6 +23,11 @@ struct CallRecorderApp: App {
         }
         .defaultSize(width: 760, height: 620)
 
+        Window("Live Transcript", id: "live-transcript") {
+            LiveTranscriptView(model: model)
+        }
+        .defaultSize(width: 620, height: 640)
+
         Settings {
             SettingsView(model: model)
         }
@@ -36,12 +41,22 @@ struct CallRecorderApp: App {
 
 private struct StatusItemLabel: View {
     @Bindable var model: AppModel
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
         Image(systemName: model.menuBarSymbol)
             .accessibilityLabel("Call Recorder, \(model.statusLabel)")
             .onAppear {
                 WindowPresentation.startObservingWindows()
+            }
+            // The live window opens when a recording starts, and a model cannot open a window: the
+            // count says that a recording began, and the surface that owns windows draws it. The
+            // window is opened the way every other window here is opened, which is what puts it in
+            // front of the meeting rather than behind it: an accessory app's window that is merely
+            // ordered front stays behind whatever the person is looking at.
+            .onChange(of: model.liveWindowToken) { _, token in
+                guard token > 0 else { return }
+                WindowPresentation.present(open: { openWindow(id: "live-transcript") })
             }
     }
 }

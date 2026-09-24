@@ -758,6 +758,32 @@ struct ModelSettingsView: View {
     /// Whether the models outside the four the card shows by default are unfolded.
     @State private var showsAllModels = false
 
+    /// A language a call is likely to be in, in the order the menu shows them.
+    ///
+    /// The list is the languages the people on these calls actually speak rather than every
+    /// language Whisper knows: a menu of ninety-nine entries is a worse answer than one of twelve,
+    /// and the one that matters most is first.
+    private struct SpokenLanguage: Identifiable {
+        let code: String
+        let name: String
+        var id: String { code }
+    }
+
+    private static let spokenLanguages: [SpokenLanguage] = [
+        SpokenLanguage(code: "en", name: "English"),
+        SpokenLanguage(code: "ru", name: "Russian"),
+        SpokenLanguage(code: "uk", name: "Ukrainian"),
+        SpokenLanguage(code: "de", name: "German"),
+        SpokenLanguage(code: "es", name: "Spanish"),
+        SpokenLanguage(code: "fr", name: "French"),
+        SpokenLanguage(code: "it", name: "Italian"),
+        SpokenLanguage(code: "pt", name: "Portuguese"),
+        SpokenLanguage(code: "pl", name: "Polish"),
+        SpokenLanguage(code: "nl", name: "Dutch"),
+        SpokenLanguage(code: "tr", name: "Turkish"),
+        SpokenLanguage(code: "cs", name: "Czech"),
+    ]
+
     var body: some View {
         SettingsPane(
             title: "Models",
@@ -805,6 +831,33 @@ struct ModelSettingsView: View {
                 }
                 if let selected = selectedModel {
                     selectedModelStatus(selected)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Spoken language",
+                    info: "Whisper decides the language of each recording unless it is told one. A "
+                        + "call that mixes one language with English product names comes back with "
+                        + "those names read as words of the other language, so a call that is in one "
+                        + "language is transcribed better when the language is named here."
+                ) {
+                    Picker("", selection: $model.settings.transcriptionLanguage) {
+                        Text("Detect automatically").tag("auto")
+                        ForEach(Self.spokenLanguages) { language in
+                            Text(language.name).tag(language.code)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 220, alignment: .trailing)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Print the time of each turn",
+                    info: "Every turn in a saved transcript opens with its time, which is what a "
+                        + "reader needs to jump into the recording. Off by default: without it the "
+                        + "file reads as spoken text."
+                ) {
+                    Toggle("", isOn: $model.settings.transcriptTimestamps)
+                        .labelsHidden()
                 }
                 ForEach(listedModels) { whisperModel in
                     CRSettingsDivider()

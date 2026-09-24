@@ -1,4 +1,4 @@
-Call Recorder 0.1.19
+Call Recorder 0.1.23
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
@@ -50,12 +50,14 @@ Speaker identification
   Unknown, then normal recoverable cleanup runs.
 
 Optional local speaker runtime
-Speaker diarization uses pyannote.audio locally. If it is unavailable, transcription still
-finishes with anonymous labels. The app checks CALL_RECORDER_PYTHON first, then:
+Speaker separation uses Nemotron 3 Diarization with the pyannote.audio community-1 embedder,
+locally. If it is unavailable, transcription still finishes with anonymous labels. The app checks
+CALL_RECORDER_PYTHON first, then:
   ~/Library/Application Support/CallRecorder/python/bin/python3
 the migration development environment, and python3 on PATH.
-No call audio is uploaded. Model files may need to be downloaded once after accepting the
-pyannote/speaker-diarization-community-1 license and signing in to Hugging Face.
+No call audio is uploaded. The environment needs pyannote.audio, libraries for the mel filter bank
+(librosa), and transformers 5.18, which is not on PyPI yet. Both models are downloaded once, after
+accepting the pyannote/speaker-diarization-community-1 license and signing in to Hugging Face.
 
 If an operation fails, copy its error details or use Settings > Recovery to retry,
 check or back up the database, and export a redacted diagnostics bundle. A failure while

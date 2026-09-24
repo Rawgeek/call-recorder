@@ -63,6 +63,31 @@ enum PreviewRecorderState: String, CaseIterable {
     }
 }
 
+/// The states of the live window worth a render.
+///
+/// The window only exists while a recording runs, and a render must never start one, so each state
+/// is seeded rather than reached.
+enum PreviewLiveTranscript: CaseIterable {
+    /// Words arriving as fast as they are spoken, with an answer on screen.
+    case inProgress
+    /// The words replaced by the summary the model keeps rewriting, with the switch that brings
+    /// them back.
+    case summary
+    /// The transcriber behind, which is the state that has to say so honestly.
+    case behind
+    /// The model still loading, which is the first thing a person sees.
+    case starting
+
+    var snapshotName: String {
+        switch self {
+        case .inProgress: "live-transcript"
+        case .summary: "live-transcript-summary"
+        case .behind: "live-transcript-behind"
+        case .starting: "live-transcript-starting"
+        }
+    }
+}
+
 /// Renders the app's windows to PNG files without launching the interface.
 ///
 /// Reviewing a layout change used to mean packaging the app, signing it (which needs an unlocked
@@ -254,6 +279,27 @@ enum SnapshotRunner {
         // window could disagree. Run the check first and draw the settled state.
         settleSpeakerRuntime(model)
         render(SpeakerReviewView(model: model), size: CGSize(width: 760, height: 620), name: "speaker-review", into: directory)
+        // The live window, in the four states it can be looked at without recording a call. The
+        // recorder is put in the recording state first, because the header draws the live dot from
+        // it and a window that is following a call must not look like one that is not.
+        model.enterPreviewRecorderState(.recording)
+        model.seedPreviewLiveTranscript(.inProgress)
+        render(
+            LiveTranscriptView(model: model),
+            size: CGSize(width: 620, height: 640),
+            name: "live-transcript-a",
+            into: directory
+        )
+        for style in PreviewLiveTranscript.allCases {
+            model.seedPreviewLiveTranscript(style)
+            render(
+                LiveTranscriptView(model: model),
+                size: CGSize(width: 620, height: 640),
+                name: style.snapshotName,
+                into: directory
+            )
+        }
+        model.enterPreviewRecorderState(.idle)
         // One excerpt already moved onto somebody else. The state is written by the app into the
         // database and read back, so it cannot be reached by a render on its own; the seed says
         // what the card looks like once it has been used, and changes nothing on disk.

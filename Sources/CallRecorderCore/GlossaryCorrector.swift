@@ -59,6 +59,17 @@ public enum GlossaryCorrector {
         /// True when the glossary has nothing that could change a spelling.
         public var isEmpty: Bool { rules.isEmpty }
 
+        /// Whether the glossary already names a term in this text.
+        ///
+        /// Used as the context test for a spelling the glossary does not know: a word that merely
+        /// sounds like a term is only worth correcting where the call is talking about the term.
+        public func mentionsTerm(_ text: String) -> Bool {
+            guard !text.isEmpty else { return false }
+            let range = NSRange(text.startIndex..<text.endIndex, in: text)
+            if aliasExpression?.firstMatch(in: text, options: [], range: range) != nil { return true }
+            return settledExpression?.firstMatch(in: text, options: [], range: range) != nil
+        }
+
         /// Rewrites every known alias in the text into its preferred spelling.
         ///
         /// Matching is case-insensitive and bounded by word edges, so "Globe X" is replaced
@@ -243,5 +254,312 @@ public enum GlossaryCorrector {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: " ")
+    }
+}
+
+// MARK: - The spellings the model invented for a declared term
+
+extension GlossaryCorrector {
+    /// A spelling a decoder invented for a term the glossary already declares.
+    public struct Suggestion: Equatable, Sendable {
+        /// What the model wrote, as the call first writes it.
+        public let found: String
+        /// The spelling the user saved.
+        public let preferred: String
+        /// How many times the invented spelling appears in the call.
+        public let count: Int
+
+        public init(found: String, preferred: String, count: Int) {
+            self.found = found
+            self.preferred = preferred
+            self.count = count
+        }
+    }
+
+    /// How many times a word may appear in a call and still be read as a misheard term.
+    ///
+    /// Four. A decoder writing a name it does not know uses the same wrong spelling each time, and
+    /// a call has the term in a handful of places. A word the call uses over and over is the call's
+    /// own vocabulary, and rewriting it would be rewriting the language of the meeting.
+    public static let suggestedAliasMaximumOccurrences = 4
+
+    /// The shortest word that can be read as a misheard term.
+    ///
+    /// Four characters. Three-letter words sound like far too much of the language to correct on
+    /// their own: "сто" is one edit from the key of "Salla", and it is also the Russian word for a
+    /// hundred. The library's real cases -- "салют", "биспер", "Роза", "Айрхаус" -- are all longer.
+    public static let suggestedAliasMinimumCharacters = 4
+
+    /// Rewrites the spellings the model invented for terms the user declared, using sound and
+    /// context.
+    ///
+    /// The glossary reached the model as prompt context, and the correction pass rewrote only the
+    /// aliases that were declared, so a term the user added changed nothing about text already on
+    /// disk. The 2026-09-18 call is what that costs: the glossary names Salla, DeepSeek, Whisper,
+    /// Rasa, Airhouse and CartRover, and the body says "салют", "DeepSecret", "биспер", "Роза",
+    /// "Айрхаус" and "карт-ровер". Not one of those is a declared alias, and every one is the term
+    /// as the decoder heard it.
+    ///
+    /// Three rules keep ordinary speech out of it:
+    ///
+    /// - **Sound or letters, never both loosely.** The invented spelling either has the same
+    ///   phonetic key as a declared spelling of the term, or it is a few letters away from it.
+    ///   "биспер" and "Whisper" share a key; "салют" and "Salla" share letters. A word that is one
+    ///   edit from a key and nowhere near it by letters -- "работает" against "Airhouse" -- is not a
+    ///   match, which is what keeps the language of the meeting out of it.
+    /// - **Context.** The word is corrected only on a line that already holds a term the glossary
+    ///   matches, or whose line before it does. A word that merely sounds like a name is corrected
+    ///   where the call is talking about the world that name belongs to.
+    /// - **Rarity.** The invented spelling may not appear more than four times in the call, and it
+    ///   may not be resolvable to two different terms.
+    public static func applyingSuggestedAliases(
+        _ text: String,
+        terms: [GlossaryTerm]
+    ) -> (text: String, suggestions: [Suggestion]) {
+        let found = suggestedAliases(in: text, terms: terms)
+        guard !found.isEmpty else { return (text, []) }
+        var corrected = text
+        // Longest first, so a longer invented phrase is replaced before a shorter one that starts
+        // the same way can cut into it.
+        for suggestion in found.sorted(by: { $0.found.count > $1.found.count }) {
+            corrected = replacing(suggestion.found, with: suggestion.preferred, in: corrected)
+        }
+        return (corrected, found)
+    }
+
+    /// The suggestions alone, for a caller that reports them rather than rewriting the text.
+    public static func suggestedAliases(in text: String, terms: [GlossaryTerm]) -> [Suggestion] {
+        guard !text.isEmpty, !terms.isEmpty else { return [] }
+        let matcher = matcher(for: terms)
+        var declared = Set<String>()
+        var keyed: [(preferred: String, latin: String, key: String)] = []
+        for term in terms {
+            let preferred = term.preferred.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !preferred.isEmpty else { continue }
+            for spelling in [preferred] + term.aliases {
+                let trimmed = spelling.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { continue }
+                declared.insert(folded(trimmed))
+                if let key = phoneticKey(trimmed) {
+                    keyed.append((preferred, latinSpelling(trimmed), key))
+                }
+            }
+        }
+        guard !keyed.isEmpty else { return [] }
+
+        // Every word of the call, how often it appears and how it is written the first time. A
+        // misheard name is rare and consistent; an ordinary word is neither.
+        var appearances: [String: (spelling: String, count: Int)] = [:]
+        for word in words(in: text) {
+            let foldedWord = folded(word)
+            guard !foldedWord.isEmpty else { continue }
+            if var entry = appearances[foldedWord] {
+                entry.count += 1
+                appearances[foldedWord] = entry
+            } else {
+                appearances[foldedWord] = (word, 1)
+            }
+        }
+
+        var found: [String: Suggestion] = [:]
+        var ambiguous = Set<String>()
+        let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        for (index, line) in lines.enumerated() {
+            // The line and the one before it. A sentence is often split across two whisper segments,
+            // and a person reading the transcript has the line above in view when they decide what a
+            // word is.
+            let context = index > 0 ? lines[index - 1] + "\n" + line : line
+            guard matcher.mentionsTerm(context) else { continue }
+            for word in words(in: line) {
+                let foldedWord = folded(word)
+                guard !declared.contains(foldedWord) else { continue }
+                guard foldedWord.count >= suggestedAliasMinimumCharacters else { continue }
+                guard let entry = appearances[foldedWord],
+                    entry.count <= suggestedAliasMaximumOccurrences
+                else { continue }
+                // Two readings of "the same word": the letters nearly match, or the sounds match
+                // exactly. The letters catch "салют" for Salla and "Роза" for Rasa, where the
+                // decoder wrote a word of its own language that is spelled like the name. The
+                // sounds catch "биспер" for Whisper, where it wrote the letters its language uses
+                // for a w. Neither reading is allowed to be fuzzy on both axes at once, which is
+                // what keeps "работает" and "быстрее" out: each is one sound away from a term and
+                // nowhere near it by letters.
+                let letters = latinSpelling(word)
+                var letterMatches: [(preferred: String, distance: Int)] = []
+                var soundMatches: [String] = []
+                for candidate in keyed {
+                    let distance = phoneticDistance(letters, candidate.latin)
+                    if distance <= letterAllowance(letters, candidate.latin) {
+                        letterMatches.append((candidate.preferred, distance))
+                    }
+                    if let key = phoneticKey(word), key == candidate.key, key.count >= 3 {
+                        soundMatches.append(candidate.preferred)
+                    }
+                }
+                let closestLetters = letterMatches.map(\.distance).min()
+                let letterWinners = Set(
+                    letterMatches.filter { $0.distance == closestLetters }.map(\.preferred)
+                )
+                let winners = letterWinners.isEmpty ? Set(soundMatches) : letterWinners
+                guard winners.count == 1, let preferred = winners.first else {
+                    if winners.count > 1 { ambiguous.insert(foldedWord) }
+                    continue
+                }
+                if let previous = found[foldedWord], previous.preferred != preferred {
+                    ambiguous.insert(foldedWord)
+                } else {
+                    found[foldedWord] = Suggestion(
+                        found: entry.spelling,
+                        preferred: preferred,
+                        count: entry.count
+                    )
+                }
+            }
+        }
+        for foldedWord in ambiguous { found.removeValue(forKey: foldedWord) }
+        return found.values.sorted { $0.found.lowercased() < $1.found.lowercased() }
+    }
+
+    /// The words of a text, with a hyphen kept inside one so "карт-ровер" is a single word.
+    static func words(in text: String) -> [String] {
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return wordPattern.matches(in: text, options: [], range: range).compactMap { match in
+            guard let matchRange = Range(match.range, in: text) else { return nil }
+            return String(text[matchRange]).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        }
+    }
+
+    private static let wordPattern = try! NSRegularExpression(
+        pattern: "[\\p{L}\\p{N}][\\p{L}\\p{N}\\-]*"
+    )
+
+    /// Replaces every whole-word occurrence of one spelling with another.
+    static func replacing(_ alias: String, with preferred: String, in text: String) -> String {
+        guard let expression = expression(for: [NSRegularExpression.escapedPattern(for: alias)]) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return expression.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: NSRegularExpression.escapedTemplate(for: preferred)
+        )
+    }
+
+    /// The sound of a word, written so two spellings of it can be compared.
+    ///
+    /// The word is transliterated into Latin letters, the vowels and the doubled letters are
+    /// dropped, and the consonants are folded into classes a speaker of either language does not
+    /// hear as different. "биспер" becomes "fsfr" and "Whisper" becomes "fsfr"; "салют" becomes
+    /// "slt" against the "sl" of "Salla". Two spellings of one word land on the same key, whatever
+    /// alphabet the decoder wrote them in.
+    static func phoneticKey(_ word: String) -> String? {
+        var key = ""
+        for character in latinSpelling(word) {
+            guard let sound = soundClass(character) else { continue }
+            if key.last == sound { continue }
+            key.append(sound)
+        }
+        return key.isEmpty ? nil : key
+    }
+
+    /// The Latin letters a character stands for, by sound rather than by alphabet.
+    private static func latinLetters(for character: Character) -> String {
+        switch character {
+        case "а": "a"
+        case "б": "b"
+        case "в": "v"
+        case "г": "g"
+        case "д": "d"
+        case "е", "ё", "э": "e"
+        case "ж": "zh"
+        case "з": "z"
+        case "и", "й", "ы", "і": "i"
+        case "к": "k"
+        case "л": "l"
+        case "м": "m"
+        case "н": "n"
+        case "о": "o"
+        case "п": "p"
+        case "р": "r"
+        case "с": "s"
+        case "т": "t"
+        case "у": "u"
+        case "ф": "f"
+        case "х": "h"
+        case "ц": "ts"
+        case "ч": "ch"
+        case "ш", "щ": "sh"
+        case "ю": "iu"
+        case "я": "ia"
+        case "ъ", "ь": ""
+        default:
+            character.isLetter || character.isNumber ? String(character) : ""
+        }
+    }
+
+    /// The class a consonant belongs to, or nil for a sound that is not written down.
+    private static func soundClass(_ character: Character) -> Character? {
+        switch character {
+        case "a", "e", "i", "o", "u", "y": nil
+        // A labial heard as its partner: "биспер" for "Whisper" turns on exactly this. The letter h
+        // travels with them because a transliterated h is usually the same puff of air.
+        case "b", "p", "f", "v", "w", "h": "f"
+        case "c", "k", "q", "g": "k"
+        case "s", "z", "x", "j": "s"
+        case "d", "t": "t"
+        case "l": "l"
+        case "m": "m"
+        case "n": "n"
+        case "r": "r"
+        default: nil
+        }
+    }
+
+    /// How far two spellings may differ and still be one word, by letters.
+    ///
+    /// One edit for a short word, two for one of four or five letters, three for a longer one. The
+    /// window grows with the word because a longer word has more places for a decoder to slip, and
+    /// because a three-edit window on a four-letter word would reach half the language.
+    static func letterAllowance(_ left: String, _ right: String) -> Int {
+        let longest = max(left.count, right.count)
+        if longest <= 3 { return 1 }
+        return longest <= 5 ? 2 : 3
+    }
+
+    /// A spelling written in Latin letters and nothing else.
+    ///
+    /// Both sides of a comparison are put in one alphabet before they are compared, so a name the
+    /// decoder wrote in Cyrillic and the name the user saved in Latin are measured as the same word.
+    static func latinSpelling(_ word: String) -> String {
+        var latin = ""
+        for character in word.lowercased() {
+            latin += latinLetters(for: character)
+        }
+        return latin.filter { $0.isLetter || $0.isNumber }
+    }
+
+    /// The number of single-character edits that turn one key into the other.
+    static func phoneticDistance(_ left: String, _ right: String) -> Int {
+        let leftCharacters = Array(left)
+        let rightCharacters = Array(right)
+        if leftCharacters.isEmpty { return rightCharacters.count }
+        if rightCharacters.isEmpty { return leftCharacters.count }
+        var previous = Array(0...rightCharacters.count)
+        var current = [Int](repeating: 0, count: rightCharacters.count + 1)
+        for (leftIndex, leftCharacter) in leftCharacters.enumerated() {
+            current[0] = leftIndex + 1
+            for (rightIndex, rightCharacter) in rightCharacters.enumerated() {
+                let substitution = previous[rightIndex] + (leftCharacter == rightCharacter ? 0 : 1)
+                current[rightIndex + 1] = min(
+                    previous[rightIndex + 1] + 1,
+                    current[rightIndex] + 1,
+                    substitution
+                )
+            }
+            previous = current
+        }
+        return previous[rightCharacters.count]
     }
 }

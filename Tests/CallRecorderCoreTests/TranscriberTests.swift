@@ -51,7 +51,8 @@ struct TranscriberTests {
             callID: callID,
             segments: [CaptureSegment(index: 1, fileURL: segmentURL)],
             destination: directory,
-            endedAt: Date(timeIntervalSince1970: 1_800_000_001)
+            endedAt: Date(timeIntervalSince1970: 1_800_000_001),
+            keepsAudio: true
         )
         let queuedAfterFinalize = try #require(try await store.processingJobs().first)
         let record = try await pipeline.transcribe(

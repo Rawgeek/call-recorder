@@ -206,7 +206,12 @@ struct SpeakerReviewView: View {
     /// audio is separated again from the copy the call kept.
     @ViewBuilder
     private func callVoiceCount(_ callID: CallID) -> some View {
-        let detected = namedVoiceCount(callID).total
+        let counts = voiceCount(callID)
+        let waiting = model.speakerReviews.filter { $0.callID == callID }.count
+        // The number the stepper separates into. A call whose voices have all been named still has
+        // a count, and a call whose voices are waiting has one too; the count of reviews alone was
+        // wrong in both directions, because the reviews are only the voices left to name.
+        let detected = max(counts.total, waiting)
         let issue = model.speakerAnalysisIssues.first { $0.callID == callID }
         let available = issue?.audioAvailable ?? true
         // The audio is there and the call cannot be retried: the only thing that means is a pass
@@ -214,7 +219,11 @@ struct SpeakerReviewView: View {
         let busy = available && !(issue?.canRetry ?? true)
         if detected > 0 {
             HStack(alignment: .firstTextBaseline, spacing: CR.Space.snug) {
-                Text("Voices detected")
+                Text(
+                    waiting > 0
+                        ? "\(counts.named) of \(counts.total) voices named"
+                        : "\(counts.total) voice\(counts.total == 1 ? "" : "s") detected"
+                )
                     .font(CR.Font.caption)
                     .foregroundStyle(CR.Ink.readable)
                 Stepper(value: voiceCountBinding(callID, detected: detected), in: 1...24) {
@@ -241,6 +250,9 @@ struct SpeakerReviewView: View {
                     }
                 }
                 .disabled(!available || busy)
+                if waiting > 0 {
+                    CRStatusChip(tone: .waiting, text: "\(waiting) to name")
+                }
                 Spacer(minLength: 0)
             }
             .accessibilityElement(children: .combine)
@@ -732,7 +744,7 @@ struct SpeakerReviewView: View {
     }
 
     private func callProgress(_ callID: CallID) -> String {
-        let counts = namedVoiceCount(callID)
+        let counts = voiceCount(callID)
         let spoken = formattedDuration(callSpeechDuration(callID))
         return "\(counts.named) of \(counts.total) named · \(spoken)"
     }
@@ -751,10 +763,15 @@ struct SpeakerReviewView: View {
             .reduce(0) { $0 + $1.speechDurationMilliseconds }
     }
 
-    private func namedVoiceCount(_ callID: CallID) -> (named: Int, total: Int) {
+    /// How many voices the call's transcript holds, and how many of them carry a name.
+    ///
+    /// The stored count is read from the call's transcript while the window loads its evidence. The
+    /// fallback covers the moment before that read finishes: the reviews are the voices still
+    /// waiting, and a voice on that list has no name yet by definition.
+    private func voiceCount(_ callID: CallID) -> SpeakerVoiceCount {
+        if let stored = model.speakerVoiceCounts[callID] { return stored }
         let reviews = model.speakerReviews.filter { $0.callID == callID }
-        let named = reviews.filter { $0.state == .confirmed || $0.state == .automatic }.count
-        return (named, reviews.count)
+        return SpeakerVoiceCount(named: 0, total: reviews.count)
     }
 
     /// Names the people already given a voice in this call, so a second voice is not handed to

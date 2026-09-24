@@ -130,7 +130,54 @@ final class AppModel {
     /// Calls whose unfinished job has nothing left to work with. Retrying one cannot succeed, so
     /// the Recovery pane offers to remove the row instead of a button that fails again.
     private(set) var unfinishableCallIDs: Set<CallID> = []
+
+    // MARK: - Live transcript
+
+    /// The words of the recording that is running, as they arrive.
+    private(set) var liveTranscript = LiveTranscript()
+    /// What the live window says is happening.
+    private(set) var liveStatus: LiveTranscriptStatus = .idle
+    /// Counts the recordings that started with the live view on.
+    ///
+    /// The window is opened by the surface that owns windows rather than by this model, so the
+    /// model says a new session began and the menu bar draws the window for it. A number is used
+    /// rather than a flag because the second recording must open the window again, not find one
+    /// already open for the first.
+    private(set) var liveWindowToken = 0
+    /// The last question asked during a call, and the answer it was given.
+    private(set) var liveChatAnswer: LiveChatAnswer?
+    /// The running summary of the call so far, or empty before the first one is written.
+    ///
+    /// It stays when the recording ends, like the words it replaces: somebody who was reading it is
+    /// not finished reading it because the call stopped.
+    private(set) var liveSummary = ""
+    /// How many times the summary on screen has been written, so the window can say whether it is
+    /// the first one or a refresh.
+    private(set) var liveSummaryUpdates = 0
+    private(set) var liveChatRunning = false
+    private(set) var liveChatFailure: String?
+    /// What is typed in the live window's question field.
+    var liveQuestion = ""
+    /// The live path of the recording that is running, or nil when no recording is.
+    private var liveSession: LiveTranscriptSession?
+    /// The session whose events this model accepts.
+    ///
+    /// A live answer can arrive after the recording it belongs to has ended — the model was still
+    /// writing when the call stopped, or a chunk was still being read. Amanu's live path rejects
+    /// those by epoch; this is the same rule with one token per recording, so a sentence about one
+    /// call cannot appear in the window showing the next one.
+    private var liveSessionToken: UUID?
+    /// The assertion that keeps this app out of App Nap, and the one kept while recording.
+    private var applicationActivity: NSObjectProtocol?
+    private var recordingActivity: NSObjectProtocol?
+
     private(set) var speakerReviews: [SpeakerReviewItem] = []
+    /// How many voices each call's transcript holds, and how many of them carry a name.
+    ///
+    /// Read while the review window loads its evidence, from the transcript of each call that has a
+    /// voice waiting. The list of reviews holds only the voices still waiting, so it cannot answer
+    /// this question: see SpeakerVoiceCount.
+    private(set) var speakerVoiceCounts: [CallID: SpeakerVoiceCount] = [:]
     private(set) var speakerReviewEvidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
     private(set) var speakerReviewCallDates: [CallID: Date] = [:]
     private(set) var voiceProfileSummaries: [VoiceProfileSummary] = []
@@ -527,6 +574,18 @@ final class AppModel {
             }
         }
         updateStartAtLogin()
+        startApplicationActivity()
+        // A model server is a child process, and a child outlives a parent that was force quit: it
+        // holds the model and the port until the machine is restarted or somebody notices. Nothing
+        // of ours is running this early, so a transcriber still holding one of our model files is
+        // a leftover from a launch that ended badly, and it goes before it is joined by another.
+        let whisperModels = applicationDirectory.appending(
+            path: "models/whisper",
+            directoryHint: .isDirectory
+        )
+        Task.detached(priority: .utility) {
+            LiveServerCleanup.endOrphanedTranscribers(whisperModelDirectory: whisperModels)
+        }
         // Read through the setting every time, so turning automatic updates off takes effect at
         // the next check rather than at the next launch.
         appUpdater.automaticUpdatesEnabled = { [weak self] in
@@ -1033,10 +1092,12 @@ final class AppModel {
     func refreshSpeakerReviewEvidence() async {
         guard let store else {
             speakerReviewEvidence = [:]
+            speakerVoiceCounts = [:]
             return
         }
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
         var dates: [CallID: Date] = [:]
+        var voiceCounts: [CallID: SpeakerVoiceCount] = [:]
         for (callID, reviews) in Dictionary(grouping: speakerReviews, by: \.callID) {
             do {
                 guard
@@ -1048,6 +1109,10 @@ final class AppModel {
                     NormalizedTranscript.self,
                     from: Data(contentsOf: URL(filePath: transcript.jsonPath))
                 )
+                // How many voices this call was separated into, read from the transcript itself.
+                // The list of reviews holds only the voices still waiting, so a call with fourteen
+                // voices and one left used to report one voice detected.
+                voiceCounts[callID] = SpeakerVoiceCount.counting(document.segments)
                 let callDirectory = call.audioPath
                     .map { URL(filePath: $0).deletingLastPathComponent() }
                     ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
@@ -1070,6 +1135,7 @@ final class AppModel {
         }
         speakerReviewEvidence = evidence
         speakerReviewCallDates = dates
+        speakerVoiceCounts = voiceCounts
     }
 
     func voiceProfileSummary(for participantID: ParticipantID) -> VoiceProfileSummary? {
@@ -1138,8 +1204,23 @@ final class AppModel {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.appUpdater.applyStagedOnExit()
+                // The models this app puts in memory are held by child processes, and a child does
+                // not die with its parent. Quitting ends them here rather than leaving a gigabyte
+                // somewhere nobody can see it.
+                self?.endModelServersOnQuit()
             }
         }
+    }
+
+    /// Ends the model servers this app started, for the moment it quits.
+    private func endModelServersOnQuit() {
+        LiveServerCleanup.endServersOnQuit(
+            whisperModelDirectory: applicationDirectory.appending(
+                path: "models/whisper",
+                directoryHint: .isDirectory
+            ),
+            briefModel: briefModelFile
+        )
     }
 
     func checkSpeakerRuntime() async {
@@ -1181,9 +1262,20 @@ final class AppModel {
             if let item = try artifactRecovery.items().first(where: { $0.callID == callID }) {
                 try artifactRecovery.restore(item.callID)
             }
-            try await store.retrySpeakerAnalysis(callID: callID)
+            // The store refuses a second request while a pass is queued or running, which is what
+            // keeps a retry from interrupting work in flight. Reporting that refusal as an error is
+            // what left "Retry Speaker Detection" on the 2026-09-18 14:01 call as the app's last
+            // error for five days, while the job it named finished on its own and the call was
+            // fine. Someone who just pressed the button is told the work is under way instead.
+            let request = try await store.requestSpeakerAnalysis(callID: callID)
             try await refreshMetadata(from: store)
-            await processor?.processNext()
+            switch request {
+            case .queued:
+                recoveryMessage = "Speaker detection queued."
+                await processor?.processNext()
+            case .alreadyUnderway:
+                recoveryMessage = "The voices of this call are already being separated."
+            }
         } catch {
             report(error, context: "Retry Speaker Detection", category: .processing)
         }
@@ -1194,7 +1286,9 @@ final class AppModel {
     /// The detector answers exactly the number it is given, so this is the fix for a call whose
     /// voices came out wrong in either direction: two voices where one person spoke, or one voice
     /// holding two people. The number is remembered for this call while the app runs, and the
-    /// transcript is written again from the new separation.
+    /// transcript is written again from the new separation. A number can only be answered by the
+    /// count-aware detector, so this is the one that runs here, and it takes longer than the
+    /// separation a call is recorded with.
     func redetectSpeakers(for callID: CallID, voices: Int) async {
         guard voices >= 1 else { return }
         speakerCountOverrides[callID] = voices
@@ -1853,6 +1947,8 @@ final class AppModel {
         let foldedLines: Int
         /// Words the pass removed because the recorder had written them down twice.
         let duplicatesRemoved: Int
+        /// Ticket keys the pass wrote back onto numbers the decoder clipped or split in two.
+        let ticketRepairs: Int
         /// Calls whose search index was rebuilt from the corrected text.
         let reindexed: Int
 
@@ -1955,6 +2051,15 @@ final class AppModel {
                     + (outcome.duplicatesRemoved == 1 ? "" : "s") + " removed"
             )
         }
+        if outcome.ticketRepairs > 0 {
+            // A key written back where the decoder clipped it or split it across two segments. The
+            // call is read for its ticket numbers, so this is the count that makes the file
+            // searchable for the thing it was about.
+            work.append(
+                "\(outcome.ticketRepairs) ticket number"
+                    + (outcome.ticketRepairs == 1 ? "" : "s") + " written back in full"
+            )
+        }
         let result = work.isEmpty
             ? "no spellings and no invented lines"
             : Self.listed(work)
@@ -1987,6 +2092,7 @@ final class AppModel {
         timestampsStripped: Int = 0,
         foldedLines: Int = 0,
         duplicatesRemoved: Int = 0,
+        ticketKeysRepaired: Int = 0,
         reindexed: Int = 0
     ) -> String {
         "visited \(visited), changed \(changed), unchanged \(visited - changed - failed), "
@@ -1995,6 +2101,7 @@ final class AppModel {
             + "timestampsStripped \(timestampsStripped), "
             + "speakerTurnsFolded \(foldedLines), "
             + "repeatedWordsRemoved \(duplicatesRemoved), "
+            + "ticketKeysRepaired \(ticketKeysRepaired), "
             + "reindexed \(reindexed)"
     }
 
@@ -2088,6 +2195,7 @@ final class AppModel {
             var timestampsStripped = 0
             var foldedLines = 0
             var duplicatesRemoved = 0
+            var ticketRepairs = 0
             var reindexed = 0
             var failures: [String] = []
             var changedIDs: [CallID] = []
@@ -2115,6 +2223,7 @@ final class AppModel {
                         timestampsStripped += corrected.timestampsStripped
                         foldedLines += corrected.foldedLines
                         duplicatesRemoved += corrected.duplicatesRemoved
+                        ticketRepairs += corrected.ticketRepairs
                         continue
                     }
                     if backupDirectory == nil {
@@ -2131,6 +2240,7 @@ final class AppModel {
                     timestampsStripped += corrected.timestampsStripped
                     foldedLines += corrected.foldedLines
                     duplicatesRemoved += corrected.duplicatesRemoved
+                    ticketRepairs += corrected.ticketRepairs
                     changedIDs.append(callID)
                 } catch {
                     failedCalls += 1
@@ -2181,6 +2291,7 @@ final class AppModel {
                     timestampsStripped: timestampsStripped,
                     foldedLines: foldedLines,
                     duplicatesRemoved: duplicatesRemoved,
+                    ticketKeysRepaired: ticketRepairs,
                     reindexed: reindexed
                 ),
                 failures: failures,
@@ -2197,6 +2308,7 @@ final class AppModel {
                 timestampsStripped: timestampsStripped,
                 foldedLines: foldedLines,
                 duplicatesRemoved: duplicatesRemoved,
+                ticketRepairs: ticketRepairs,
                 reindexed: reindexed
             )
         } catch {
@@ -2240,6 +2352,8 @@ final class AppModel {
         let timestampsStripped: Int
         /// Turns the pass joined into the paragraph above them, which is layout and not speech.
         let foldedLines: Int
+        /// Ticket keys the pass wrote back onto numbers the decoder clipped or split in two.
+        let ticketRepairs: Int
         /// Whether any of the three files would differ. The markdown can need a rewrite when the
         /// stored text does not: the two hold the same speech in different shapes, and the blank
         /// lines a removed segment leaves behind are a markdown fault.
@@ -2264,6 +2378,10 @@ final class AppModel {
         // the JSON and the markdown are the same words in three shapes, and a repair that cleaned
         // one of them would leave the other two saying it twice.
         let textDuplicates = TranscriptDeduplicator.deduplicate(text: textArtifacts.text)
+        // A key the decoder clipped or split is put back, against the keys this same transcript
+        // writes out in full. It runs on the text and on the segments below, because the saved file
+        // is read as text and the index is built from the segments.
+        let textTickets = TicketKeyRepair.repairing(textDuplicates.text)
 
         // The JSON carries the segment boundaries that the search index is built from, so it is
         // corrected too, and its result is what the indexer reads.
@@ -2276,14 +2394,16 @@ final class AppModel {
                     .applyingGlossary(matcher)
                 let cleaned = TranscriptArtifacts.filter(segments: outcome.transcript.segments)
                 let deduplicated = TranscriptDeduplicator.deduplicate(segments: cleaned.segments)
-                if outcome.corrections > 0 || cleaned.outcome.didChange || deduplicated.didChange {
+                let repaired = TicketKeyRepair.repairing(segments: deduplicated.segments)
+                if outcome.corrections > 0 || cleaned.outcome.didChange || deduplicated.didChange
+                    || repaired.repairs > 0 {
                     document = NormalizedTranscript(
                         callId: document.callId,
                         language: document.language,
                         model: document.model,
                         participants: document.participants,
                         glossary: document.glossary,
-                        segments: deduplicated.segments
+                        segments: repaired.segments
                     )
                     let encoder = JSONEncoder()
                     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -2310,10 +2430,11 @@ final class AppModel {
             let cleaned = TranscriptArtifacts.filter(outcome.text)
             timestampsStripped = cleaned.strippedTimestamps
             let deduplicated = TranscriptDeduplicator.deduplicate(text: cleaned.text)
+            let tickets = TicketKeyRepair.repairing(deduplicated.text)
             // Last, so a paragraph is built from lines that survived the rules above rather than
             // from lines that were about to be removed, and a folded paragraph is never rejoined
             // around a blank the cleaning was going to drop.
-            let folded = TranscriptRenderer.foldingSpeakerTurns(deduplicated.text)
+            let folded = TranscriptRenderer.foldingSpeakerTurns(tickets.text)
             foldedLines = folded.foldedLines
             let rebuilt = TranscriptRenderer.replacingBody(
                 of: withoutGlossary,
@@ -2330,7 +2451,7 @@ final class AppModel {
                 callID: record.callID,
                 language: record.language,
                 model: record.model,
-                text: textDuplicates.text,
+                text: textTickets.text,
                 markdownPath: record.markdownPath,
                 jsonPath: record.jsonPath
             ),
@@ -2342,9 +2463,11 @@ final class AppModel {
             glossaryLineRemoved: glossaryLineRemoved,
             timestampsStripped: timestampsStripped,
             foldedLines: foldedLines,
+            ticketRepairs: textTickets.repairs,
             changed: correctedText.didChange
                 || textArtifacts.didChange
                 || textDuplicates.removedRuns > 0
+                || textTickets.repairs > 0
                 || markdownChanged
                 || jsonData != nil
         )
@@ -2409,7 +2532,7 @@ final class AppModel {
                 let call = try await store.call(id: item.callID),
                 recorderState.phase == .idle,
                 let audioPath = call.audioPath,
-                FileManager.default.fileExists(atPath: audioPath)
+                Self.audioIsOnDisk(call)
             {
                 activeCallID = call.id
                 finalizedAudioURL = URL(filePath: audioPath)
@@ -2444,7 +2567,25 @@ final class AppModel {
     }
 
     private func apply(_ event: RecorderEvent) {
+        let phaseBefore = recorderState.phase
         recorderState = RecorderReducer.reduce(state: recorderState, event: event)
+        // A recording that ended for any reason takes the live path with it.
+        //
+        // This is the one place every ending passes through, so a capture that failed in the middle
+        // of a call cannot leave a model server running behind a window that has nothing left to
+        // show. The stop that is asked for by hand releases the same path before it queues the
+        // finished call, which matters because the batch run loads the model the live server holds.
+        //
+        // What says the call ended is the move between two phases, not the phase the reducer hands
+        // back: a start's own events leave the phase where they found it, so a rule written against
+        // the returned state ended a call that was just beginning. See
+        // `RecordingPhase.endsLiveTranscript(from:to:)`.
+        if
+            liveSession != nil,
+            RecordingPhase.endsLiveTranscript(from: phaseBefore, to: recorderState.phase)
+        {
+            Task { await self.finishLiveSession() }
+        }
     }
 
     /// Moves the recorder into a state for a layout render, and only for a layout render.
@@ -2484,6 +2625,92 @@ final class AppModel {
             errorMessage = message
             errorDetails = "ArtefactError: the working files for this call are no longer on disk.\n"
                 + "Recorded at 10:41, last stage: finalizing artefacts."
+        }
+    }
+
+    /// Fills the live window with a conversation, for a layout render.
+    ///
+    /// The window only exists while a recording runs, and a render must never start one: this is
+    /// the state a real call reaches, so the window can be looked at in both appearances and at any
+    /// width. The people are invented, the same invented people the rest of the release renders
+    /// use, because a picture that leaves this machine must not carry a real call.
+    func seedPreviewLiveTranscript(_ style: PreviewLiveTranscript = .inProgress) {
+        guard Self.isPreviewMode else { return }
+        liveTranscript = LiveTranscript(localSpeaker: "Dana Holt", remoteSpeaker: "Others")
+        // Every state starts without a summary, so a switch left on screen by the state rendered
+        // before this one cannot be mistaken for part of this one.
+        liveSummary = ""
+        liveSummaryUpdates = 0
+        liveChatAnswer = nil
+        liveChatFailure = nil
+        liveChatRunning = false
+        liveQuestion = ""
+        switch style {
+        case .inProgress, .behind:
+            liveTranscript.append(Self.previewLiveLines)
+            liveStatus = style == .behind ? .behind(seconds: 40) : .listening
+            liveTranscript.setDroppedChunks(style == .behind ? 2 : 0)
+            if style == .inProgress {
+                liveChatAnswer = LiveChatAnswer(
+                    question: "What have I missed?",
+                    answer: "The Globex rate card changes on 1 October, and bookings already made "
+                        + "keep the old one. The surcharge moves with the card. Dana will send the "
+                        + "mapping sheet and wants the last column settled by Friday."
+                )
+            }
+        case .summary:
+            liveTranscript.append(Self.previewLiveLines)
+            liveStatus = .listening
+            liveSummary = Self.previewLiveSummary
+            // Three passes: the window says so beside the switch, which is what tells a reader how
+            // fresh the paragraph in front of them is.
+            liveSummaryUpdates = 3
+        case .starting:
+            liveStatus = .starting
+        }
+    }
+
+    /// The running summary a live render shows, in the voice of the seeded conversation.
+    private static let previewLiveSummary =
+        "The Globex rate change lands on 1 October, and bookings already made keep the old card. "
+        + "The surcharge moves with the card, except the fuel index. Dana will send the mapping "
+        + "sheet and wants the last column settled by Friday."
+
+    /// The conversation a live render shows, written out so both renders say the same thing.
+    private static var previewLiveLines: [LiveTranscriptEntry] {
+        // A time, the side of the call, who said it, and the sentence, with the long sentences
+        // wrapped so no line runs past the width the linter allows.
+        [
+            (
+                6, LiveAudioSource.microphone, "Dana Holt",
+                "Thanks for joining. Let us pick up the rate change for the Globex lane."
+            ),
+            (
+                12, LiveAudioSource.system, "Others",
+                "Happy to. The new card lands on the first of October, and the old one stays "
+                    + "for anything already booked."
+            ),
+            (
+                20, LiveAudioSource.microphone, "Dana Holt",
+                "Does the surcharge move with it, or is that billed separately?"
+            ),
+            (
+                26, LiveAudioSource.system, "Others",
+                "It moves with the card. Same as last quarter, except the fuel index."
+            ),
+            (
+                34, LiveAudioSource.microphone, "Dana Holt",
+                "Good. I will send the mapping sheet after this and we can settle the last "
+                    + "column by Friday."
+            ),
+        ].map { start, source, speaker, text in
+            LiveTranscriptEntry(
+                startSeconds: Double(start),
+                source: source,
+                speaker: speaker,
+                endSeconds: Double(start) + 5,
+                text: text
+            )
         }
     }
 
@@ -2616,6 +2843,164 @@ final class AppModel {
         }
     }
 
+    // MARK: - Live transcript
+
+    /// Builds the live path for a recording that is about to start.
+    ///
+    /// Everything it needs is decided here rather than read repeatedly later: which model file,
+    /// what the model should be told to spell, and who the two sides of the call are drawn as. The
+    /// server is looked for on every recording, so installing whisper.cpp while the app is running
+    /// makes the next call's live text work without a restart.
+    private func makeLiveSession(in directory: URL) -> LiveTranscriptSession {
+        let model = modelManager.models.first { $0.id == settings.selectedWhisperModelID }
+        let installed = model.flatMap {
+            modelManager.state(for: $0) == .installed ? modelManager.fileURL(for: $0) : nil
+        }
+        // The people already chosen for this call are not known until it is over, so the prompt
+        // carries the one name that is certain — the person recording — and the vocabulary. The
+        // far end's names arrive with the batch pass, which is the pass that can hear who is who.
+        let localParticipant = participants.first { $0.id == settings.localParticipantID }
+        let configuration = LiveTranscriptSession.Configuration(
+            callDirectory: directory,
+            whisperServer: ToolLocator.standard.locate("whisper-server"),
+            whisperModel: installed,
+            whisperModelName: model?.displayName ?? settings.selectedWhisperModelID,
+            prompt: PromptBuilder.whisperContext(
+                participants: [localParticipant].compactMap { $0 },
+                glossary: glossary,
+                usageCounts: glossaryUsage
+            ),
+            glossary: glossary,
+            localSpeaker: localParticipant?.name ?? "You",
+            remoteSpeaker: "Others",
+            chatRuntime: briefRuntime,
+            chatModel: briefModelFile,
+            // A Mac without the brief model gets no summary, the same way it gets no answer to a
+            // question: the loop is what decides, and it finds no writer and asks nothing.
+            summaryIntervalSeconds: settings.summarizesLiveCalls
+                ? settings.liveSummaryInterval.seconds
+                : nil
+        )
+        let token = UUID()
+        liveSessionToken = token
+        return LiveTranscriptSession(configuration: configuration) { [weak self] event in
+            Task { @MainActor [weak self] in self?.applyLive(event, token: token) }
+        }
+    }
+
+    /// Starts the live view a just-started recording asked for.
+    private func beginLiveSession(_ session: LiveTranscriptSession) {
+        liveTranscript = LiveTranscript(
+            localSpeaker: session.localSpeakerName,
+            remoteSpeaker: session.remoteSpeakerName
+        )
+        liveSummary = ""
+        liveSummaryUpdates = 0
+        liveStatus = .starting
+        liveChatAnswer = nil
+        liveChatFailure = nil
+        liveChatRunning = false
+        liveQuestion = ""
+        session.start()
+        // The window is opened by the menu bar, which owns windows: a model cannot open one, and
+        // the count is what tells it a new session has begun.
+        liveWindowToken += 1
+    }
+
+    /// Ends the live path, and leaves what it already drew on screen.
+    ///
+    /// The text stays because somebody may still be reading it: the window is theirs to close. What
+    /// goes is the memory behind it — amanu's design document is explicit about why the live model
+    /// is released before the finished call is transcribed rather than after.
+    private func finishLiveSession() async {
+        guard let liveSession else { return }
+        self.liveSession = nil
+        await liveSession.finish()
+        // A live path that ends before the capture does is this feature failing, and it fails
+        // quietly: the window holds the words it has, and the recording carries on without it. The
+        // 2026-09-22 13:18 call showed "Recording finished" for the rest of a call that was still
+        // recording, and nothing in the log said the live path had been released. The window says a
+        // problem is a problem instead of reading like the end of the call.
+        if recorderState.phase.holdsLiveTranscript {
+            Logger(subsystem: "local.callrecorder.app", category: "live").notice(
+                "the live path was released while the call was still being recorded"
+            )
+            liveStatus = .failed(
+                "The call is still being recorded. What was said is kept with the recording and "
+                    + "written up when the call ends."
+            )
+        } else {
+            liveStatus = .stopped
+        }
+        liveChatRunning = false
+    }
+
+    private func applyLive(_ event: LiveTranscriptSession.Event, token: UUID) {
+        guard token == liveSessionToken else { return }
+        switch event {
+        case .ready:
+            guard !liveStatus.isProblem, liveStatus != .stopped else { return }
+            liveStatus = .listening
+        case let .text(lines):
+            liveTranscript.append(lines)
+        case let .summary(text):
+            liveSummary = text
+            liveSummaryUpdates += 1
+        case let .backlog(seconds, droppedChunks):
+            liveTranscript.setDroppedChunks(droppedChunks)
+            guard !liveStatus.isProblem, liveStatus != .stopped else { return }
+            liveStatus = seconds >= Self.liveBehindThresholdSeconds
+                ? .behind(seconds: Int(seconds.rounded()))
+                : .listening
+        case let .failure(message):
+            liveStatus = .failed(message)
+        case let .answer(answer):
+            liveChatAnswer = answer
+            liveChatFailure = nil
+            liveChatRunning = false
+        case let .answerFailure(message):
+            liveChatFailure = message
+            liveChatRunning = false
+        }
+    }
+
+    /// How far behind the live text may fall before the window says so.
+    static let liveBehindThresholdSeconds: Double = 20
+
+    /// Asks the model a question about the call that is running.
+    func askLiveQuestion(_ question: String) {
+        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let refusal = LiveChat.refusal(question: trimmed, transcript: liveTranscript) {
+            liveChatFailure = refusal
+            return
+        }
+        guard let liveSession else {
+            liveChatFailure = "Live text is not running. It starts with a recording."
+            return
+        }
+        guard liveStatus.acceptsQuestions else {
+            liveChatFailure = "The recording has stopped, so there is nothing new to answer from."
+            return
+        }
+        if let missing = briefReadiness {
+            liveChatFailure = missing.errorDescription
+            return
+        }
+        liveChatFailure = nil
+        liveChatRunning = true
+        liveSession.ask(trimmed, transcript: liveTranscript)
+    }
+
+    func askLiveQuestion() {
+        askLiveQuestion(liveQuestion)
+    }
+
+    /// Clears the answer card, for a question the person has finished with.
+    func dismissLiveAnswer() {
+        liveChatAnswer = nil
+        liveChatFailure = nil
+    }
+
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
         guard let pipeline else {
@@ -2631,15 +3016,23 @@ final class AppModel {
         let dirName = CallRecorderFolderNameFormatter.string(from: startedAt)
         let directory = URL(filePath: settings.outputDirectory, directoryHint: .isDirectory)
             .appending(path: dirName, directoryHint: .isDirectory)
+        // The live path is built before the capture starts, because the tap that reads the audio
+        // has to be attached to the stream that delivers it. Nothing is copied until a buffer
+        // arrives, which cannot happen before the recording is running.
+        let liveSession = settings.showsLiveTranscript ? makeLiveSession(in: directory) : nil
         do {
             _ = try await captureSession.startSegment(
                 directory: directory,
                 index: 1,
                 microphoneDeviceID: settings.selectedMicrophoneID,
-                allowsMissingMicrophone: settings.recordsWithoutMicrophone
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone,
+                liveTap: liveSession?.makeTap(offsetSeconds: 0)
             )
             if automatic, !activityMonitor.externalMicrophoneActive {
                 _ = try await captureSession.finishSegment()
+                // A microphone that opened for a moment is not a call. Its live path is closed
+                // before it ever starts a model, and any audio it wrote goes with it.
+                await liveSession?.finish()
                 return
             }
             try await pipeline.start(callID: callID, startedAt: startedAt)
@@ -2652,6 +3045,12 @@ final class AppModel {
             // A recording this app started by itself carries a ceiling, so a call app that holds
             // the microphone open after the meeting ends cannot record a room for hours.
             if automatic { startRecordingLimits() }
+            // A Mac that sleeps during a call is a recording that stops in the middle of one.
+            startRecordingActivity()
+            if let liveSession {
+                self.liveSession = liveSession
+                beginLiveSession(liveSession)
+            }
             // A new call starts its own count, so nothing banked by the call before it is added on.
             recordedSecondsBeforePause = 0
             if automatic {
@@ -2666,6 +3065,7 @@ final class AppModel {
                 apply(.manualStart(sessionID: sessionID))
             }
         } catch {
+            await liveSession?.finish()
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
                 // The permission is a fact about the app rather than a capture that went wrong. The
                 // card above the recent list carries the instructions and the button, so this line
@@ -2680,6 +3080,35 @@ final class AppModel {
             report(error, context: "Capture Start", category: .capture)
             apply(.fail(.captureUnavailable))
         }
+    }
+
+    /// Keeps this app out of App Nap for as long as it is running.
+    ///
+    /// A menu bar app that is doing nothing looks exactly like a menu bar app that has been
+    /// suspended, and macOS suspends the quiet one: timers drift, a local server answers seconds
+    /// late, and work is finished after the moment it was for. Amanu's notes call this out first,
+    /// because every symptom of it points at the wrong thing.
+    private func startApplicationActivity() {
+        guard applicationActivity == nil, !Self.isPreviewMode else { return }
+        applicationActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .suddenTerminationDisabled, .automaticTerminationDisabled],
+            reason: "Call Recorder watches for calls and answers its own windows"
+        )
+    }
+
+    /// Keeps the machine awake while a call is being recorded.
+    private func startRecordingActivity() {
+        guard recordingActivity == nil else { return }
+        recordingActivity = ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled],
+            reason: "Call Recorder is recording a call"
+        )
+    }
+
+    private func finishRecordingActivity() {
+        guard let recordingActivity else { return }
+        ProcessInfo.processInfo.endActivity(recordingActivity)
+        self.recordingActivity = nil
     }
 
     /// Adds the seconds recorded since the last start to the bank, and stops the live count.
@@ -2736,7 +3165,10 @@ final class AppModel {
                 directory: activeSessionDirectory,
                 index: nextSegmentIndex,
                 microphoneDeviceID: settings.selectedMicrophoneID,
-                allowsMissingMicrophone: settings.recordsWithoutMicrophone
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone,
+                // The live clock continues where the pause left it, so the words after a pause
+                // land after the words before it rather than at the start of the call.
+                liveTap: liveSession?.makeTap(offsetSeconds: recordedSecondsBeforePause)
             )
             nextSegmentIndex += 1
             // The next run starts counting from now rather than from the start of the call.
@@ -2766,6 +3198,7 @@ final class AppModel {
         recordingLimitTask = nil
         captureOperationInFlight = true
         defer { captureOperationInFlight = false }
+        defer { finishRecordingActivity() }
         if automatic {
             apply(.automaticStopGraceElapsed)
         } else {
@@ -2779,6 +3212,10 @@ final class AppModel {
                     capturedSegments.append(try await captureSession.finishSegment())
                 } catch AudioCaptureError.notCapturing where !capturedSegments.isEmpty {}
             }
+            // The live path ends here, before the finished call is queued. The live server holds a
+            // copy of the same model the batch run is about to load, and the transcript that is
+            // kept is written from the recording rather than from anything the preview saw.
+            await finishLiveSession()
             guard
                 let activeCallID,
                 let activeSessionDirectory
@@ -2818,11 +3255,20 @@ final class AppModel {
                     SegmentSnapshot(
                         index: $0.index,
                         systemURL: $0.system?.fileURL,
-                        microphoneURL: $0.microphone?.fileURL
+                        microphoneURL: $0.microphone?.fileURL,
+                        // The place each side sits on the recording's clock is carried to the
+                        // finalizer: a side that was captured in more than one piece is laid on
+                        // that timeline, and a side captured in one piece is copied. Both answers
+                        // need the numbers, and the finalizer is in another process by then.
+                        systemStartSeconds: $0.system?.firstPresentationSeconds,
+                        systemDurationSeconds: $0.system?.durationSeconds,
+                        microphoneStartSeconds: $0.microphone?.firstPresentationSeconds,
+                        microphoneDurationSeconds: $0.microphone?.durationSeconds
                     )
                 },
                 destination: activeSessionDirectory,
-                endedAt: Date()
+                endedAt: Date(),
+                keepsAudio: !settings.removeAudioAfterTranscription
             )
             self.activeCallID = nil
             finalizedAudioURL = nil
@@ -2994,7 +3440,7 @@ final class AppModel {
             guard
                 let call = try await store.call(id: job.callID),
                 let audioPath = call.audioPath,
-                FileManager.default.fileExists(atPath: audioPath)
+                Self.audioIsOnDisk(call)
             else { throw BackgroundProcessingError.audioUnavailable }
             guard let whisperCLI = ToolLocator.standard.locate("whisper-cli") else {
                 throw BackgroundProcessingError.whisperUnavailable
@@ -3022,6 +3468,8 @@ final class AppModel {
                     ffmpeg: pipeline.finalizer.ffmpeg,
                     whisperCLI: whisperCLI,
                     vadModel: try await ensuredVADModel(),
+                    language: settings.transcriptionLanguage,
+                    includeTimestamps: settings.transcriptTimestamps,
                     cancellation: cancellation
                 )
             )
@@ -3038,6 +3486,7 @@ final class AppModel {
                 localParticipantID: settings.localParticipantID,
                 usesParticipantCount: settings.diarizationUsesParticipantCount,
                 speakerCountOverride: speakerCountOverrides[job.callID],
+                timestamps: settings.transcriptTimestamps,
                 cancellation: cancellation
             )
             return .attributing
@@ -3058,6 +3507,7 @@ final class AppModel {
                 store: store,
                 cancellation: cancellation
             )
+            await writePlayableMixWhenAudioIsKept(job.callID, store: store)
             do {
                 _ = try await artifactRecovery.finalizeReadyCall(
                     job.callID,
@@ -3094,10 +3544,7 @@ final class AppModel {
         var result: Set<CallID> = []
         for job in processingJobs where job.executionState != .complete {
             guard let call = try await store.call(id: job.callID) else { continue }
-            if let audioPath = call.audioPath,
-               FileManager.default.fileExists(atPath: audioPath) {
-                continue
-            }
+            if Self.audioIsOnDisk(call) { continue }
             let markdown = try await store.transcript(for: job.callID).map {
                 URL(filePath: $0.markdownPath)
             }
@@ -3112,6 +3559,51 @@ final class AppModel {
             return false
         }
         return (attributes[.size] as? NSNumber)?.intValue ?? 0 > 0
+    }
+
+    /// Whether the audio of a call is still on disk.
+    ///
+    /// The stored path is the file a person plays the call from, and that file is written only
+    /// once the person has chosen to keep the audio — after the transcript, which reads the two
+    /// sides of the call rather than the mix. So a call's audio is on disk when that file is there,
+    /// and also while either recorded side is: a call is not unfinishable just because its
+    /// playable file has not been written yet.
+    private static func audioIsOnDisk(_ call: CallRecord) -> Bool {
+        guard let audioPath = call.audioPath else { return false }
+        if FileManager.default.fileExists(atPath: audioPath) { return true }
+        let tracks = MediaFinalizer.existingTracks(
+            in: URL(filePath: audioPath).deletingLastPathComponent()
+        )
+        return tracks.system != nil || tracks.microphone != nil
+    }
+
+    /// Writes the file a person plays a call from, for the calls whose audio is kept.
+    ///
+    /// Mixing the two sides is a second encode of the whole call — minutes of work on a long
+    /// meeting — and no stage of the pipeline reads it: the transcriber reads the sides apart. It
+    /// therefore runs here, after the transcript exists, and only for a call whose audio stays. A
+    /// failure costs the playable file and nothing else, so it is a line in the log.
+    private func writePlayableMixWhenAudioIsKept(_ callID: CallID, store: CallStore) async {
+        guard !settings.removeAudioAfterTranscription, let pipeline else { return }
+        do {
+            guard
+                let call = try await store.call(id: callID),
+                let audioPath = call.audioPath
+            else { return }
+            let directory = URL(filePath: audioPath).deletingLastPathComponent()
+            let tracks = MediaFinalizer.existingTracks(in: directory)
+            guard tracks.system != nil || tracks.microphone != nil else { return }
+            _ = try await pipeline.finalizer.writeCompatibilityMix(
+                system: tracks.system,
+                microphone: tracks.microphone,
+                destination: directory
+            )
+        } catch {
+            Logger(subsystem: "local.callrecorder.app", category: "processing")
+                .notice(
+                    "the playable audio of the call was not written: (error.localizedDescription, privacy: .public)"
+                )
+        }
     }
 
     /// Clears a call whose unfinished job has no input left. Nothing else is removed: such a call
@@ -3223,7 +3715,10 @@ final class AppModel {
                 if try artifactRecovery.items().contains(where: { $0.callID == issue.callID }) {
                     try artifactRecovery.restore(issue.callID)
                 }
-                try await store.retrySpeakerAnalysis(callID: issue.callID)
+                // The answer is read and dropped: a job that is queued or running already has the
+                // work on its way, and letting that refusal reach the catch would report a launch
+                // failure for a state that repairs itself.
+                _ = try await store.requestSpeakerAnalysis(callID: issue.callID)
             }
             try await purgeExpiredArtifacts(store: store)
             await recoverLegacyReadyArtifacts(store: store)
@@ -3803,7 +4298,8 @@ final class AppModel {
             jsonURL: jsonURL,
             renderedMarkdown: TranscriptRenderer.markdown(
                 transcript: transcript,
-                participants: callParticipants
+                participants: callParticipants,
+                timestamps: settings.transcriptTimestamps
             ),
             normalizedJSON: normalizedJSON
         )
@@ -3817,6 +4313,11 @@ final class AppModel {
                 jsonPath: record.jsonPath
             )
         )
+        // The rewritten text owes a search index, and saving it queues that work instead of doing
+        // it. Naming a voice is one of the passes that queues it, and nothing ran the queue before
+        // the next launch: the call sat at "Indexing", and Retry and Separate again both refused
+        // it, because a queued stage is neither complete nor failed.
+        await processor?.processNext()
         return revision
     }
 
@@ -4108,7 +4609,8 @@ final class AppModel {
             let participants = try await store.participants(for: record.callID)
             let markdown = TranscriptRenderer.markdown(
                 transcript: Self.transcript(fromStoredText: body, language: record.language),
-                participants: participants
+                participants: participants,
+                timestamps: settings.transcriptTimestamps
             )
             try Data(markdown.utf8).write(to: scratch, options: .atomic)
             let destination = try TranscriptPromoter(outputRoot: root)
@@ -4517,14 +5019,26 @@ final class AppModel {
     }
 
     private func recoverLegacyReadyArtifacts(store: CallStore) async {
+        let jobs: [ProcessingJob]
         do {
-            for job in try await store.processingJobs()
-            where job.stage == .ready && job.executionState == .complete {
+            jobs = try await store.processingJobs()
+        } catch {
+            report(error, context: "Recover Completed Artifacts", category: .recovery)
+            return
+        }
+        // One call whose transcript file is gone used to end this pass for every call behind it:
+        // the promotion threw, the loop stopped at that row, and the calls that were ready to
+        // finish stayed unfinished at every launch. Five calls in this library sit in that state
+        // -- their transcript file was moved or deleted by hand -- and the four oldest have no
+        // copy left anywhere, so no later launch can finish them either. Each call is now finished
+        // or left alone on its own, and the calls that cannot be finished are counted once.
+        var unfinished: [CallID] = []
+        for job in jobs where job.stage == .ready && job.executionState == .complete {
+            do {
                 guard
                     try await !store.hasUnresolvedSpeakerReviews(for: job.callID),
                     let call = try await store.call(id: job.callID),
-                    let audioPath = call.audioPath,
-                    FileManager.default.fileExists(atPath: audioPath)
+                    Self.audioIsOnDisk(call)
                 else { continue }
                 try await promoteTranscript(for: job.callID, store: store)
                 do {
@@ -4536,9 +5050,24 @@ final class AppModel {
                 } catch ArtifactRecoveryError.speakerReviewPending {
                     continue
                 }
+            } catch TranscriptPromotionError.sourceUnavailable {
+                // The file this call would promote is not there. Nothing in this pass can bring it
+                // back, and the call itself is unharmed: its text is in the library and its
+                // recording is on disk. Only the copy in the output folder is missing.
+                unfinished.append(job.callID)
+            } catch {
+                unfinished.append(job.callID)
+                report(error, context: "Recover Completed Artifacts", category: .recovery)
             }
-        } catch {
-            report(error, context: "Recover Completed Artifacts", category: .recovery)
+        }
+        if !unfinished.isEmpty {
+            Logger(subsystem: "local.callrecorder.app", category: "recovery")
+                .notice(
+                    """
+                    \(unfinished.count, privacy: .public) completed call(s) have no transcript \
+                    file to promote; the rest of the pass ran past them
+                    """
+                )
         }
     }
 
@@ -4548,10 +5077,7 @@ final class AppModel {
                 try await !store.hasUnresolvedSpeakerReviews(for: callID),
                 let call = try await store.call(id: callID),
                 call.status == .ready,
-                let audioPath = call.audioPath,
-                FileManager.default.fileExists(
-                    atPath: URL(filePath: audioPath).deletingLastPathComponent().path
-                )
+                Self.audioIsOnDisk(call)
             else { return }
             _ = try await artifactRecovery.finalizeReadyCall(
                 callID,

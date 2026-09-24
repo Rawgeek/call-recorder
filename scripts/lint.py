@@ -33,6 +33,12 @@ finding = re.compile(
 )
 hunk = re.compile(r"^@@ -[0-9]+(?:,[0-9]+)? \+([0-9]+)(?:,([0-9]+))? @@", re.MULTILINE)
 
+# A literal that was joined to its neighbour by hand can carry the joining "+" into the text:
+# a log message written as "voice 3" + "confirmed" becomes "voice 3 +          confirmed". That
+# compiles, so only the log line shows it; two of these survived a build on 2026-09-18 and the
+# Swift one lost a voice name. A "+" this far from the token on either side is not code.
+spliced = re.compile(r"\S \+ {6,}\S")
+
 
 def run_result(command: list[str], cwd: Path = root) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, capture_output=True, text=True)
@@ -80,6 +86,23 @@ def swift_findings(paths: list[Path], changes: dict[Path, set[int]]) -> list[str
     return found
 
 
+def spliced_findings(paths: list[Path], changes: dict[Path, set[int]]) -> list[str]:
+    found = []
+    for path in paths:
+        for number, line in enumerate(path.read_text().splitlines(), start=1):
+            if spliced.search(line) is None:
+                continue
+            if changes and number not in changes.get(path.resolve(), set()):
+                continue
+            found.append(
+                str(path.relative_to(root))
+                + ":"
+                + str(number)
+                + ": [spliced-literal] a joined literal kept the joining + in its text"
+            )
+    return found
+
+
 def mcp_findings(paths: list[Path]) -> list[str]:
     biome = root / "mcp" / "node_modules" / ".bin" / "biome"
     command = [str(biome)] if biome.exists() else ["bunx", "biome"]
@@ -112,6 +135,7 @@ def main() -> int:
     found: list[str] = []
     if swift:
         found += swift_findings(swift, changes)
+        found += spliced_findings(swift, changes)
     if mcp:
         found += mcp_findings(mcp)
 

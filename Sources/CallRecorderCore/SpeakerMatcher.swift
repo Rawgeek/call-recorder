@@ -40,7 +40,8 @@ public enum SpeakerMatcher {
                 return SpeakerMatch(
                     clusterID: clusters[clusterIndex].id,
                     participantID: orderedProfiles[suggestion].participantID,
-                    state: .suggested
+                    state: .suggested,
+                    similarity: Float(scores[clusterIndex][suggestion])
                 )
             }
             let similarity = scores[clusterIndex][profileIndex]
@@ -57,7 +58,8 @@ public enum SpeakerMatcher {
             return SpeakerMatch(
                 clusterID: clusters[clusterIndex].id,
                 participantID: profile.participantID,
-                state: automatic ? .automatic : .suggested
+                state: automatic ? .automatic : .suggested,
+                similarity: Float(similarity)
             )
         }
     }

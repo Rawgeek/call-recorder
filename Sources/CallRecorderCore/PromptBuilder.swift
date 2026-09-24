@@ -392,7 +392,8 @@ public enum TranscriptRenderer {
     /// - Otherwise: plain text.
     public static func markdown(
         transcript: WhisperTranscript,
-        participants: [Participant]
+        participants: [Participant],
+        timestamps: Bool = false
     ) -> String {
         let hasDiarization = transcript.segments.contains { $0.speakerIndex != nil }
         let body = transcript.segments.compactMap { segment -> String? in
@@ -411,7 +412,12 @@ public enum TranscriptRenderer {
             } else {
                 speakerTag = ""
             }
-            return "\(speakerTag)\(cleaned)"
+            // The time goes after the speaker tag rather than in front of the line, so the shape a
+            // turn has -- a bold label, a colon, the words -- is the shape every reader of this file
+            // already knows how to find. The 2026-09-18 notes are read beside the audio, and the time
+            // is the only thing that connects the two.
+            let stamp = timestamps ? "[\(Self.timestamp(segment.startMs))] " : ""
+            return "\(speakerTag)\(stamp)\(cleaned)"
         }.joined(separator: "\n\n")
 
         return """
@@ -433,5 +439,19 @@ public enum TranscriptRenderer {
             .replacingOccurrences(of: "[BLANK_AUDIO]", with: "")
             .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The time a turn started, as hours, minutes and seconds.
+    ///
+    /// Hours are printed even when they are zero. A transcript read beside its recording is jumped
+    /// into by time, and "00:12:03" is one shape to read rather than two.
+    public static func timestamp(_ milliseconds: Int) -> String {
+        let seconds = max(0, milliseconds) / 1000
+        return String(
+            format: "%02d:%02d:%02d",
+            seconds / 3600,
+            (seconds % 3600) / 60,
+            seconds % 60
+        )
     }
 }

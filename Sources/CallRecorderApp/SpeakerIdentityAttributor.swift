@@ -1,7 +1,13 @@
 import CallRecorderCore
 import Foundation
+import OSLog
 
 struct SpeakerIdentityAttributor: Sendable {
+    private static let logger = Logger(
+        subsystem: "local.callrecorder.app",
+        category: "speaker-identity"
+    )
+
     let store: CallStore
     let speakerStore: SpeakerStore
     let participants: [Participant]
@@ -43,6 +49,21 @@ struct SpeakerIdentityAttributor: Sendable {
         let participantsByID = Dictionary(uniqueKeysWithValues: participants.map { ($0.id, $0) })
         var identities: [Int: Participant] = [:]
         for (cluster, match) in zip(pending, matches) {
+            // One line per detected voice, so a call whose names came out wrong can be explained
+            // from the log without re-running the diarization: which voice it was, what the policy
+            // decided, how close the closest profile was, and how much speech the voice held. A
+            // dropped suggestion and an unmatched voice used to look the same from outside -- both
+            // simply absent from the transcript -- and this is the difference between them.
+            let similarity = match.similarity.map { String(format: "%.3f", $0) } ?? "none"
+            let name = match.participantID == nil ? "no name" : "named"
+            Self.logger.notice(
+                """
+                voice \(cluster.speakerIndex, privacy: .public) \
+                \(match.state.rawValue, privacy: .public) similarity \(similarity, privacy: .public) \
+                speech \(cluster.cluster.speechDurationMilliseconds, privacy: .public) ms \
+                \(name, privacy: .public)
+                """
+            )
             guard
                 match.state == .automatic || match.state == .confirmed,
                 let participantID = match.participantID,

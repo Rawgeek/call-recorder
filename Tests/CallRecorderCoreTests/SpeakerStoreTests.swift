@@ -109,15 +109,47 @@ struct SpeakerStoreTests {
             policy: testPolicy
         )
 
-        #expect(matches == [
-            SpeakerMatch(
-                clusterID: candidate.cluster.id,
-                participantID: participant.id,
-                state: .automatic
-            ),
-        ])
+        #expect(matches.count == 1)
+        #expect(matches.first?.clusterID == candidate.cluster.id)
+        #expect(matches.first?.participantID == participant.id)
+        #expect(matches.first?.state == .automatic)
+        // The score travels with the match, so a call can be explained after the fact rather than
+        // only trusted. This candidate holds the profile's own embedding, so the score is the top of
+        // the scale.
+        #expect((matches.first?.similarity ?? 0) > 0.99)
         #expect(try await harness.speakers.confirmedSampleCount(for: participant.id) == 1)
         #expect(try await harness.store.participants(for: candidateCallID).map(\.id) == [participant.id])
+    }
+
+    @Test("a second separation of a call replaces the voices the first one found")
+    func secondSeparationRetiresTheVoicesItReplaced() async throws {
+        let harness = try await Harness()
+        let first = (0..<3).map { index in
+            harness.pending(
+                id: SpeakerClusterID(rawValue: UUID()),
+                createdAt: Date(),
+                speakerIndex: index
+            )
+        }
+        _ = try await harness.speakers.identify(first, policy: testPolicy)
+        #expect(try await harness.speakers.unresolvedReviews().count == 3)
+
+        // The second pass finds two voices where the first found three. The voice that is gone is
+        // not in the transcript any more, because no segment points at its number; it must not stay
+        // in the review list either. The 2026-09-18 17:47 call kept one of these for two days, under
+        // the same name as a voice the second pass had given to somebody else.
+        let second = (0..<2).map { index in
+            harness.pending(
+                id: SpeakerClusterID(rawValue: UUID()),
+                createdAt: Date(),
+                speakerIndex: index
+            )
+        }
+        _ = try await harness.speakers.identify(second, policy: testPolicy)
+
+        let reviews = try await harness.speakers.unresolvedReviews()
+        #expect(reviews.count == 2)
+        #expect(reviews.map(\.speakerIndex).sorted() == [0, 1])
     }
 
     @Test("confirmation rematches unresolved voice as a suggestion")

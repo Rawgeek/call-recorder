@@ -39,12 +39,18 @@ struct AppSettingsDecodingTests {
         // A Mac that has never been asked about a missing microphone records the other side of the
         // call, which is the behaviour this release introduced.
         #expect(decoded.recordsWithoutMicrophone)
-        // And a library whose lists have never been trusted with the voice count has the count
-        // asked for, which is what this release does by default.
-        #expect(decoded.diarizationUsesParticipantCount)
+        // And a blob that has never carried the voice count leaves the count to the separation,
+        // which is what a blob written before the option existed meant and what this release does
+        // by default: the separation counts the voices it hears unless the count is asked for.
+        #expect(decoded.diarizationUsesParticipantCount == false)
         // A blob written before briefs existed asks for them, which is the behaviour this release
         // introduced: a finished call is written up unless somebody says otherwise.
         #expect(decoded.summarizesCalls)
+        // The running summary came with the live transcript, and a blob written before it existed
+        // asks for it too: a window that follows a call is worth summarizing unless somebody says
+        // otherwise.
+        #expect(decoded.summarizesLiveCalls)
+        #expect(decoded.liveSummaryInterval == .ninetySeconds)
     }
 
     @Test("switching briefs off survives a save")
@@ -78,6 +84,36 @@ struct AppSettingsDecodingTests {
 
         #expect(decoded.recordsWithoutMicrophone == false)
         #expect(decoded == settings)
+    }
+
+    @Test("the chosen summary step is remembered, and one this build cannot read costs only itself")
+    func summaryIntervalSurvivesASave() throws {
+        // Given a settings blob with a step that is not the default.
+        var settings = AppSettings.default
+        settings.liveSummaryInterval = .thirtySeconds
+        settings.summarizesLiveCalls = false
+
+        // Then both come back, rather than the defaults overwriting them.
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        #expect(decoded.liveSummaryInterval == .thirtySeconds)
+        #expect(decoded.summarizesLiveCalls == false)
+
+        // And a step no build writes — 45 seconds, say — falls back on its own while everything
+        // beside it is kept.
+        let unknown = """
+        {
+          "selectedMicrophoneID": "Yeti",
+          "selectedWhisperModelID": "medium",
+          "outputDirectory": "/tmp/recordings",
+          "liveSummaryInterval": 45
+        }
+        """
+        let damaged = try JSONDecoder().decode(AppSettings.self, from: Data(unknown.utf8))
+        #expect(damaged.liveSummaryInterval == LiveSummaryInterval.default)
+        #expect(damaged.selectedMicrophoneID == "Yeti")
+        #expect(damaged.selectedWhisperModelID == "medium")
+        #expect(damaged.outputDirectory == "/tmp/recordings")
     }
 
     @Test("the chosen check step is remembered, and one this build cannot read costs only itself")

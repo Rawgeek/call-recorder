@@ -52,7 +52,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 **Speakers**
 
-- Local diarization through pyannote.audio separates the recording into voices.
+- Local diarization through Nemotron 3 separates the recording into voices.
 - Optional encrypted voice profiles: confirming a name teaches the voice, and later calls are
   suggested or named automatically. Voiceprints are stored in the macOS Keychain and are never
   part of transcripts, search, diagnostics, or MCP responses.
@@ -106,7 +106,8 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 - Apple silicon Mac running macOS 15 (Sequoia) or newer.
 - [Homebrew](https://brew.sh) packages: `ffmpeg` (capture and conversion) and `whisper-cpp`
   (transcription).
-- Optional, for speaker labels: a local Python environment with `pyannote.audio`.
+- Optional, for speaker labels: a local Python environment with `pyannote.audio`, `librosa` and
+  transformers 5.18.
 - Optional, for briefs: `llama.cpp` (the runtime that loads the brief model) and the model
   itself from **Settings > Models**.
 
@@ -114,7 +115,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.19.zip` from the
+1. Download `CallRecorder-0.1.23.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -174,17 +175,25 @@ inside the bundle, nothing is fetched, and that build needs no network.
 
 ### Speaker identification (optional)
 
-Whisper transcribes speech; it does not know who is speaking. pyannote.audio splits the
-recording into voices, and the app learns a voice profile when you confirm a name.
+Whisper transcribes speech; it does not know who is speaking. Nemotron 3 Diarization says who
+spoke when, the pyannote.audio community-1 embedder turns each of those voices into the profile a
+name is matched against, and the app learns that profile when you confirm a name. All of it runs
+on the Mac.
 
 1. Accept the licence for `pyannote/speaker-diarization-community-1` on Hugging Face, and sign
-   in once so a token is stored locally (`hf auth login`).
+   in once so a token is stored locally (`hf auth login`). Nemotron 3 Diarization is not gated
+   and needs no licence.
 2. Create a Python environment:
 
    ```sh
    python3 -m venv ~/pyannote-env
-   ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio
+   ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio librosa
+   ~/pyannote-env/bin/pip install \
+       "transformers @ git+https://github.com/huggingface/transformers@f324707307757d9c0b8dac1c4462eceff911fa2f"
    ```
+
+   The turn model is read by transformers 5.18, which is not on PyPI yet, so the revision above is
+   pinned. Both models are downloaded once, on first use, into the Hugging Face cache.
 
 3. In the app: open **Review Speakers** (from the menu-bar panel, or **Settings -> Recovery ->
    Review Speakers...**), then **Speaker setup -> Choose Python Environment**, and select
@@ -192,7 +201,10 @@ recording into voices, and the app learns a voice profile when you confirm a nam
    the local speaker model is ready.
 
 If a call comes out with one person as two voices, or two people as one, Review Speakers shows how
-many voices the call was separated into, and separates it again with the number you count.
+many voices the call was separated into, and separates it again with the number you count. A
+number you count is answered by the count-aware pyannote.audio separator, which is slower than the
+separation a call is recorded with; **Settings -> General -> Separate voices by the people on the
+call** asks that same separator for the number of people on the call.
 
 Without this step the app still transcribes everything, with speakers shown as Speaker 1,
 Speaker 2, and so on.
@@ -246,7 +258,7 @@ system audio ------ /                                  |                      |
                                               VAD / Silero (speech)           |
                                                        |                      v
                                                        v            Turso/libsql (chunks,
-                                              pyannote diarization    FTS5 + vector index)
+                                              Nemotron 3 diarization  FTS5 + vector index)
                                                        |                      |
                                                        v                      v
                                               speaker review  <----  MCP server for Codex
@@ -255,8 +267,8 @@ system audio ------ /                                  |                      |
 - **Capture**: microphone and system audio are recorded as separate sources, then mixed into
   one `call.m4a` during finalization.
 - **Silence**: Silero VAD marks speech regions so silence never reaches Whisper.
-- **Diarization**: pyannote.audio splits speech into voices; unmatched voices wait in Review
-  Speakers.
+- **Diarization**: Nemotron 3 splits speech into voices and the pyannote.audio embedder measures
+  each of them; unmatched voices wait in Review Speakers.
 - **Indexing**: the transcript is split into chunks; each chunk gets an embedding from the
   bundled local model and a row in the FTS5 index. Search ranks with BM25, vectors, or both.
 - **Brief**: the finished transcript is read once by a local model, which writes the short version

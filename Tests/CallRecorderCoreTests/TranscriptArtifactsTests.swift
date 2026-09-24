@@ -93,6 +93,54 @@ struct TranscriptArtifactsTests {
         #expect(!TranscriptArtifacts.filter(text).didChange)
     }
 
+    @Test("a phrase loop inside one line is cut back to one copy")
+    func collapsesAPhraseLoopInsideOneLine() {
+        // The 2026-09-18 call, verbatim: two words three times inside one segment, with a word
+        // between the copies. The rule that looks at whole repeated lines cannot see this shape,
+        // and the line was saved with the loop in it.
+        let line = "межми грешен был межми грешен межми грешен смежим с миржем."
+
+        let outcome = TranscriptArtifacts.filter(line)
+
+        #expect(outcome.text == "межми грешен был смежим с миржем.")
+        #expect(outcome.collapsedPhrases == 2)
+        #expect(outcome.didChange)
+    }
+
+    @Test("a phrase a person repeats twice is left alone")
+    func keepsAPhraseSaidTwice() {
+        // Emphasis, not a loop: the phrase comes back twice and the rest of the sentence is
+        // longer than the copies are.
+        let line = "Мы обсудим это завтра, я не знаю, но давай сначала посмотрим заказ."
+
+        #expect(!TranscriptArtifacts.filter(line).didChange)
+    }
+
+    @Test("one word repeated is speech, however many times it comes back")
+    func keepsARepeatedSingleWord() {
+        // A person says "no" three times. The shortest phrase the loop search looks for is two
+        // words, which is what keeps this line out of it.
+        for said in ["Нет, нет, нет.", "Да, да, да.", "Okay, okay, okay, thanks."] {
+            #expect(!TranscriptArtifacts.filter(said).didChange, "\(said) is speech")
+        }
+    }
+
+    @Test("the phrase loop is cut out of a segment before the segment is saved")
+    func collapsesAPhraseLoopInSegments() {
+        let segments = [
+            TranscriptSegment(
+                startMs: 0,
+                endMs: 4_000,
+                text: "межми грешен межми грешен межми грешен"
+            )
+        ]
+
+        let cleaned = TranscriptArtifacts.filter(segments: segments)
+
+        #expect(cleaned.segments.map(\.text) == ["межми грешен"])
+        #expect(cleaned.outcome.collapsedPhrases == 2)
+    }
+
     // MARK: - A whole transcript
 
     @Test("the speech around an artefact survives it, in order")

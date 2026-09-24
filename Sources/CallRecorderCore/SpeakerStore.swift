@@ -140,6 +140,18 @@ public struct SpeakerStore: Sendable {
             )
         }
         var matchesByCluster: [SpeakerClusterID: SpeakerMatch] = [:]
+        // A pass of the speaker detector replaces what the pass before it found: the transcript is
+        // relabelled from this pass alone, so a voice this pass did not produce must not stay on the
+        // call. Left behind, it appears in the review window as a voice of a call whose transcript
+        // never mentions it -- and, when the newer pass reused its number for a different person,
+        // as a second voice under the same name.
+        var keptByCall: [CallID: [SpeakerClusterID]] = [:]
+        for (pending, stored) in zip(pendingClusters, storedClusters) {
+            keptByCall[pending.callID, default: []].append(stored.id)
+        }
+        for (callID, kept) in keptByCall {
+            try await store.retireSpeakerClusters(callID: callID, keeping: kept)
+        }
         for modelVersion in Set(storedClusters.map(\.modelVersion)).sorted() {
             let compatibleClusters = storedClusters.filter { $0.modelVersion == modelVersion }
             let matches = SpeakerMatcher.match(

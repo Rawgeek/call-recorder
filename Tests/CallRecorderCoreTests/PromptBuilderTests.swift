@@ -274,6 +274,34 @@ struct PromptBuilderTests {
         #expect(markdown.contains("Hi there."))
     }
 
+    @Test func rendererPrintsTimestampsWhenAsked() {
+        // Off is the default, and on is what a reader uses to jump into the recording. The time
+        // sits after the speaker label so the shape of a turn -- a bold name, a colon, the words --
+        // is the same shape the folding and the revision pass already read.
+        let transcript = WhisperTranscript(
+            language: "ru",
+            segments: [
+                TranscriptSegment(startMs: 12_000, endMs: 13_250, text: "Первая реплика."),
+                TranscriptSegment(startMs: 3_725_000, endMs: 3_727_000, text: "Реплика через час."),
+            ]
+        )
+
+        let markdown = TranscriptRenderer.markdown(
+            transcript: transcript,
+            participants: [],
+            timestamps: true
+        )
+
+        #expect(markdown.contains("[00:00:12] Первая реплика."))
+        #expect(markdown.contains("[01:02:05] Реплика через час."))
+        // A turn whose time is printed is still a turn the renderer can fold: the label comes first.
+        let folded = TranscriptRenderer.foldingSpeakerTurns(
+            "**Speaker 1**: [00:00:12] Первая реплика.\n\n**Speaker 1**: [00:00:14] Вторая."
+        )
+        #expect(folded.foldedLines == 1)
+        #expect(folded.text.contains("[00:00:14] Вторая."))
+    }
+
     @Test func rendererStripsFillerTags() {
         let transcript = WhisperTranscript(
             language: "en",

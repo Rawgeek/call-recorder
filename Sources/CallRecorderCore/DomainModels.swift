@@ -21,17 +21,25 @@ public struct PendingBackgroundCall: Hashable, Identifiable, Sendable {
     public let segments: [SegmentSnapshot]
     public let destination: URL
     public let endedAt: Date
+    /// Whether the person keeps the audio of this call.
+    ///
+    /// It decides what the call's audio path points at: the file a person plays the call from when
+    /// the audio stays, or the side that was recorded when the audio is removed once the transcript
+    /// is verified. Nothing is mixed for a call whose audio is about to be removed.
+    public let keepsAudio: Bool
 
     public init(
         callID: CallID,
         segments: [SegmentSnapshot],
         destination: URL,
-        endedAt: Date
+        endedAt: Date,
+        keepsAudio: Bool = true
     ) {
         self.callID = callID
         self.segments = segments
         self.destination = destination
         self.endedAt = endedAt
+        self.keepsAudio = keepsAudio
     }
 
     public var id: CallID { callID }
@@ -41,15 +49,33 @@ public struct SegmentSnapshot: Hashable, Sendable {
     public let index: Int
     public let systemURL: URL?
     public let microphoneURL: URL?
+    /// Where each side of this piece starts on the recording's clock, and how long it runs.
+    ///
+    /// They are carried because finalizing a call needs them: pieces of one side are laid on a
+    /// timeline before they are joined, and a single piece of a side is copied instead of being
+    /// decoded and written out as a wave. A snapshot built without them — the older shape — reads
+    /// as a piece with no known place, which is the slow path this exists to avoid.
+    public let systemStartSeconds: Double?
+    public let systemDurationSeconds: Double?
+    public let microphoneStartSeconds: Double?
+    public let microphoneDurationSeconds: Double?
 
     public init(
         index: Int,
         systemURL: URL?,
-        microphoneURL: URL?
+        microphoneURL: URL?,
+        systemStartSeconds: Double? = nil,
+        systemDurationSeconds: Double? = nil,
+        microphoneStartSeconds: Double? = nil,
+        microphoneDurationSeconds: Double? = nil
     ) {
         self.index = index
         self.systemURL = systemURL
         self.microphoneURL = microphoneURL
+        self.systemStartSeconds = systemStartSeconds
+        self.systemDurationSeconds = systemDurationSeconds
+        self.microphoneStartSeconds = microphoneStartSeconds
+        self.microphoneDurationSeconds = microphoneDurationSeconds
     }
 }
 
@@ -185,6 +211,24 @@ public enum ProcessingExecutionState: String, Codable, Sendable {
     case running
     case failed
     case complete
+
+    /// Whether the job is work that is already on its way.
+    ///
+    /// A retry exists to put a stopped call back in the queue. When the job is pending or running
+    /// the queue already holds it, and the store refuses to touch it so that a running pass is
+    /// never interrupted. That refusal is an answer, not a failure: the 2026-09-18 retry on the
+    /// 14:01 call was refused this way and was kept as the app's last error for five days.
+    public var isUnderway: Bool {
+        self == .pending || self == .running
+    }
+}
+
+/// What asking for a call's voices to be separated again did.
+public enum SpeakerAnalysisRequest: Equatable, Sendable {
+    /// The call went back in the queue, from the stage that separates voices.
+    case queued
+    /// A pass was already queued or running for this call, so the request changed nothing.
+    case alreadyUnderway
 }
 
 public struct ProcessingJob: Codable, Equatable, Sendable {

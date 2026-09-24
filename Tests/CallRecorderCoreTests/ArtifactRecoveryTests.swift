@@ -21,6 +21,48 @@ struct ArtifactRecoveryTests {
         #expect(try await fixture.store.transcript(for: fixture.callID) == prior)
     }
 
+    @Test("a queued indexing stage does not block separating the voices again")
+    func reseparationReplacesQueuedIndexing() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        // What a naming pass leaves behind: the call owes a search index, so its job has been
+        // queued again at the indexing stage. The 2026-09-18 14:01 call sat like this while both
+        // Retry and Separate again refused it, because a queued job is neither complete nor
+        // failed. Separating its voices again outranks the queued stage, which it replaces.
+        let connection = try Database(fixture.databasePath).connect()
+        try connection.executeBatch(
+            """
+            UPDATE calls SET status = 'indexing' WHERE id = '\(fixture.callID.rawValue.uuidString)';
+            UPDATE processing_jobs SET stage = 'indexing', execution_state = 'pending',
+                attempt_count = 12 WHERE call_id = '\(fixture.callID.rawValue.uuidString)';
+            """
+        )
+
+        try await fixture.store.retrySpeakerAnalysis(callID: fixture.callID)
+
+        let job = try #require(try await fixture.store.processingJobs().first)
+        #expect(job.stage == .diarizing)
+        #expect(job.executionState == .pending)
+        #expect(try await fixture.store.call(id: fixture.callID)?.status == .transcribing)
+    }
+
+    @Test("a queued transcription is not spent on separating voices")
+    func reseparationLeavesQueuedTranscriptionAlone() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let connection = try Database(fixture.databasePath).connect()
+        try connection.executeBatch(
+            """
+            UPDATE processing_jobs SET stage = 'transcribing', execution_state = 'pending'
+                WHERE call_id = '\(fixture.callID.rawValue.uuidString)';
+            """
+        )
+
+        await #expect(throws: CallStoreError.processingJobNotClaimed(fixture.callID)) {
+            try await fixture.store.retrySpeakerAnalysis(callID: fixture.callID)
+        }
+    }
+
     @Test("legacy failed speaker detection cannot send audio to automatic cleanup")
     func retainsAudioWhenSpeakerDetectionNeverRan() async throws {
         let fixture = try await RecoveryFixture()

@@ -115,3 +115,34 @@ public enum RecorderReducer {
         }
     }
 }
+
+extension RecordingPhase {
+    /// Whether this phase is capturing the audio of a call.
+    ///
+    /// These are the phases the live path lives in, because it reads the same audio the recording
+    /// writes: a call being recorded, and one held at a pause that will be resumed. A start reaches
+    /// `recording` only after the events that carry the microphone state, so `idle` is not one of
+    /// them even while a start is under way, and `finalizing` is not one of them because the
+    /// capture has already closed by then.
+    public var holdsLiveTranscript: Bool {
+        switch self {
+        case .recording, .paused: true
+        case .idle, .finalizing, .awaitingParticipants, .transcribing, .indexing, .failed: false
+        }
+    }
+
+    /// Whether a move between two phases ends the live path of the call that owns it.
+    ///
+    /// The answer is a change of phase rather than the phase a reducer hands back, and the
+    /// 2026-09-22 13:18 call is why: a manual start publishes the microphone state before it
+    /// publishes the start, and both events leave the phase `idle`. Read as "the recorder is idle,
+    /// so the call has ended", the first of them released the live path seventeen seconds before
+    /// the tap wrote its first chunk. The window said "Recording finished" over a call that was
+    /// recording, and no words ever reached it.
+    public static func endsLiveTranscript(
+        from before: RecordingPhase,
+        to after: RecordingPhase
+    ) -> Bool {
+        before.holdsLiveTranscript && !after.holdsLiveTranscript
+    }
+}

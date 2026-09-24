@@ -136,6 +136,19 @@ struct MenuBarView: View {
             let isRecording = model.recorderState.phase == .recording
             VStack(alignment: .leading, spacing: CR.Space.item) {
                 timer
+                // The way back to a window that was hidden, and the way in for a call whose
+                // setting was only turned on afterwards. The window itself is drawn by the app,
+                // not here: this row only asks for it.
+                if model.settings.showsLiveTranscript || !model.liveTranscript.isEmpty {
+                    CRDisclosureRow(
+                        icon: "text.bubble",
+                        title: "Live transcript",
+                        detail: liveTranscriptDetail,
+                        tone: liveTranscriptTone
+                    ) {
+                        presentWindow("live-transcript")
+                    }
+                }
                 if confirmingDiscard {
                     discardConfirmation
                 } else {
@@ -547,6 +560,27 @@ struct MenuBarView: View {
     }
 
     private var needsTime: Set<CallID> { Self.rowsNeedingTheTime(model.recentCalls) }
+
+    /// What the popover says about the live window.
+    ///
+    /// A count is the proof that it is working: a person who has just turned the feature on wants
+    /// to know that words are arriving, and "12 lines so far" answers that where "Live" does not.
+    private var liveTranscriptDetail: String {
+        if model.liveTranscript.isEmpty {
+            return model.liveStatus.detail ?? "The words appear as people speak"
+        }
+        let lines = model.liveTranscript.entries.count
+        return lines == 1 ? "1 line so far" : "\(lines) lines so far"
+    }
+
+    private var liveTranscriptTone: CR.Tone {
+        switch model.liveStatus {
+        case .listening: .ready
+        case .starting, .behind: .waiting
+        case .failed: .failed
+        case .idle, .stopped: .muted
+        }
+    }
 
     // MARK: - Footer
 

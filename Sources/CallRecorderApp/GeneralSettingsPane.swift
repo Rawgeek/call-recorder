@@ -160,6 +160,56 @@ struct GeneralSettingsView: View {
                 }
                 CRSettingsDivider()
                 CRSettingsRow(
+                    title: "Show a live transcript while recording",
+                    detail: model.settings.showsLiveTranscript
+                        ? "A window follows the words as they are said, with a field for asking about them."
+                        : "Off. Nothing is transcribed until the call ends, and nothing extra runs.",
+                    info: "The window follows the call with whisper.cpp on this Mac, and the words "
+                        + "never leave it. Closing the window hides it and leaves the recording "
+                        + "alone; the menu bar brings it back. What it shows is a reading aid: the "
+                        + "transcript the app keeps is written from the recording when the call "
+                        + "ends, and it is the one that is saved."
+                ) {
+                    Toggle("", isOn: $model.settings.showsLiveTranscript)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Summarize the words as the call runs",
+                    detail: liveSummaryDetail,
+                    info: "The window follows a call with the words as they are said, which is the "
+                        + "wrong shape for somebody who has to catch up in the middle of one: "
+                        + "ninety seconds of speech is a page. With this on, the model that writes "
+                        + "the brief rewrites the call so far every so often, and the window shows "
+                        + "that instead — with a switch at the top of the window that moves between "
+                        + "the summary and the words, so nothing the model wrote can hide what was "
+                        + "said. A pass is asked for only once new speech has arrived, so a quiet "
+                        + "stretch costs nothing, and it runs on this Mac: nothing about the call "
+                        + "leaves it. The transcript that is kept is still written from the "
+                        + "recording when the call ends.",
+                    warning: model.settings.summarizesLiveCalls
+                        && model.settings.showsLiveTranscript
+                        && model.briefReadiness != nil
+                ) {
+                    HStack(spacing: CR.Space.inner) {
+                        Toggle("", isOn: $model.settings.summarizesLiveCalls)
+                            .labelsHidden()
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                        Picker("", selection: $model.settings.liveSummaryInterval) {
+                            ForEach(LiveSummaryInterval.allCases) { interval in
+                                Text(interval.title).tag(interval)
+                            }
+                        }
+                        .labelsHidden()
+                        .frame(maxWidth: 170, alignment: .trailing)
+                        .disabled(!model.settings.summarizesLiveCalls)
+                    }
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
                     title: "Keep recording after a call ends",
                     detail: "Extra time captured after the other app releases the microphone."
                 ) {
@@ -179,14 +229,14 @@ struct GeneralSettingsView: View {
                     detail: model.settings.diarizationUsesParticipantCount
                         ? "The detector is told how many remote voices to find."
                         : "The detector decides how many voices the call holds.",
-                    info: "The detector counts voices on its own, and on one long standup it counted "
-                        + "one too many: fourteen remote voices came back as sixteen, and two of "
-                        + "them had to be named with a name the transcript already used. Given the "
-                        + "number it answers exactly that, in a third less time. The count is the "
-                        + "people on the call less you, and it is used only when the recording held "
-                        + "room for that many voices to have spoken. Turn this off if the people "
-                        + "list is often incomplete: a count that is too low writes two people into "
-                        + "one voice."
+                    info: "Given the number of remote voices, this detector answers exactly that: "
+                        + "fourteen on one standup that came back as sixteen. It reads every call "
+                        + "through a separation model of its own as well, so a long meeting takes "
+                        + "minutes where the separation that counts the voices itself takes "
+                        + "seconds. The count is the people on the call less you, and it is used "
+                        + "only when the recording held room for that many voices to have spoken. "
+                        + "A count that is too low writes two people into one voice, which is the "
+                        + "mistake this option can make and the other cannot."
                 ) {
                     Toggle("", isOn: $model.settings.diarizationUsesParticipantCount)
                         .labelsHidden()
@@ -496,6 +546,25 @@ struct GeneralSettingsView: View {
             return (missing.errorDescription ?? "The brief model is not ready.") + " See Models."
         }
         return "Each finished call is written up in a short brief."
+    }
+
+    /// The one line the running summary says about itself.
+    ///
+    /// It is a child of the live transcript: with that off there is no window to summarize into, and
+    /// with no brief model installed the loop finds no writer and asks nothing. Both are said here
+    /// rather than left as a switch that does nothing.
+    private var liveSummaryDetail: String {
+        guard model.settings.showsLiveTranscript else {
+            return "Needs the live transcript, which is off above."
+        }
+        guard model.settings.summarizesLiveCalls else {
+            return "Off. The window shows the words themselves."
+        }
+        if let missing = model.briefReadiness {
+            return (missing.errorDescription ?? "The brief model is not ready.") + " See Models."
+        }
+        return "The words on screen are replaced by a summary "
+            + model.settings.liveSummaryInterval.title.lowercased() + "."
     }
 
     /// The device the system choice points at right now.

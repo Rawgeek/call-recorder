@@ -556,6 +556,33 @@ struct CallStoreTests {
         #expect(try await store.claimNextProcessingJob(executableOnly: true)?.callID == callID)
     }
 
+    @Test("Retry accepts a job that is only waiting in the queue")
+    func retryAcceptsAQueuedJob() async throws {
+        // Given a call whose job a later pass queued again, which is neither complete nor failed
+        let store = try CallStore(path: temporaryDatabasePath())
+        try await store.migrate()
+        let callID = CallID(rawValue: UUID())
+        try await store.createCall(.started(id: callID, at: Date(timeIntervalSince1970: 1_800_000_000)))
+        try await store.updateCall(
+            id: callID,
+            endedAt: Date(timeIntervalSince1970: 1_800_000_060),
+            audioPath: "/tmp/call.m4a",
+            status: .metadata
+        )
+        try await store.setParticipants([], for: callID)
+        let claimed = try #require(try await store.claimNextProcessingJob(executableOnly: true))
+        try await store.stopProcessingJob(callID: callID, stage: claimed.stage)
+
+        // When
+        try await store.retryProcessingJob(callID: callID)
+
+        // Then the queued stage is left as it is, and the next claim runs it
+        let job = try #require(try await store.processingJobs().first)
+        #expect(job.executionState == .pending)
+        #expect(job.stage == claimed.stage)
+        #expect(try await store.claimNextProcessingJob(executableOnly: true)?.callID == callID)
+    }
+
     @Test("participant upsert reuses a normalized name")
     func participantUpsertReusesNormalizedName() async throws {
         // Given
@@ -1809,5 +1836,121 @@ struct CallStoreTests {
         #expect(summaries[alone]?.participantNames.isEmpty == true)
         #expect(summaries[missing] == nil)
         #expect(try await store.callSummaries(ids: []).isEmpty)
+    }
+
+    @Test("a speaker retry on a call whose job is moving reports the work instead of a failure")
+    func reportsWorkUnderwayInsteadOfAFailure() async throws {
+        // Given: the state the store refuses on purpose to keep a retry from interrupting a pass.
+        let databasePath = temporaryDatabasePath()
+        defer { try? FileManager.default.removeItem(atPath: databasePath) }
+        let store = try CallStore(path: databasePath)
+        try await store.migrate()
+        let callID = try await callReadyForSpeakerWork(
+            store: store,
+            databasePath: databasePath,
+            stage: "diarizing",
+            executionState: "running"
+        )
+
+        // When
+        let request = try await store.requestSpeakerAnalysis(callID: callID)
+
+        // Then: the answer is the one the person asked for, and the running pass is left alone.
+        #expect(request == .alreadyUnderway)
+        #expect(try await store.processingJob(callID: callID)?.executionState == .running)
+    }
+
+    @Test("a speaker retry on a job that has stopped queues the stage again")
+    func queuesSpeakerAnalysisOnAStoppedJob() async throws {
+        // Given: a call whose separation failed four times and is waiting for someone to ask.
+        let databasePath = temporaryDatabasePath()
+        defer { try? FileManager.default.removeItem(atPath: databasePath) }
+        let store = try CallStore(path: databasePath)
+        try await store.migrate()
+        let callID = try await callReadyForSpeakerWork(
+            store: store,
+            databasePath: databasePath,
+            stage: "diarizing",
+            executionState: "failed",
+            attemptCount: 4
+        )
+
+        // When
+        let request = try await store.requestSpeakerAnalysis(callID: callID)
+
+        // Then
+        #expect(request == .queued)
+        let job = try #require(try await store.processingJob(callID: callID))
+        #expect(job.stage == .diarizing)
+        #expect(job.executionState == .pending)
+    }
+
+    @Test("a speaker retry without a transcript is still an error, not work under way")
+    func refusesSpeakerAnalysisWithoutATranscript() async throws {
+        // Given: a finished call whose transcript row is gone, which nothing can separate voices
+        // for. The answer has to stay a refusal, so the two outcomes cannot be told apart by
+        // accident: an error here is a call the store will not act on at all.
+        let databasePath = temporaryDatabasePath()
+        defer { try? FileManager.default.removeItem(atPath: databasePath) }
+        let store = try CallStore(path: databasePath)
+        try await store.migrate()
+        let callID = try await callReadyForSpeakerWork(
+            store: store,
+            databasePath: databasePath,
+            stage: "diarizing",
+            executionState: "failed",
+            writesTranscript: false
+        )
+
+        // When / Then
+        await #expect(throws: CallStoreError.processingJobNotClaimed(callID)) {
+            try await store.requestSpeakerAnalysis(callID: callID)
+        }
+    }
+
+    /// A call that holds a transcript, with its job left wherever the caller puts it.
+    ///
+    /// A speaker retry reads three things: the call status, the job stage and state, and whether a
+    /// transcript row exists. No store method puts a job back into a waiting state, so the job is
+    /// written directly here; everything else goes through the store the app uses.
+    private func callReadyForSpeakerWork(
+        store: CallStore,
+        databasePath: String,
+        stage: String,
+        executionState: String,
+        attemptCount: Int = 1,
+        writesTranscript: Bool = true
+    ) async throws -> CallID {
+        let callID = CallID(rawValue: UUID())
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try await store.createCall(.started(id: callID, at: startedAt))
+        try await store.updateCall(
+            id: callID,
+            endedAt: startedAt.addingTimeInterval(600),
+            audioPath: "/tmp/\(callID.rawValue.uuidString).m4a",
+            status: .metadata
+        )
+        if writesTranscript {
+            try await store.saveTranscript(
+                TranscriptRecord(
+                    callID: callID,
+                    language: "en",
+                    model: "test",
+                    text: "test",
+                    markdownPath: "/tmp/\(callID.rawValue.uuidString).md",
+                    jsonPath: "/tmp/\(callID.rawValue.uuidString).json"
+                ),
+                queueIndexing: false
+            )
+        }
+        let connection = try Database(databasePath).connect()
+        try connection.executeBatch(
+            """
+            UPDATE calls SET status = 'ready' WHERE id = '\(callID.rawValue.uuidString)';
+            UPDATE processing_jobs SET stage = '\(stage)', execution_state = '\(executionState)',
+                attempt_count = \(attemptCount) WHERE call_id = '\(callID.rawValue.uuidString)';
+            """
+        )
+        return callID
     }
 }

@@ -257,15 +257,24 @@ public struct SpeakerMatch: Equatable, Sendable {
     public let clusterID: SpeakerClusterID
     public let participantID: ParticipantID?
     public let state: SpeakerMatchState
+    /// How close the fragment came to the person it was matched to.
+    ///
+    /// Recorded so a call can be explained after the fact: a fragment accepted at 0.83 and one
+    /// accepted at 0.99 are the same row otherwise, and a reviewer asking why a voice was named the
+    /// way it was has nothing to read. It decides nothing -- the policy made that decision already.
+    /// Nil when there was no profile to compare against.
+    public let similarity: Float?
 
     public init(
         clusterID: SpeakerClusterID,
         participantID: ParticipantID?,
-        state: SpeakerMatchState
+        state: SpeakerMatchState,
+        similarity: Float? = nil
     ) {
         self.clusterID = clusterID
         self.participantID = participantID
         self.state = state
+        self.similarity = similarity
     }
 }
 
@@ -299,6 +308,45 @@ public struct SpeakerReviewItem: Equatable, Identifiable, Sendable {
         self.suggestedParticipantID = suggestedParticipantID
         self.state = state
         self.createdAt = createdAt
+    }
+}
+
+/// How many voices a call's transcript holds, and how many of them carry a name.
+///
+/// The review window read this number off the list of voices still waiting to be named, which
+/// answers a different question: a call separated into fourteen voices with one left to name drew
+/// "Voices detected 1", and the field beside it offered to separate the call into one voice. The
+/// transcript is the record of what was separated, so the count is read from it instead.
+public struct SpeakerVoiceCount: Equatable, Sendable {
+    public let named: Int
+    public let total: Int
+
+    public init(named: Int, total: Int) {
+        self.named = named
+        self.total = total
+    }
+
+    /// Counts the voices a transcript holds by the speaker number its segments carry.
+    ///
+    /// A segment with no number is not a detected voice: the renderer falls back to its own tag for
+    /// those, and counting them would report a voice nobody separated. A named segment with no
+    /// number is a voice all the same -- the local microphone track is one -- so it counts.
+    public static func counting(_ segments: [TranscriptSegment]) -> SpeakerVoiceCount {
+        var indexes = Set<Int>()
+        var namedIndexes = Set<Int>()
+        var namedWithoutIndex = Set<String>()
+        for segment in segments {
+            if let index = segment.speakerIndex {
+                indexes.insert(index)
+                if segment.speakerName != nil { namedIndexes.insert(index) }
+            } else if let name = segment.speakerName {
+                namedWithoutIndex.insert(name)
+            }
+        }
+        return SpeakerVoiceCount(
+            named: namedIndexes.count + namedWithoutIndex.count,
+            total: indexes.count + namedWithoutIndex.count
+        )
     }
 }
 

@@ -4,7 +4,8 @@
 
 - Apple silicon Mac, macOS 15 (Sequoia) or newer.
 - Homebrew packages: `ffmpeg` and `whisper-cpp`.
-- Optional, for speaker labels: a local Python environment with `pyannote.audio`.
+- Optional, for speaker labels: a local Python environment with `pyannote.audio`, `librosa`, and
+  transformers 5.18.
 
 ## From a release
 
@@ -34,11 +35,15 @@ scripts/package-app.sh "dist/Call Recorder 0.1.2"
 
 ## Speaker identification (optional)
 
+Nemotron 3 Diarization says who spoke when and the pyannote.audio community-1 embedder measures each
+voice, so both are needed.
+
 1. Accept the licence for `pyannote/speaker-diarization-community-1` on Hugging Face and sign
-   in once (`hf auth login`).
+   in once (`hf auth login`). Nemotron 3 Diarization is not gated.
 2. ```sh
    python3 -m venv ~/pyannote-env
-   ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio
+   ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio librosa
+   ~/pyannote-env/bin/pip install "transformers @ git+https://github.com/huggingface/transformers@f324707307757d9c0b8dac1c4462eceff911fa2f"
    ```
 3. In the app, open Review Speakers -> Speaker setup -> Choose Python Environment and select
    `~/pyannote-env/bin/python3`, then press **Check Speaker Setup**.

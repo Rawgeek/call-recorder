@@ -2,6 +2,7 @@ import AVFoundation
 import CoreAudio
 import CoreMedia
 import Foundation
+import OSLog
 import ScreenCaptureKit
 
 struct CapturedAudioSource: Codable, Equatable, Sendable {
@@ -283,7 +284,8 @@ final class AudioCaptureSession {
         directory: URL,
         index: Int,
         microphoneDeviceID: String?,
-        allowsMissingMicrophone: Bool
+        allowsMissingMicrophone: Bool,
+        liveTap: LiveAudioTap? = nil
     ) async throws -> CaptureSourcePaths {
         guard activeCapture == nil else { throw AudioCaptureError.alreadyCapturing }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -323,7 +325,7 @@ final class AudioCaptureSession {
         configuration.microphoneCaptureDeviceID = microphone?.uniqueID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        let router = AudioCaptureRouter(paths: paths, levels: levels)
+        let router = AudioCaptureRouter(paths: paths, levels: levels, liveTap: liveTap)
         try stream.addStreamOutput(
             router,
             type: .audio,
@@ -353,11 +355,57 @@ final class AudioCaptureSession {
     func finishSegment() async throws -> CaptureSegment {
         guard let activeCapture else { throw AudioCaptureError.notCapturing }
         defer { self.activeCapture = nil }
+        try await Self.stop(activeCapture.stream, within: Self.stopTimeoutSeconds)
+        return try await activeCapture.router.finish(index: activeCapture.index)
+    }
+
+    /// How long the stop of a capture stream may take before the segment is closed without it.
+    ///
+    /// A normal stop answers in well under a second. A stop that never answers holds the two audio
+    /// writers open, and a writer that is never finished leaves an m4a with no index at all: the
+    /// audio is on disk and nothing can read it. The 2026-09-21 14:02 recording is an hour and
+    /// twelve minutes in exactly that state, and the phase it left the app in reads "Writing the
+    /// audio file" while nothing writes anything. Closing the segment is always the better answer:
+    /// it costs the last seconds of the call, and the alternative is all of it.
+    static let stopTimeoutSeconds: Double = 15
+
+    /// Stops a stream, or gives up waiting for the answer.
+    ///
+    /// The stop is raced against a timer. When the timer wins, the stream is left to the system —
+    /// nothing is reading from it any more — and the segment is finished anyway, which is what
+    /// writes the index of everything already recorded. An error the stop reports itself still
+    /// comes back, except the "already stopped" answer a second stop returns.
+    private static func stop(_ stream: SCStream, within seconds: Double) async throws {
+        // The stop runs in its own task and the timer in another, and both are waited for on this
+        // one: SCStream is not Sendable, which is why the reference is handed over unchecked here
+        // and nowhere else.
+        nonisolated(unsafe) let stream = stream
+        let stop = Task { try await stream.stopCapture() }
+        let answered = await withTaskGroup(of: Bool.self) { group -> Bool in
+            group.addTask {
+                _ = try? await stop.value
+                return true
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(seconds))
+                return false
+            }
+            let first = await group.next() ?? true
+            group.cancelAll()
+            return first
+        }
+        guard answered else {
+            stop.cancel()
+            Logger(subsystem: "local.callrecorder.app", category: "capture")
+                .notice(
+                    "the capture stream did not confirm its stop within \(Int(seconds), privacy: .public) s; the segment was closed anyway"
+                )
+            return
+        }
         do {
-            try await activeCapture.stream.stopCapture()
+            try await stop.value
         } catch {
             guard Self.isAlreadyStoppedError(error) else { throw error }
         }
-        return try await activeCapture.router.finish(index: activeCapture.index)
     }
 }

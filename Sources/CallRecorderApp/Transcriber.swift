@@ -26,6 +26,10 @@ struct Transcriber: Sendable {
     let ffmpeg: URL
     let whisperCLI: URL
     let vadModel: URL?
+    /// The language to decode, or "auto" to let the model decide per chunk.
+    let language: String
+    /// Whether the markdown this run writes prints the time each turn started.
+    let includeTimestamps: Bool
     /// Set when this run may be stopped from the surface. Nil for a run nobody can stop.
     let cancellation: ProcessCancellation?
 
@@ -33,11 +37,15 @@ struct Transcriber: Sendable {
         ffmpeg: URL,
         whisperCLI: URL,
         vadModel: URL? = nil,
+        language: String = "auto",
+        includeTimestamps: Bool = false,
         cancellation: ProcessCancellation? = nil
     ) {
         self.ffmpeg = ffmpeg
         self.whisperCLI = whisperCLI
         self.vadModel = vadModel
+        self.language = language
+        self.includeTimestamps = includeTimestamps
         self.cancellation = cancellation
     }
 
@@ -246,6 +254,31 @@ struct Transcriber: Sendable {
                 .notice("glossary corrected \(outcome.corrections, privacy: .public) spellings")
         }
 
+        // Then the spellings the model invented for a term the glossary declares but never aliased.
+        // The declared pass can only reach a wrong spelling the user already wrote down; this one
+        // reaches the ones the decoder made up, and says which it changed so the glossary pane can
+        // be given the alias by hand if the reader disagrees with it.
+        let invented = transcript.applyingSuggestedGlossary(terms: glossary)
+        transcript = invented.transcript
+        for suggestion in invented.suggestions {
+            Logger(subsystem: "local.callrecorder.app", category: "transcription")
+                .notice(
+                    """
+                    glossary read "\(suggestion.found, privacy: .public)" as "\(suggestion.preferred, privacy: .public)" (\(suggestion.count, privacy: .public)x in this call)
+                    """
+                )
+        }
+
+        // Put back the ticket numbers the decoder clipped or split in two. A work call is searched
+        // by its keys, and "1867" or "182 86" cannot be searched for at all; the repair works only
+        // against a key this same transcript writes out in full, so the file is the evidence.
+        let tickets = TicketKeyRepair.repairing(segments: transcript.segments)
+        if tickets.repairs > 0 {
+            transcript = WhisperTranscript(language: transcript.language, segments: tickets.segments)
+            Logger(subsystem: "local.callrecorder.app", category: "transcription")
+                .notice("wrote back \(tickets.repairs, privacy: .public) ticket numbers in full")
+        }
+
         // Take out what the model wrote but nobody said, before judging whether the rest is usable.
         //
         // Both halves of this matter. A prompt echo and a bracketed marker are not speech, and
@@ -306,7 +339,8 @@ struct Transcriber: Sendable {
         try Data(
             TranscriptRenderer.markdown(
                 transcript: transcript,
-                participants: allParticipants
+                participants: allParticipants,
+                timestamps: includeTimestamps
             ).utf8
         ).write(to: markdownPartial)
 
@@ -394,7 +428,8 @@ struct Transcriber: Sendable {
                         glossary: glossary,
                         usageCounts: glossaryUsage
                     ),
-                    vadModel: vadModel
+                    vadModel: vadModel,
+                    language: language
                 ),
                 cancellation: cancellation
             )
@@ -436,7 +471,14 @@ struct NormalizedTranscript: Codable, Sendable {
     let segments: [TranscriptSegment]
 
     var needsSpeakerDetection: Bool {
-        let remote = segments.filter { $0.source != .microphone }
+        // A fragment too short to hold a turn of its own is not a word waiting for a voice. A
+        // separation passes such a fragment by and leaves it where it is, so counting it asked for
+        // work that could only be given up: the 2026-09-22 13:44 call holds one, a period from a
+        // system track that was written and held no sound, and it kept the call in the review list
+        // after the separation had already reported that there was no voice to find.
+        let remote = segments.filter {
+            $0.source != .microphone && SegmentMerger.runsLongEnoughForATurn($0)
+        }
         return !remote.isEmpty && remote.allSatisfy { $0.speakerIndex == nil }
     }
 }

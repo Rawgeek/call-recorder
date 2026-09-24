@@ -30,11 +30,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var selectedMicrophoneID: String?
     /// Whether the people on a call decide how many voices the detector separates.
     ///
-    /// The detector answers exactly the number it is given, and the list the app holds is usually
-    /// right: fourteen remote voices in a standup stayed fourteen rather than becoming sixteen. A
-    /// list that is missing someone is the mistake to mind — the count then writes two people into
-    /// one voice — so a library whose lists are often incomplete can turn this off and let the
-    /// detector decide on its own.
+    /// One detector can be held to a count and one cannot. The count-aware detector answers exactly
+    /// the number it is given, and the list the app holds is usually right: fourteen remote voices
+    /// in a standup stayed fourteen rather than becoming sixteen. It reads every call twice over,
+    /// through its own separation model, and on a long meeting that is minutes of work; the detector
+    /// this app records with now is Nemotron 3, which counts the voices itself in seconds and has no
+    /// count to be told. On, the list of people steers the count-aware detector, and a count that is
+    /// too low writes two people into one voice. Off, which is the default, the fast detector counts
+    /// the voices it hears. A count a person sets in the review window is honored either way.
     public var diarizationUsesParticipantCount: Bool
     /// Whether a finished call is written up as a brief.
     ///
@@ -43,6 +46,25 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// failing the call. On by default: a transcript is a record of what was said, and the brief is
     /// the part somebody reads.
     public var summarizesCalls: Bool
+    /// Whether a live transcript window opens with a recording.
+    ///
+    /// On by default: the window exists for the person who joined a meeting late or missed a minute
+    /// answering something else, and that person does not know they needed it until the meeting is
+    /// already running. It can be switched off, and the window itself is one keystroke from gone —
+    /// closing it hides it without touching the recording, and the popover brings it back.
+    public var showsLiveTranscript: Bool
+    /// Whether the words on screen are replaced every so often by a summary of them.
+    ///
+    /// On by default: a call long enough to matter is longer than a person can re-read while
+    /// answering something else, and the summary is written by the same local model that answers
+    /// questions and writes the brief. Off leaves the window as the words alone, which is what
+    /// somebody who reads every line wants.
+    public var summarizesLiveCalls: Bool
+    /// How often the words on screen are replaced by a fresh summary.
+    ///
+    /// Added with the summary itself: a settings blob written before the choice existed lands on
+    /// the interval this release shipped with.
+    public var liveSummaryInterval: LiveSummaryInterval
     /// Whether a recording goes ahead on a Mac that has no audio input at all.
     ///
     /// ScreenCaptureKit records a call's system audio without a microphone, so a Mac mini with no
@@ -76,6 +98,19 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// app holds, so giving the space back is the default. Keeping it is a choice, and a person
     /// who wants the audio beside the transcript asks for it here.
     public var removeAudioAfterTranscription: Bool
+    /// The language a recording is transcribed in, or "auto" to let the model decide for itself.
+    ///
+    /// Whisper is told "auto" unless the user says otherwise, and on a call that mixes one language
+    /// with English product names it reads the names as words of the other language: the 2026-09-18
+    /// call came back with "биспер" for Whisper and "Роза" for Rasa. Pinning the language the call
+    /// was actually spoken in is what keeps a loan word the word it is.
+    public var transcriptionLanguage: String
+    /// Whether a saved transcript prints the time each turn started.
+    ///
+    /// Off by default: a file is read for what was said, and a printed time in the middle of a
+    /// paragraph is machine furniture. A call whose notes are searched by when something was said
+    /// turns it on, and every turn then opens with its time.
+    public var transcriptTimestamps: Bool
     /// The glossary repair rules that were in force when the saved transcripts were last
     /// rewritten, or nil when that has never happened.
     ///
@@ -105,6 +140,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case selectedMicrophoneID
         case diarizationUsesParticipantCount
         case summarizesCalls
+        case showsLiveTranscript
+        case summarizesLiveCalls
+        case liveSummaryInterval
         case recordsWithoutMicrophone
         case localParticipantID
         case selectedWhisperModelID
@@ -113,6 +151,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case automaticAppUpdatesEnabled
         case appUpdateCheckInterval
         case removeAudioAfterTranscription
+        case transcriptionLanguage
+        case transcriptTimestamps
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
     }
@@ -127,8 +167,11 @@ public struct AppSettings: Codable, Equatable, Sendable {
             silenceStopMinutes: AutomaticRecordingRails.defaultSilenceMinutes,
             ignoresNonCallApps: true,
             selectedMicrophoneID: nil,
-            diarizationUsesParticipantCount: true,
+            diarizationUsesParticipantCount: false,
             summarizesCalls: true,
+            showsLiveTranscript: true,
+            summarizesLiveCalls: true,
+            liveSummaryInterval: .default,
             recordsWithoutMicrophone: true,
             localParticipantID: nil,
             selectedWhisperModelID: "small",
@@ -138,6 +181,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
             automaticAppUpdatesEnabled: true,
             appUpdateCheckInterval: .default,
             removeAudioAfterTranscription: true,
+            transcriptionLanguage: "auto",
+            transcriptTimestamps: false,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
         )
@@ -183,8 +228,9 @@ extension AppSettings {
             ?? fallback.ignoresNonCallApps
         selectedMicrophoneID =
             try container.decodeIfPresent(String.self, forKey: .selectedMicrophoneID)
-        // Added after the first release. Absent means the behaviour this release introduced: the
-        // people on the call decide how many voices are separated.
+        // Added after the first release, and absent now means the behaviour the detector switch
+        // introduced: the separation counts the voices it hears. A stored blob that holds the value
+        // keeps it, so a library whose count-aware separation is wanted stays on it.
         diarizationUsesParticipantCount =
             try container.decodeIfPresent(Bool.self, forKey: .diarizationUsesParticipantCount)
             ?? fallback.diarizationUsesParticipantCount
@@ -193,6 +239,25 @@ extension AppSettings {
         summarizesCalls =
             try container.decodeIfPresent(Bool.self, forKey: .summarizesCalls)
             ?? fallback.summarizesCalls
+        // Added after the first release. The app wrote no live transcript before this option
+        // existed, and a fresh install is the case that matters: the window is worth showing to
+        // somebody who has never seen it, and the switch is one click away from silence.
+        showsLiveTranscript =
+            try container.decodeIfPresent(Bool.self, forKey: .showsLiveTranscript)
+            ?? fallback.showsLiveTranscript
+        // Added with the running summary, after the first release. Absent means the behaviour this
+        // release introduced: the words are summarized as the call goes on.
+        summarizesLiveCalls =
+            try container.decodeIfPresent(Bool.self, forKey: .summarizesLiveCalls)
+            ?? fallback.summarizesLiveCalls
+        // A step this build has never heard of — written by a later build, or by a file that was
+        // damaged — costs only itself, the way an unknown update step does. A blob that cannot be
+        // decoded at all costs the microphone, the model, and the folder with it.
+        let storedSummaryInterval =
+            (try? container.decodeIfPresent(Double.self, forKey: .liveSummaryInterval)) ?? nil
+        liveSummaryInterval =
+            storedSummaryInterval.flatMap(LiveSummaryInterval.init(rawValue:))
+            ?? fallback.liveSummaryInterval
         // Added after the first release. Absent means the behaviour this release introduced: a Mac
         // with no audio input records the other side of the call instead of refusing to record.
         recordsWithoutMicrophone =
@@ -229,6 +294,14 @@ extension AppSettings {
         removeAudioAfterTranscription =
             try container.decodeIfPresent(Bool.self, forKey: .removeAudioAfterTranscription)
             ?? fallback.removeAudioAfterTranscription
+        // Both added after the first release. Absent means the language is detected and the times
+        // are not printed, which is what the app did before the choices existed.
+        transcriptionLanguage =
+            try container.decodeIfPresent(String.self, forKey: .transcriptionLanguage)
+            ?? fallback.transcriptionLanguage
+        transcriptTimestamps =
+            try container.decodeIfPresent(Bool.self, forKey: .transcriptTimestamps)
+            ?? fallback.transcriptTimestamps
         // Also added after the first release. Absent means the library has never been repaired
         // against a recorded glossary, which is the honest reading and makes the next launch do
         // the work once.

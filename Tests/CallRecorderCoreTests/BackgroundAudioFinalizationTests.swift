@@ -231,12 +231,67 @@ struct BackgroundAudioFinalizationTests {
         #expect(record.status == .metadata)
         #expect(record.endedAt == Date(timeIntervalSince1970: 1_800_000_060))
         #expect(record.audioPath == root.appending(path: "call.m4a").path)
-        #expect(FileManager.default.fileExists(atPath: root.appending(path: "call.m4a").path))
+        // The stored path is where the file a person plays the call from will be written. That file
+        // is not written here: mixing the two sides is a second encode of the whole call and no
+        // stage of the pipeline reads it, so it is written by the stage that tidies the call up,
+        // and only when the audio is kept. What finalizing owes the pipeline is the side the
+        // transcriber reads, and that side is on disk.
+        #expect(FileManager.default.fileExists(atPath: root.appending(path: "system.m4a").path))
         // The committed processing job must be transcription-ready (queued), never reset
         // to awaitingParticipants, so MeetingProcessor's next drain can claim it.
         let job = try #require(try await store.processingJobs().first)
         #expect(job.stage == .queued)
         #expect(job.executionState == .pending)
+    }
+
+    @Test("a call whose audio is removed points at the side that was recorded")
+    func audioThatIsRemovedPointsAtTheTrack() async throws {
+        // Given a job whose person chose to remove the audio once the transcript is verified.
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "background-removed-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ffmpeg = URL(filePath: "/opt/homebrew/bin/ffmpeg")
+        let ffprobe = URL(filePath: "/opt/homebrew/bin/ffprobe")
+        let segmentURL = root.appending(path: ".system-001.partial.m4a")
+        let generated = try ProcessRunner.run(
+            executable: ffmpeg,
+            arguments: [
+                "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.2",
+                "-c:a", "aac", segmentURL.path,
+            ]
+        )
+        #expect(generated.exitCode == 0)
+        let store = try CallStore(path: root.appending(path: "calls.db").path)
+        try await store.migrate()
+        let callID = CallID(rawValue: UUID())
+        try await store.createCall(.started(id: callID, at: Date(timeIntervalSince1970: 1_800_000_000)))
+        let processor = BackgroundAudioFinalization(
+            store: store,
+            pipeline: CallPipeline(
+                store: store,
+                finalizer: MediaFinalizer(ffmpeg: ffmpeg, ffprobe: ffprobe)
+            )
+        )
+
+        // When
+        await processor.enqueue(
+            PendingBackgroundCall(
+                callID: callID,
+                segments: [SegmentSnapshot(index: 1, systemURL: segmentURL, microphoneURL: nil)],
+                destination: root,
+                endedAt: Date(timeIntervalSince1970: 1_800_000_060),
+                keepsAudio: false
+            )
+        )
+        await processor.waitForDrain()
+
+        // Then the call's audio path is a file that is on disk right now, rather than one that the
+        // next stage would have to write and immediately move to Recently Deleted.
+        let record = try #require(try await store.call(id: callID))
+        #expect(record.audioPath == root.appending(path: "system.m4a").path)
+        #expect(FileManager.default.fileExists(atPath: record.audioPath ?? ""))
+        #expect(!FileManager.default.fileExists(atPath: root.appending(path: "call.m4a").path))
     }
 
     @Test("success is observable after finalization and queue commit complete")

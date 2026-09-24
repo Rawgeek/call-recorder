@@ -1,4 +1,4 @@
-# Call Recorder 0.1.19 — install, features, and Codex MCP
+# Call Recorder 0.1.23 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
@@ -83,15 +83,21 @@ materials on macOS 15. No third-party design dependency is used.
 
 ## 5. Optional: speaker identification
 
-Whisper transcribes speech; it does not know who is speaking. pyannote.audio splits the
-recording into voices, and the app learns a voice profile when you confirm a name.
+Whisper transcribes speech; it does not know who is speaking. Nemotron 3 Diarization says who spoke
+when, the pyannote.audio community-1 embedder turns each of those voices into the profile a name is
+matched against, and the app learns that profile when you confirm a name. All of it runs on the Mac.
 
 1. Accept the licence for pyannote/speaker-diarization-community-1 on Hugging Face and sign
-   in once so a token is stored locally (hf auth login).
+   in once so a token is stored locally (hf auth login). Nemotron 3 Diarization is not gated and
+   needs no licence.
 2. Create a Python environment with the packages:
 
        python3 -m venv ~/pyannote-env
-       ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio
+       ~/pyannote-env/bin/pip install pyannote.audio torch torchaudio librosa
+       ~/pyannote-env/bin/pip install "transformers @ git+https://github.com/huggingface/transformers@f324707307757d9c0b8dac1c4462eceff911fa2f"
+
+   The turn model is read by transformers 5.18, which is not on PyPI yet, so that revision is
+   pinned. Both models are downloaded once, on first use, into the Hugging Face cache.
 
 3. In the app: open Review Speakers (the menu-bar panel, or Settings -> Recovery ->
    Review Speakers...), then Speaker setup -> Choose Python Environment, and select

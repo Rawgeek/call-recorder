@@ -118,6 +118,20 @@ actor MeetingProcessor {
                         to: nextStage
                     )
                     await onChange?()
+                } catch CallStoreError.processingJobNotClaimed(let callID) {
+                    // A pass that rewrote the transcript while this stage ran has queued the call's
+                    // stage again, which clears the claim this loop was holding. The work is
+                    // superseded rather than lost, and the call is already back in the queue, so it
+                    // is reported and left there. Letting this end the loop is what left the
+                    // 2026-09-18 14:01 call at "Indexing" with every call behind it waiting: the
+                    // transcript rewrite had just queued it again, and the advance failed.
+                    logger.notice(
+                        """
+                        Call \(callID.rawValue.uuidString, privacy: .public) was queued again \
+                        while its stage ran; the queue keeps it
+                        """
+                    )
+                    await onChange?()
                 } catch is CancellationError {
                     // A stopped stage is not a failure: the call goes back to the queue with
                     // everything it already has, and the surface that stopped it is told.
