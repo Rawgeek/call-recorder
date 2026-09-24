@@ -179,6 +179,10 @@ final class AppModel {
     /// this question: see SpeakerVoiceCount.
     private(set) var speakerVoiceCounts: [CallID: SpeakerVoiceCount] = [:]
     private(set) var speakerReviewEvidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
+    /// When each voice of a call spoke, for the timeline above the cards that name them.
+    private(set) var speakerTimelines: [CallID: SpeakerTimeline] = [:]
+    /// The recording a call is played from while its voices are being named.
+    private(set) var speakerCallAudioURLs: [CallID: URL] = [:]
     private(set) var speakerReviewCallDates: [CallID: Date] = [:]
     private(set) var voiceProfileSummaries: [VoiceProfileSummary] = []
     private(set) var recoverableArtifacts: [RecoverableArtifact] = []
@@ -1093,11 +1097,15 @@ final class AppModel {
         guard let store else {
             speakerReviewEvidence = [:]
             speakerVoiceCounts = [:]
+            speakerTimelines = [:]
+            speakerCallAudioURLs = [:]
             return
         }
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
         var dates: [CallID: Date] = [:]
         var voiceCounts: [CallID: SpeakerVoiceCount] = [:]
+        var timelines: [CallID: SpeakerTimeline] = [:]
+        var audioURLs: [CallID: URL] = [:]
         for (callID, reviews) in Dictionary(grouping: speakerReviews, by: \.callID) {
             do {
                 guard
@@ -1116,6 +1124,21 @@ final class AppModel {
                 let callDirectory = call.audioPath
                     .map { URL(filePath: $0).deletingLastPathComponent() }
                     ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
+                // The picture the user names voices from: every voice the call holds, against
+                // the recording they are in. The reviews are the voices still waiting, so a row
+                // can say which one it belongs to.
+                timelines[callID] = SpeakerTimeline.build(
+                    segments: document.segments,
+                    reviews: reviews
+                )
+                if let audio = SpeakerReviewPlayback.resolveAudio(
+                    callID: callID,
+                    callDirectory: callDirectory,
+                    recoverableArtifacts: recoverableArtifacts,
+                    fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+                ) {
+                    audioURLs[callID] = audio
+                }
                 for review in reviews {
                     evidence[review.clusterID] = SpeakerReviewPlayback.evidence(
                         for: review,
@@ -1136,6 +1159,8 @@ final class AppModel {
         speakerReviewEvidence = evidence
         speakerReviewCallDates = dates
         speakerVoiceCounts = voiceCounts
+        speakerTimelines = timelines
+        speakerCallAudioURLs = audioURLs
     }
 
     func voiceProfileSummary(for participantID: ParticipantID) -> VoiceProfileSummary? {
@@ -4010,8 +4035,92 @@ final class AppModel {
                 audioURL: audioURL,
                 overrides: overrides
             )
+            // The timeline a render shows, built from the invented transcript this home holds.
+            speakerTimelines[call.id] = SpeakerTimeline.build(
+                segments: document.segments,
+                reviews: speakerReviews
+            )
+            if let audioURL { speakerCallAudioURLs[call.id] = audioURL }
             previewSeededReviewCard = true
             return
+        }
+        seedInventedReview()
+    }
+
+    /// The call a preview home without a recording of its own is drawn with.
+    ///
+    /// The review window reads the store, so a home that has never recorded a call had nothing to
+    /// draw and the render showed "Nothing to review" over the window whose layout was the thing
+    /// being looked at. The invented call arrives the way a real one does: two voices already
+    /// named, two waiting, and the timeline that draws all four. Nothing is written down.
+    private func seedInventedReview() {
+        // The invented library lives in memory, and opening the review window asks the store a
+        // question the store answers with an empty list, which clears it. The call this render
+        // names is therefore invented here rather than read from the list above.
+        let callID = recentCalls.first?.id ?? CallID(rawValue: UUID())
+        let startedAt = recentCalls.first?.startedAt ?? Date.now.addingTimeInterval(-3_600 * 5)
+        let segments = Self.previewReviewSegments
+        speakerReviewCallDates[callID] = startedAt
+        speakerReviews = [1, 3].map { index in
+            SpeakerReviewItem(
+                clusterID: SpeakerClusterID(rawValue: UUID()),
+                callID: callID,
+                speakerIndex: index,
+                speakerLabel: "SPEAKER_\(index)",
+                speechDurationMilliseconds: Self.previewReviewSpeechMs[index] ?? 30_000,
+                suggestedParticipantID: nil,
+                state: .unknown,
+                createdAt: startedAt
+            )
+        }
+        for review in speakerReviews {
+            speakerReviewEvidence[review.clusterID] = SpeakerReviewPlayback.Evidence(
+                excerpts: SpeakerReviewPlayback.excerpts(
+                    from: segments,
+                    speakerIndex: review.speakerIndex
+                ),
+                audioURL: nil
+            )
+        }
+        speakerTimelines[callID] = SpeakerTimeline.build(
+            segments: segments,
+            reviews: speakerReviews
+        )
+        previewSeededReviewCard = true
+    }
+
+    /// How long each invented voice spoke, as the card counts it.
+    private static let previewReviewSpeechMs: [Int: Int] = [1: 41_000, 3: 12_000]
+
+    /// The invented conversation a render of the review window shows.
+    ///
+    /// It is written out rather than generated so both renders of the window say the same thing.
+    /// The gaps are seconds wide, which is what makes the timeline a picture of turns rather than
+    /// one bar: the rows only join runs that no other voice speaks inside.
+    private static var previewReviewSegments: [TranscriptSegment] {
+        let script: [(voice: Int, start: Double, end: Double, text: String)] = [
+            (0, 2.0, 9.4, "Thanks for joining. Let us take the Globex rate change first."),
+            (1, 10.0, 13.6, "The new card lands on the first of October."),
+            (0, 14.2, 21.0, "Does the surcharge move with it, or is that billed separately?"),
+            (2, 21.6, 33.5, "The surcharge moves with the card. The fuel index is the exception."),
+            (1, 34.0, 41.2, "Initech wants the mapping sheet before the change lands."),
+            (0, 42.0, 52.6, "Send it Friday. I want the last column settled before then."),
+            (3, 53.4, 63.0, "I will check the invoice numbers and put them on the ticket."),
+            (2, 63.8, 78.4, "The duplicate charge on the July invoices needs its own line."),
+            (1, 79.0, 90.5, "Understood. I will write both of them up today."),
+            (3, 95.0, 101.4, "Send the sheet to me and I will check the columns."),
+            (0, 120.0, 132.0, "Then let us finish there. Same time next week."),
+        ]
+        let names = [0: "Dana Holt", 2: "Ilya Marsh"]
+        return script.map { line in
+            TranscriptSegment(
+                startMs: Int(line.start * 1_000),
+                endMs: Int(line.end * 1_000),
+                text: line.text,
+                speakerIndex: line.voice,
+                source: .system,
+                speakerName: names[line.voice]
+            )
         }
     }
 

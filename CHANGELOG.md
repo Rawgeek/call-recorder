@@ -4,6 +4,36 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.24] - 2026-09-24
+
+The voices of a call are drawn against its recording, so naming one starts with hearing it: a row
+per voice on a timeline, a bar for every stretch that voice spoke, and a click that plays the bar.
+
+### Added
+- **The review window draws a call's voices on a timeline.** One row per voice, in the order the
+  voices were first heard, with the ruler of the recording above them and a playhead that moves
+  while it plays. A row is the whole call, so a voice that spoke twice is two bars, and the pause
+  between them is a pause: turns shorter than a quarter second are left out, and a gap under a third
+  of a second is joined. Those are the two rules the separation itself writes with, so the picture
+  agrees with the words beside it. A voice whose every turn is a fragment keeps its longest one,
+  because a row that vanished would be a voice the user cannot see, place, or name.
+- **The recording plays from the timeline.** A click on a bar plays that bar, a click anywhere else
+  moves the recording there, and the position row above seeks on a drag. A Follow switch keeps the
+  playhead on screen, the way the live transcript already does, and a scroll of the user's own turns
+  it off rather than pulling the view back while they are reading.
+- **The timeline zooms and pans.** Fit shows the whole call at once, and the minus and plus
+  controls, a pinch, or a drag on the overview below move into the part being listened to. The
+  overview is the whole recording in miniature, with the part on screen marked on it.
+- **One colour follows one voice.** A voice is the same colour on its bar, on the chip that names
+  its row, and on the card that names the voice, so the voice being named is the voice that was
+  heard.
+
+### Changed
+- **A render of the review window no longer needs a recorded call.** The renderer could only draw
+  the window's cards from a call the store already held, so a preview home that had never recorded
+  one drew "Nothing to review" over the layout being looked at. The seed invents the call it draws
+  and writes nothing down.
+
 ## [0.1.23] - 2026-09-24
 
 The voices of a call are named by Nemotron 3, which counts them in seconds where the older separation

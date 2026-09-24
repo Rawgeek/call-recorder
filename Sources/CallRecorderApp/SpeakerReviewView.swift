@@ -192,9 +192,25 @@ struct SpeakerReviewView: View {
             }
             callRoster(callID)
             callVoiceCount(callID)
+            speakerTimeline(callID)
             ForEach(reviews) { review in
                 reviewCard(review)
             }
+        }
+    }
+
+    /// The call's voices against its recording, above the cards that name them.
+    ///
+    /// A row per voice, a bar wherever that voice was heard, and a click that plays the bar. The
+    /// rows carry the same colours as the cards below, so the voice being named is the voice that
+    /// was heard. A call the separation found no voice in has no rows and shows nothing here.
+    @ViewBuilder
+    private func speakerTimeline(_ callID: CallID) -> some View {
+        if let timeline = model.speakerTimelines[callID], !timeline.isEmpty {
+            SpeakerTimelineView(
+                timeline: timeline,
+                audioURL: model.speakerCallAudioURLs[callID]
+            )
         }
     }
 
@@ -320,6 +336,12 @@ struct SpeakerReviewView: View {
 
     private func cardHeader(_ review: SpeakerReviewItem) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: CR.Space.inner) {
+            // The colour this voice is drawn in on the timeline, so a card and its row read as the
+            // same voice.
+            Circle()
+                .fill(voiceColor(review))
+                .frame(width: 8, height: 8)
+                .alignmentGuide(.firstTextBaseline) { $0.height - 2 }
             Text(displayLabel(review))
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
             Text(formattedDuration(review.speechDurationMilliseconds) + " of speech")
@@ -978,5 +1000,16 @@ struct SpeakerReviewView: View {
         let raw = review.speakerLabel
         guard let number = Int(raw.filter(\.isNumber)) else { return raw }
         return "Speaker \(number)"
+    }
+
+    /// The colour the timeline draws this voice in.
+    ///
+    /// The row's place is what decides the colour, so the two surfaces agree even on a call with
+    /// more voices than the palette holds. A call the timeline has no row for, or a card drawn
+    /// before the rows were read, falls back to the voice's own number.
+    private func voiceColor(_ review: SpeakerReviewItem) -> Color {
+        let row = model.speakerTimelines[review.callID]?
+            .lanes.firstIndex { $0.speakerIndex == review.speakerIndex }
+        return SpeakerPalette.color(at: row ?? review.speakerIndex)
     }
 }

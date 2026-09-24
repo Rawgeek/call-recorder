@@ -82,9 +82,27 @@ enum SpeakerReviewPlayback {
         recoverableArtifacts: [RecoverableArtifact],
         fileExists: (URL) -> Bool
     ) -> URL? {
+        resolveAudio(
+            callID: review.callID,
+            callDirectory: callDirectory,
+            recoverableArtifacts: recoverableArtifacts,
+            fileExists: fileExists
+        )
+    }
+
+    /// The same answer for the call itself.
+    ///
+    /// A call whose voices are all named has no card left to ask for its recording, and the
+    /// timeline that draws the call rather than one voice in it still needs the file.
+    static func resolveAudio(
+        callID: CallID,
+        callDirectory: URL,
+        recoverableArtifacts: [RecoverableArtifact],
+        fileExists: (URL) -> Bool
+    ) -> URL? {
         let payloadDirectory =
             recoverableArtifacts
-            .first(where: { $0.callID == review.callID })?
+            .first(where: { $0.callID == callID })?
             .payloadDirectory
         let candidates = [
             callDirectory.appending(path: "system.m4a"),
