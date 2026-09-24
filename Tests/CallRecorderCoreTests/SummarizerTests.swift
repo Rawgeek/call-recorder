@@ -84,4 +84,57 @@ struct SummarizerTests {
         #expect(port > 1_024)
         #expect(port <= 65_535)
     }
+
+    @Test("the model server is told how much prompt cache it may keep")
+    func theServerIsGivenACacheCeiling() throws {
+        let fromScratch = SummarizerServer.environment(from: ["PATH": "/usr/bin", "HOME": "/Users/x"])
+
+        // llama.cpp's own default is eight gigabytes of RAM for a cache this app never asked for,
+        // and a live window that holds one server for a whole call fills it.
+        #expect(fromScratch["LLAMA_ARG_CACHE_RAM"] == "512")
+        #expect(SummarizerServer.promptCacheMiB > 0)
+        #expect(SummarizerServer.promptCacheMiB <= 1_024)
+        // Nothing else is disturbed: the server finds its libraries on the paths it was given.
+        #expect(fromScratch["PATH"] == "/usr/bin")
+        #expect(fromScratch["HOME"] == "/Users/x")
+
+        // The server that is about to be started is the one that carries it.
+        let server = try SummarizerServer(
+            executable: URL(filePath: "/opt/homebrew/bin/llama-server"),
+            model: URL(filePath: "/tmp/model.gguf"),
+            contextTokens: 8_192,
+            log: nil
+        )
+        #expect(server.launchEnvironment["LLAMA_ARG_CACHE_RAM"] == "512")
+        // The environment is the app's own, with the ceiling added rather than in place of it.
+        #expect(server.launchEnvironment["PATH"] != nil)
+    }
+
+    @Test("the ceiling is asked for by variable, so a server that predates it still starts")
+    func theCacheCeilingIsNotAnArgument() throws {
+        let server = try SummarizerServer(
+            executable: URL(filePath: "/opt/homebrew/bin/llama-server"),
+            model: URL(filePath: "/tmp/model.gguf"),
+            contextTokens: 8_192,
+            log: nil
+        )
+        let arguments = server.launchArguments
+
+        // The arguments the server is meant to be run with are still there.
+        #expect(arguments.contains("--model"))
+        #expect(arguments.contains("/tmp/model.gguf"))
+        #expect(arguments.contains("--ctx-size"))
+        #expect(arguments.contains("8192"))
+        #expect(arguments.contains("--parallel"))
+        #expect(arguments.contains("1"))
+        #expect(arguments.contains("--no-webui"))
+
+        // An unknown argument stops llama-server from starting at all, which would take the brief
+        // and the live window with it; an unknown variable is ignored.
+        #expect(!arguments.contains("--cache-ram"))
+        #expect(!arguments.contains("--cache-reuse"))
+        // The port the arguments carry is the one the app will knock on.
+        #expect(arguments.contains("--port"))
+        #expect(arguments.contains(String(server.port)))
+    }
 }

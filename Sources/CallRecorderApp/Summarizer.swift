@@ -241,6 +241,22 @@ final class SummarizerServer: @unchecked Sendable {
     private let base: URL
     private let log: (@Sendable (String) -> Void)?
 
+    /// How much prompt cache the server may keep, in MiB.
+    ///
+    /// llama.cpp's server keeps the state of a prompt it has already processed and restores it when
+    /// a later prompt shares a beginning with it, and it will spend up to eight gigabytes of RAM
+    /// doing so: that is its own default, and this app never asked for it. The live window holds one
+    /// server for a whole call and sends it a prompt every ninety seconds, so on 2026-09-24 that
+    /// cache filled to its ceiling over the first hour of a recording -- thirty-three entries of
+    /// 230-330 MiB each, for a 4B model whose weights are 2.5 GiB. The server's physical footprint
+    /// read 3.7 GiB sixteen minutes in and 9.0 GiB at the hour, where it stopped moving, and 8.1 GiB
+    /// of it was host heap that a Mac with no free pages pushed straight into swap.
+    ///
+    /// Half a gigabyte holds the one entry the window trades between a summary update and a
+    /// question, which is the reuse worth paying for, and bounds the rest. The context is left at
+    /// what the window needs for the words and the answer.
+    static let promptCacheMiB = 512
+
     init(
         executable: URL,
         model: URL,
@@ -265,17 +281,21 @@ final class SummarizerServer: @unchecked Sendable {
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         session = URLSession(configuration: configuration)
         process.executableURL = executable
-        process.arguments = [
-            "--model", model.path,
-            "--host", "127.0.0.1",
-            "--port", String(port),
-            "--ctx-size", String(contextTokens),
-            "--no-webui",
-            // One slot: the briefs of one call are written one after another, and a second slot
-            // would reserve a second copy of the context for an answer nobody waits for.
-            "--parallel", "1",
-        ]
+        process.arguments = Self.arguments(
+            model: model,
+            contextTokens: contextTokens,
+            port: port
+        )
+        process.environment = Self.environment(from: ProcessInfo.processInfo.environment)
     }
+
+    /// What the server will be started with, read back from the process that will be started.
+    ///
+    /// These are the whole of what this app asks of a program it does not ship, and a bound that
+    /// was set here and then not handed to the process is a bound somebody pays for in memory. Read
+    /// from the process rather than kept beside it, so a test sees what the server sees.
+    var launchArguments: [String] { process.arguments ?? [] }
+    var launchEnvironment: [String: String] { process.environment ?? [:] }
 
     deinit {
         try? FileManager.default.removeItem(at: logURL)
@@ -288,7 +308,10 @@ final class SummarizerServer: @unchecked Sendable {
         } catch {
             throw SummarizerError.serverDidNotStart(error.localizedDescription)
         }
-        log?("brief: the model server is up on port " + String(port))
+        log?(
+            "brief: the model server is up on port " + String(port) + ", holding "
+                + String(Self.promptCacheMiB) + " MiB of prompt cache"
+        )
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
             try cancellation?.checkCancelled()
@@ -366,6 +389,34 @@ final class SummarizerServer: @unchecked Sendable {
         let text = (try? String(contentsOf: logURL, encoding: .utf8)) ?? ""
         let lines = text.split(separator: "\n").suffix(4).joined(separator: " | ")
         return lines.isEmpty ? "it wrote nothing." : DiagnosticsReporter.redacted(error: lines)
+    }
+
+    /// What the server is asked to run.
+    static func arguments(model: URL, contextTokens: Int, port: Int) -> [String] {
+        [
+            "--model", model.path,
+            "--host", "127.0.0.1",
+            "--port", String(port),
+            "--ctx-size", String(contextTokens),
+            "--no-webui",
+            // One slot: the briefs of one call are written one after another, and a second slot
+            // would reserve a second copy of the context for an answer nobody waits for.
+            "--parallel", "1",
+        ]
+    }
+
+    /// The environment the server is started in: everything this app has, and the cache ceiling.
+    ///
+    /// The ceiling is passed as a variable rather than as `--cache-ram`, which is the same setting
+    /// by another name: llama.cpp reads `LLAMA_ARG_CACHE_RAM` as the default for that option, while
+    /// a llama-server older than the option ignores a variable it does not know and starts anyway.
+    /// An unknown argument is not ignored -- the server refuses to start, which would take the
+    /// brief and the live window with it -- so a setting that only bounds memory is not worth
+    /// that risk on a server this app does not ship.
+    static func environment(from base: [String: String]) -> [String: String] {
+        var environment = base
+        environment["LLAMA_ARG_CACHE_RAM"] = String(promptCacheMiB)
+        return environment
     }
 
     /// A port nothing is listening on, asked for by binding one and letting it go.

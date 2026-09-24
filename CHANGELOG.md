@@ -4,6 +4,27 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.27] - 2026-09-24
+
+The model that writes a brief and answers questions about a live call is told how much prompt cache
+it may keep, because llama.cpp's own default for that cache is eight gigabytes of RAM.
+
+### Fixed
+
+- **The model server behind the live window no longer grows to eight gigabytes on a long call.**
+  llama.cpp's server remembers the state of every prompt it has processed, so a later prompt that
+  starts the same way is restored rather than read again, and it will spend up to 8192 MiB of RAM
+  doing that: its own default, which this app never asked for. The live window holds one server for
+  a whole recording and sends it a prompt every ninety seconds, so on 2026-09-24 that cache filled
+  over the first hour of a call. The server's physical footprint was 3.7 GiB sixteen minutes in and
+  9.0 GiB at the hour, where it stopped moving; 8.1 GiB of it was host heap, and a Mac with 68 MB of
+  free pages pushed it into swap. Thirty-three requests had left entries of 230-330 MiB each, and
+  the log said so: "making room for prompt cache entry, removing oldest entry". The server is now
+  started with a 512 MiB ceiling, which holds the one entry a summary update and a question trade
+  between them, and it is asked for as `LLAMA_ARG_CACHE_RAM` rather than as `--cache-ram`, because a
+  llama-server older than that option ignores a variable it does not know and refuses to start on an
+  argument it does not know.
+
 ## [0.1.26] - 2026-09-24
 
 A keychain dialog answered with Cancel is read as a decision rather than as a fault, and the calls
