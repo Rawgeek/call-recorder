@@ -1099,6 +1099,23 @@ public actor CallStore {
         ).map(Self.speakerReview)
     }
 
+    /// Every voice of one call, whatever was decided about it, in speaker order.
+    ///
+    /// The review window asks for the voices still waiting to be named, and the picture above them
+    /// needs the rest. A voice named on an earlier pass has no card, so a picture built from the
+    /// waiting list alone either leaves it out or draws a row nobody can act on: on 2026-09-24 a
+    /// voice shown on the timeline of that call could not be renamed at all.
+    func speakerReviews(for callID: CallID) throws -> [SpeakerReviewItem] {
+        try connection.query(
+            "SELECT clusters.id, clusters.call_id, clusters.speaker_index, "
+                + "clusters.speaker_label, clusters.speech_ms, assignments.participant_id, "
+                + "assignments.state, clusters.created_at FROM pending_speaker_clusters clusters "
+                + "JOIN speaker_assignments assignments ON assignments.cluster_id = clusters.id "
+                + "WHERE clusters.call_id = ? "
+                + "ORDER BY clusters.speaker_index LIMIT 500",
+            [callID.rawValue.uuidString]
+        ).map(Self.speakerReview)
+    }
 
     /// One person named on more than one speaker fragment inside a single call.
     func sharedParticipantClusters() throws -> [(callID: CallID, participantID: ParticipantID)] {

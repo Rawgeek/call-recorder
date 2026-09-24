@@ -10,13 +10,21 @@ import SwiftUI
 struct SpeakerReviewView: View {
     @Bindable var model: AppModel
     @State private var selections: [SpeakerClusterID: ParticipantID] = [:]
-    @State private var audioPlayer: AVAudioPlayer?
+    /// The one player over the call's recording, shared by the picture and the samples.
+    ///
+    /// Pressing play on a sample moves the playhead on the timeline above it, so the words are heard
+    /// where they were said; one player is what keeps the two surfaces from disagreeing about where
+    /// the recording is.
+    @State private var playback = CallPlayback()
+    /// The sample being listened to, so the pauses inside it are skipped and it stops at its end.
+    @State private var listeningPass: SpeakerTimeline.ListeningPass?
     @State private var playingClusterID: SpeakerClusterID?
-    @State private var playbackStopTask: Task<Void, Never>?
     @State private var playbackError: String?
     @State private var playingSampleStart: Int?
     @State private var expandedSpeakers: Set<SpeakerClusterID> = []
     @State private var voiceCounts: [CallID: Int] = [:]
+    /// The voice whose card the window has opened under the picture.
+    @State private var selectedClusterID: SpeakerClusterID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -31,7 +39,17 @@ struct SpeakerReviewView: View {
                 // it is in keeps that from reading as an answer.
                 voiceIdentityWaiting
             } else {
-                content
+                ScrollViewReader { proxy in
+                    content
+                        .onChange(of: selectedClusterID) { _, clusterID in
+                            guard let clusterID else { return }
+                            // The card for the voice is placed first among the cards; this walks the
+                            // list to it, because a call with twenty voices puts it off screen.
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo(clusterID, anchor: .center)
+                            }
+                        }
+                }
             }
         }
         .frame(minWidth: 680, minHeight: 520)
@@ -46,6 +64,17 @@ struct SpeakerReviewView: View {
         .onChange(of: model.speakerReviews) { _, _ in
             seedSelections()
             Task { await model.refreshSpeakerReviewEvidence() }
+        }
+        .onChange(of: playback.positionMs) { _, position in
+            skipPauses(at: position)
+        }
+        .onAppear {
+            // A render has no pointer, so the renderer names the voice the window opens with
+            // selected. A click sets the same state and always wins: it arrives after the window
+            // is up, and only the renderer sets the model's side of it.
+            if selectedClusterID == nil {
+                selectedClusterID = model.previewSelectedSpeakerClusterID
+            }
         }
         .onDisappear { stopPlayback() }
         .alert("Couldn't Play Audio", isPresented: playbackErrorPresented) {
@@ -173,7 +202,7 @@ struct SpeakerReviewView: View {
 
     @ViewBuilder
     private func callSection(_ callID: CallID) -> some View {
-        let reviews = sortedReviews(for: callID)
+        let reviews = listedReviews(for: callID)
         VStack(alignment: .leading, spacing: CR.Space.inner) {
             CRSectionHeader(callDate(callID)) {
                 HStack(spacing: CR.Space.inner) {
@@ -195,6 +224,7 @@ struct SpeakerReviewView: View {
             speakerTimeline(callID)
             ForEach(reviews) { review in
                 reviewCard(review)
+                    .id(review.clusterID)
             }
         }
     }
@@ -209,7 +239,12 @@ struct SpeakerReviewView: View {
         if let timeline = model.speakerTimelines[callID], !timeline.isEmpty {
             SpeakerTimelineView(
                 timeline: timeline,
-                audioURL: model.speakerCallAudioURLs[callID]
+                audioURL: model.speakerCallAudioURLs[callID],
+                playback: playback,
+                selectedClusterID: selectedClusterID,
+                onSelect: { clusterID in
+                    selectedClusterID = clusterID
+                }
             )
         }
     }
@@ -319,11 +354,25 @@ struct SpeakerReviewView: View {
             }
     }
 
+    /// The cards this call shows: its voices still waiting, and the one the user clicked.
+    ///
+    /// A voice named on an earlier pass has no card, and a row on the picture that opened nothing
+    /// would be a control that does nothing. Clicking such a row puts its card at the top, where
+    /// the picture is: the samples to listen to, the name to change, and the way back to review.
+    private func listedReviews(for callID: CallID) -> [SpeakerReviewItem] {
+        SpeakerReviewList.cards(
+            waiting: sortedReviews(for: callID),
+            selected: selectedClusterID.flatMap { model.speakerReviewsByCluster[$0] },
+            callID: callID
+        )
+    }
+
     // MARK: - One voice
 
     @ViewBuilder
     private func reviewCard(_ review: SpeakerReviewItem) -> some View {
         let busy = model.reviewingSpeakerIDs.contains(review.clusterID)
+        let isSelected = review.clusterID == selectedClusterID
         VStack(alignment: .leading, spacing: CR.Space.item) {
             cardHeader(review)
             transcriptSamples(review)
@@ -332,6 +381,17 @@ struct SpeakerReviewView: View {
         .padding(CR.Space.section)
         .crSurface(.rounded(CR.Radius.large))
         .opacity(busy ? 0.65 : 1)
+        // The row that was clicked and the card it opened are one thing, so the card carries the
+        // same mark the row does.
+        .overlay(
+            RoundedRectangle(cornerRadius: CR.Radius.large, style: .continuous)
+                .strokeBorder(CR.Ink.action, lineWidth: isSelected ? 2 : 0)
+        )
+    }
+
+    /// Whether this voice already has a person on it.
+    private func isDecided(_ review: SpeakerReviewItem) -> Bool {
+        review.state == .confirmed || review.state == .automatic
     }
 
     private func cardHeader(_ review: SpeakerReviewItem) -> some View {
@@ -347,6 +407,11 @@ struct SpeakerReviewView: View {
             Text(formattedDuration(review.speechDurationMilliseconds) + " of speech")
                 .font(CR.Font.caption)
                 .foregroundStyle(CR.Ink.readable)
+            // A voice the picture shows under a name has no card of its own until it is clicked,
+            // and then the card has to say which name is being corrected.
+            if isDecided(review), let named = participant(review.suggestedParticipantID) {
+                CRStatusChip(tone: .ready, text: "Named \(named.name)", compact: true)
+            }
             Spacer(minLength: CR.Space.inner)
             if let likely = participant(review.suggestedParticipantID) {
                 Button {
@@ -462,7 +527,7 @@ struct SpeakerReviewView: View {
             // sharing a headset arrive as one voice, and a voice is offered one name. Reading the
             // sample is what tells them apart, so the answer is attached to the sample.
             excerptMoveMenu(review, excerpt: excerpt, moved: moved)
-            if let audioURL = evidence.audioURL {
+            if model.speakerCallAudioURLs[review.callID] != nil {
                 CRIconButton(
                     icon: playing ? "stop.fill" : "play.fill",
                     label: playing ? "Stop excerpt" : "Play excerpt",
@@ -474,7 +539,7 @@ struct SpeakerReviewView: View {
                     // the card read as though its right margin were twice its left.
                     trailingAligned: true
                 ) {
-                    togglePlayback(review, audioURL: audioURL, excerpt: excerpt)
+                    toggleSample(review, excerpt: excerpt)
                 }
             }
         }
@@ -570,7 +635,7 @@ struct SpeakerReviewView: View {
                 .accessibilityLabel("Participant for \(review.speakerLabel)")
 
                 CRButton(
-                    title: busy ? "Saving…" : "Confirm",
+                    title: busy ? "Saving…" : (isDecided(review) ? "Reassign" : "Confirm"),
                     icon: busy ? nil : "checkmark",
                     kind: .primary
                 ) {
@@ -581,11 +646,22 @@ struct SpeakerReviewView: View {
                 .help(confirmHelp(review))
                 .accessibilityLabel("Confirm \(review.speakerLabel)")
 
-                CRButton(title: "Keep Anonymous", kind: .secondary) {
-                    model.keepSpeakerUnknown(review)
+                if isDecided(review) {
+                    // The only way back for a name that was decided on an earlier pass. Without it
+                    // a wrong name on the picture was permanent.
+                    CRButton(title: "Return to review", kind: .secondary) {
+                        model.returnSpeakerToReview(clusterID: review.clusterID)
+                    }
+                    .disabled(busy)
+                    .help("Takes the name off this voice and puts it back among the voices to name.")
+                    .accessibilityLabel("Return \(review.speakerLabel) to review")
+                } else {
+                    CRButton(title: "Keep Anonymous", kind: .secondary) {
+                        model.keepSpeakerUnknown(review)
+                    }
+                    .disabled(busy)
+                    .accessibilityLabel("Keep \(review.speakerLabel) anonymous")
                 }
-                .disabled(busy)
-                .accessibilityLabel("Keep \(review.speakerLabel) anonymous")
             }
             if let taken = alreadyNamedWarning(for: review) {
                 Label(taken, systemImage: "person.2.badge.gearshape")
@@ -884,74 +960,54 @@ struct SpeakerReviewView: View {
 
     // MARK: - Playback
 
-    private func togglePlayback(
-        _ review: SpeakerReviewItem,
-        audioURL: URL,
-        excerpt: SpeakerReviewPlayback.Excerpt
-    ) {
+    /// Plays one sample of a voice, from the picture the user is looking at.
+    ///
+    /// The recording plays through the shared player, so the playhead moves onto the timeline and
+    /// the words are heard where they were said. The clip the card used to play on its own was cut
+    /// from the recording with the silence taken out, and the playhead stayed where it was: the
+    /// sample and the picture could not be about the same moment.
+    private func toggleSample(_ review: SpeakerReviewItem, excerpt: SpeakerReviewPlayback.Excerpt) {
         if playingClusterID == review.clusterID && playingSampleStart == excerpt.startMs {
             stopPlayback()
             return
         }
         stopPlayback()
-        // The clip is cut out of the recording with its silence removed, once, and kept. Preparing
-        // it takes a moment on the first press, so the card shows the excerpt as playing while it
-        // does, and a second press stops it. A clip that cannot be cut leaves the recording, and
-        // the excerpt inside it, as the thing that plays.
+        guard let audioURL = model.speakerCallAudioURLs[review.callID] else {
+            playbackError = "The audio of this call is no longer on disk."
+            return
+        }
+        playback.load(audioURL)
+        if let failure = playback.failure {
+            playbackError = failure
+            return
+        }
         playingClusterID = review.clusterID
         playingSampleStart = excerpt.startMs
-        playbackStopTask = Task { @MainActor in
-            let clip = await model.speakerSample(
-                callID: review.callID,
-                startMilliseconds: excerpt.startMs,
-                endMilliseconds: excerpt.endMs,
-                audio: audioURL
-            )
-            guard !Task.isCancelled, playingClusterID == review.clusterID else { return }
-            startPlayback(
-                clip ?? audioURL,
-                review: review,
-                excerpt: clip == nil ? excerpt : nil
-            )
-        }
+        listeningPass = SpeakerTimeline.ListeningPass(
+            runs: model.speakerTimelines[review.callID]?.lane(for: review.clusterID)?.runs ?? [],
+            startMs: excerpt.startMs,
+            endMs: excerpt.endMs
+        )
+        playback.play(fromMs: excerpt.startMs)
     }
 
-    /// Plays one prepared clip from its start, and stops the row when it ends.
+    /// Skips the listening that is not this voice's, and ends the sample where it ends.
     ///
-    /// - Parameter excerpt: The part of a longer recording to play, or nil when the file is
-    ///   already the excerpt.
-    private func startPlayback(
-        _ clip: URL,
-        review: SpeakerReviewItem,
-        excerpt: SpeakerReviewPlayback.Excerpt?
-    ) {
-        do {
-            let player = try AVAudioPlayer(contentsOf: clip)
-            var duration = player.duration
-            if let excerpt {
-                let range = excerpt.playbackRange(duration: player.duration)
-                guard range.stop > range.start else { return }
-                player.currentTime = range.start
-                duration = range.stop - range.start
-            }
-            player.prepareToPlay()
-            player.play()
-            audioPlayer = player
-            playbackStopTask = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(duration))
-                guard !Task.isCancelled, playingClusterID == review.clusterID else { return }
-                stopPlayback()
-            }
-        } catch {
-            playbackError = error.localizedDescription
+    /// A voice speaks at minute five and again at minute nine, and the sample of its first turn
+    /// used to play the four minutes in between. The runs the picture draws are what says which
+    /// parts are this voice's, so the playhead moves to the next of them instead of playing on.
+    private func skipPauses(at positionMs: Int) {
+        guard let listeningPass else { return }
+        switch listeningPass.step(at: positionMs) {
+        case .playOn: return
+        case .finished: stopPlayback()
+        case let .jump(toMs): playback.seek(toMs: toMs)
         }
     }
 
     private func stopPlayback() {
-        playbackStopTask?.cancel()
-        playbackStopTask = nil
-        audioPlayer?.stop()
-        audioPlayer = nil
+        playback.pause()
+        listeningPass = nil
         playingClusterID = nil
         playingSampleStart = nil
     }

@@ -573,6 +573,49 @@ struct SpeakerStoreTests {
         return withUnsafeBytes(of: &bits) { Data($0) }
     }
 
+    @Test("every voice of a call is listed, whatever was decided about it")
+    func listsDecidedVoicesWithTheWaitingOnes() async throws {
+        let now = Date(timeIntervalSince1970: 2_000_000_000)
+        let harness = try await Harness()
+        // Two voices that sound nothing alike: the automatic match runs after a confirmation, and
+        // two clusters with the same embedding are the same voice to it, which would name the
+        // second one here and leave nothing waiting to check the list against.
+        let named = harness.pending(
+            id: SpeakerClusterID(rawValue: UUID()),
+            createdAt: now,
+            embedding: [0.25, -0.5, 0.75, 1],
+            speakerIndex: 2
+        )
+        let waiting = harness.pending(
+            id: SpeakerClusterID(rawValue: UUID()),
+            createdAt: now,
+            embedding: [-0.75, 0.5, -0.25, -1],
+            speakerIndex: 5
+        )
+        try await harness.speakers.savePending(named)
+        try await harness.speakers.savePending(waiting)
+        let participant = try await harness.store.upsertParticipant(name: "Arcady")
+        try await harness.speakers.confirm(
+            clusterID: named.cluster.id,
+            participantID: participant.id
+        )
+
+        // The cards are the voices that are still waiting.
+        #expect(try await harness.speakers.unresolvedReviews().map(\.clusterID) == [waiting.cluster.id])
+        // The picture is every voice of the call, in speaker order, with what was decided about it:
+        // without the named one there, a row on the timeline could not be corrected.
+        let every = try await harness.speakers.reviews(for: harness.callID)
+        #expect(every.map(\.clusterID) == [named.cluster.id, waiting.cluster.id])
+        #expect(every.map(\.speakerIndex) == [2, 5])
+        #expect(every[0].suggestedParticipantID == participant.id)
+        #expect(every[0].state == .confirmed)
+        #expect(every[1].suggestedParticipantID == nil)
+        #expect(every[1].state == .unknown)
+        // And a call of somebody else's is not dragged in.
+        let other = CallID(rawValue: UUID())
+        #expect(try await harness.speakers.reviews(for: other).isEmpty)
+    }
+
     private struct Harness {
         let databaseURL: URL
         let store: CallStore

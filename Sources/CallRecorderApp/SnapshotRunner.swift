@@ -278,7 +278,17 @@ enum SnapshotRunner {
         // while that ran caught the chip reading "Checking setup…", so two renders of the same
         // window could disagree. Run the check first and draw the settled state.
         settleSpeakerRuntime(model)
-        render(SpeakerReviewView(model: model), size: CGSize(width: 760, height: 620), name: "speaker-review", into: directory)
+        // The size the window opens at, or another one when the caller asks: this window's page is
+        // taller than the window on any call with more than a few voices, so the cards under the
+        // picture sit below the fold and a check at the opening size can only see the picture.
+        // CALL_RECORDER_SNAPSHOT_SIZE=760x1400 renders the whole page.
+        let reviewSize = requestedSize() ?? CGSize(width: 760, height: 620)
+        render(
+            SpeakerReviewView(model: model),
+            size: reviewSize,
+            name: "speaker-review",
+            into: directory
+        )
         // The live window, in the four states it can be looked at without recording a call. The
         // recorder is put in the recording state first, because the header draws the live dot from
         // it and a window that is following a call must not look like one that is not.
@@ -303,14 +313,36 @@ enum SnapshotRunner {
         // One excerpt already moved onto somebody else. The state is written by the app into the
         // database and read back, so it cannot be reached by a render on its own; the seed says
         // what the card looks like once it has been used, and changes nothing on disk.
-        if ProcessInfo.processInfo.environment["CALL_RECORDER_MOVED_LINES"] == "1" {
+        //
+        // CALL_RECORDER_CLICKED_VOICE=3 draws the same call with that voice clicked on the picture,
+        // which is the other state a pointer reaches and a render cannot: the stroke on the row and
+        // on its card, the card moved to the top of the list, and what a voice that already carries
+        // a name offers. Both ask for the same seed, because both draw the invented call.
+        let movedLines = ProcessInfo.processInfo.environment["CALL_RECORDER_MOVED_LINES"] == "1"
+        let clickedVoice = ProcessInfo.processInfo.environment["CALL_RECORDER_CLICKED_VOICE"]
+            .flatMap(Int.init)
+        if movedLines || clickedVoice != nil {
             settle { await model.seedPreviewReviewCard() }
-            render(
-                SpeakerReviewView(model: model),
-                size: CGSize(width: 760, height: 620),
-                name: "speaker-review-moved",
-                into: directory
-            )
+            if movedLines {
+                render(
+                    SpeakerReviewView(model: model),
+                    size: reviewSize,
+                    name: "speaker-review-moved",
+                    into: directory
+                )
+            }
+            if let clickedVoice,
+                let clusterID = model.previewSeededClusterID(speakerIndex: clickedVoice)
+            {
+                model.previewSelectedSpeakerClusterID = clusterID
+                render(
+                    SpeakerReviewView(model: model),
+                    size: reviewSize,
+                    name: "speaker-review-clicked",
+                    into: directory
+                )
+                model.previewSelectedSpeakerClusterID = nil
+            }
         }
         // The participant picker is a window of its own, and the list is the control. It was the
         // only surface with no render, which is why its spacing was never checked.

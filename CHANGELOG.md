@@ -4,6 +4,51 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.28] - 2026-09-24
+
+The picture of a call draws every voice the call holds, and clicking one opens that voice directly
+under the picture: its samples, its picker, and the way to change a name that is already there.
+
+### Added
+
+- **A voice on the picture is a control.** Clicking a row's name, or any bar that voice owns, opens
+  its card as the first card under the picture: the samples to listen to, the participant picker,
+  and Confirm or Keep Anonymous. The row and the card carry the same stroke, so the voice that was
+  clicked is the voice being answered. A voice named on an earlier pass had no card at all, so a
+  name on the picture could not be corrected from the picture: a card is built for it where it was
+  clicked, and it offers **Reassign** and **Return to review**, which takes the name off the voice
+  and puts it back among the voices waiting to be named.
+- **Twelve rows of the picture are on screen at once, and the voices past them scroll.** The picture
+  drew the first eight voices of a call and left the rest off it entirely, which is how two voices
+  waiting on a name were missing on 2026-09-24 from a call that held sixteen of them, and how one
+  of them could not be given a name from the window that exists to name it. Every voice of the call
+  now has a row, and the overview strip and the playhead still cover the whole call.
+
+### Changed
+
+- **A sample plays the call's recording, not a clip cut out of it.** The cards and the picture share
+  one player, so pressing play on a sample moves the playhead onto the timeline and the words are
+  heard where they were said. The sample also passes over what is not the voice's: a voice speaks at
+  minute five and again at minute nine, the four minutes in between belong to whoever spoke in them,
+  and the playhead moves to the voice's next turn instead of playing through it.
+- **The renderer can draw a voice clicked, and the review window at any height.** A click comes from
+  a pointer and an off-screen render has none, so the environment variable
+  CALL_RECORDER_CLICKED_VOICE=<speaker index> draws the seeded call with that voice selected.
+  CALL_RECORDER_SNAPSHOT_SIZE now sizes the review window as well: its page is taller than the
+  window on any call with more than a few voices, so the cards under the picture were outside every
+  picture that had been taken of it.
+
+### Fixed
+
+- **The seeded review card plays the recording it names.** The card a render builds resolved the
+  call's audio from the folder the call's markdown sits in, and that markdown is written beside the
+  call's folder as well as inside it: the card offered play buttons on samples of a recording it
+  could not open, and the player row said so. It is resolved from the call's own folder, which is
+  how the window resolves it.
+- **The invented call a render draws has people on it.** The invented cast was seeded before the
+  metadata load that replaces it, so the invented call's voices had nobody to be named after and
+  every one of them drew as waiting, which is the one state of this window that explains nothing.
+
 ## [0.1.27] - 2026-09-24
 
 The model that writes a brief and answers questions about a live call is told how much prompt cache

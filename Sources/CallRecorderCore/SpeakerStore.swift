@@ -314,6 +314,14 @@ public struct SpeakerStore: Sendable {
         try await store.unresolvedSpeakerReviews(limit: limit, at: date)
     }
 
+    /// Every voice of one call, whatever was decided about it, in speaker order.
+    ///
+    /// The cards below the picture are the voices still waiting; the picture itself is every voice,
+    /// so that a voice already named can be corrected from the same place it is seen.
+    public func reviews(for callID: CallID) async throws -> [SpeakerReviewItem] {
+        try await store.speakerReviews(for: callID)
+    }
+
     public func keepUnknown(
         clusterID: SpeakerClusterID,
         at date: Date = Date()

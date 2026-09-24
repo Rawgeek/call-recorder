@@ -1,4 +1,5 @@
 import AppKit
+import CallRecorderCore
 import SwiftUI
 import Testing
 @testable import CallRecorderApp
@@ -469,5 +470,43 @@ struct DesignSystemLayoutTests {
             height(of: card)
                 == CR.Space.item * 4 + CR.Control.height * 2 + 1 + CR.Space.snug + titleHeight
         )
+    }
+
+    @Test("the voice picture grows with the voices and then scrolls instead of dropping them")
+    func theVoicePictureKeepsEveryVoice() {
+        func timeline(voices: Int) -> SpeakerTimeline {
+            SpeakerTimeline(
+                lanes: (0..<voices).map { index in
+                    SpeakerTimeline.Lane(
+                        speakerIndex: index,
+                        clusterID: SpeakerClusterID(rawValue: UUID()),
+                        runs: [
+                            SpeakerTimeline.Run(
+                                startMs: index * 1_000,
+                                endMs: index * 1_000 + 500
+                            )
+                        ]
+                    )
+                },
+                durationMs: voices * 1_000
+            )
+        }
+
+        let three = height(of: SpeakerTimelineView(timeline: timeline(voices: 3)), width: 900)
+        // Eight rows is the height of the cap that was there, and it is the number that makes the
+        // next two expectations mean something: a picture that stops at eight has the height of a
+        // picture of eight voices, so a stop at eight is visible as a height that stopped growing.
+        let eight = height(of: SpeakerTimelineView(timeline: timeline(voices: 8)), width: 900)
+        let twelve = height(of: SpeakerTimelineView(timeline: timeline(voices: 12)), width: 900)
+        let twenty = height(of: SpeakerTimelineView(timeline: timeline(voices: 20)), width: 900)
+
+        // A row per voice: the picture used to stop at eight, which is how two voices waiting to be
+        // named were missing from the call they belonged to on 2026-09-24.
+        #expect(three < twelve)
+        #expect(eight < twelve)
+        // Past twelve rows the picture scrolls rather than growing down the window, and the rows it
+        // cannot show at once are still in it: the lanes are the call's voices, not a prefix of
+        // them, which the twelve-row height above and the core's own row test both hold to.
+        #expect(twenty == twelve)
     }
 }

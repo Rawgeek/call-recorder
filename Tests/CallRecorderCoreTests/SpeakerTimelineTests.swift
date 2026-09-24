@@ -31,6 +31,192 @@ struct SpeakerTimelineTests {
         )
     }
 
+    private func review(
+        voice: Int,
+        cluster: SpeakerClusterID,
+        participantID: ParticipantID?,
+        state: SpeakerMatchState
+    ) -> SpeakerReviewItem {
+        SpeakerReviewItem(
+            clusterID: cluster,
+            callID: CallID(rawValue: UUID()),
+            speakerIndex: voice,
+            speakerLabel: "SPEAKER_\(voice)",
+            speechDurationMilliseconds: 10_000,
+            suggestedParticipantID: participantID,
+            state: state,
+            createdAt: Date()
+        )
+    }
+
+    @Test("every voice of a call has a row, and the row knows which voice it is")
+    func everyVoiceHasARow() {
+        let segments = (0...11).map { index in
+            turn(index * 1_000, index * 1_000 + 800, voice: index)
+        }
+        let clusters: [SpeakerClusterID] = (0...11).map { _ in
+            SpeakerClusterID(rawValue: UUID())
+        }
+        let reviews = (0...11).map { index in
+            review(voice: index, cluster: clusters[index], participantID: nil, state: .unknown)
+        }
+
+        let timeline = SpeakerTimeline.build(segments: segments, reviews: reviews)
+
+        // Twelve voices, twelve rows: the picture used to draw the first eight and leave the rest
+        // off it, which is how Speaker 17 and Speaker 3 were missing from a call that held them.
+        #expect(timeline.lanes.count == 12)
+        let indices: [Int] = timeline.lanes.map(\.speakerIndex)
+        #expect(indices == Array(0...11))
+        // A row without a cluster behind it is a row nobody can act on.
+        let clustersOnPicture: [SpeakerClusterID?] = timeline.lanes.map(\.clusterID)
+        #expect(clustersOnPicture.compactMap { $0 }.count == 12)
+        #expect(clustersOnPicture == clusters.map { cluster in Optional(cluster) })
+    }
+
+    @Test("a row for a voice that was already named keeps the cluster, so the name can change")
+    func aNamedVoiceKeepsItsCluster() {
+        let cluster = SpeakerClusterID(rawValue: UUID())
+        let timeline = SpeakerTimeline.build(
+            segments: [
+                TranscriptSegment(
+                    startMs: 1_000,
+                    endMs: 2_000,
+                    text: "Privet",
+                    speakerIndex: 4,
+                    source: .system,
+                    speakerName: "Arcady"
+                )
+            ],
+            reviews: [
+                review(
+                    voice: 4,
+                    cluster: cluster,
+                    participantID: ParticipantID(rawValue: UUID()),
+                    state: .confirmed
+                )
+            ]
+        )
+
+        #expect(timeline.lanes.count == 1)
+        #expect(timeline.lanes[0].label == "Arcady")
+        #expect(timeline.lanes[0].clusterID == cluster)
+    }
+
+    @Test("a sample plays the voice's own turns and passes over the rest")
+    func aSampleSkipsWhatIsNotTheVoice() {
+        let lane = SpeakerTimeline.Lane(
+            speakerIndex: 0,
+            runs: [
+                SpeakerTimeline.Run(startMs: 5_000, endMs: 8_000),
+                SpeakerTimeline.Run(startMs: 20_000, endMs: 24_000),
+            ]
+        )
+        let pass = SpeakerTimeline.ListeningPass(lane: lane, startMs: 2_000, endMs: 30_000)
+
+        // Before the first turn: the pause is skipped, not listened to.
+        #expect(pass.step(at: 2_000) == .jump(toMs: 5_000))
+        // Inside a turn: it plays.
+        #expect(pass.step(at: 6_000) == .playOn)
+        // Between the turns: the minute in between belongs to whoever spoke in it.
+        #expect(pass.step(at: 9_000) == .jump(toMs: 20_000))
+        // Past the last turn: the sample ends rather than running on into the rest of the call.
+        #expect(pass.step(at: 25_000) == .finished)
+        // And its own end ends it too.
+        #expect(pass.step(at: 30_000) == .finished)
+    }
+
+    @Test("a sample that ends inside a turn stops at its own end")
+    func aSampleStopsAtItsEnd() {
+        let lane = SpeakerTimeline.Lane(
+            speakerIndex: 0,
+            runs: [SpeakerTimeline.Run(startMs: 1_000, endMs: 90_000)]
+        )
+        // Twenty-five seconds of a minute and a half turn: the sample is the excerpt on the card,
+        // not everything the voice said afterwards.
+        let pass = SpeakerTimeline.ListeningPass(lane: lane, startMs: 1_000, endMs: 25_000)
+
+        #expect(pass.step(at: 24_000) == .playOn)
+        #expect(pass.step(at: 25_000) == .finished)
+    }
+
+    @Test("a sample with no turns to go by plays through")
+    func aSampleWithoutRunsPlaysThrough() {
+        let pass = SpeakerTimeline.ListeningPass(runs: [], startMs: 0, endMs: 5_000)
+
+        #expect(pass.step(at: 1_000) == .playOn)
+        #expect(pass.step(at: 5_000) == .finished)
+    }
+
+    @Test("clicking a voice that has no card puts its card at the top")
+    func aClickedVoiceGetsItsCard() {
+        let callID = CallID(rawValue: UUID())
+        let waiting = item(callID: callID, voice: 3, state: .unknown)
+        let clicked = item(callID: callID, voice: 12, state: .confirmed)
+
+        // The cards the call shows are its waiting voices...
+        let before = SpeakerReviewList.cards(waiting: [waiting], selected: nil, callID: callID)
+        #expect(before.map(\.speakerIndex) == [3])
+        // ...and the one that was clicked, in front of them, where the picture is.
+        let after = SpeakerReviewList.cards(
+            waiting: [waiting],
+            selected: clicked,
+            callID: callID
+        )
+        #expect(after.map(\.speakerIndex) == [12, 3])
+        #expect(after.map(\.clusterID) == [clicked.clusterID, waiting.clusterID])
+    }
+
+    @Test("a clicked voice that is already waiting moves to the top, and is listed once")
+    func aClickedWaitingVoiceMovesToTheTop() {
+        let callID = CallID(rawValue: UUID())
+        let first = item(callID: callID, voice: 3, state: .unknown)
+        let clicked = item(callID: callID, voice: 7, state: .unknown)
+
+        let cards = SpeakerReviewList.cards(
+            waiting: [first, clicked],
+            selected: clicked,
+            callID: callID
+        )
+
+        // The voice that was clicked leads, and the card it already had is not drawn twice: the
+        // voice the user asked for is the one under the picture they clicked on.
+        #expect(cards.map(\.speakerIndex) == [7, 3])
+        #expect(cards.map(\.clusterID) == [clicked.clusterID, first.clusterID])
+    }
+
+    @Test("a click that belongs to another call is not listed here")
+    func aClickFromAnotherCallIsNotListed() {
+        let callID = CallID(rawValue: UUID())
+        let waiting = item(callID: callID, voice: 3, state: .unknown)
+        let otherCall = item(callID: CallID(rawValue: UUID()), voice: 7, state: .confirmed)
+
+        let cards = SpeakerReviewList.cards(
+            waiting: [waiting],
+            selected: otherCall,
+            callID: callID
+        )
+
+        #expect(cards.map(\.clusterID) == [waiting.clusterID])
+    }
+
+    private func item(
+        callID: CallID,
+        voice: Int,
+        state: SpeakerMatchState
+    ) -> SpeakerReviewItem {
+        SpeakerReviewItem(
+            clusterID: SpeakerClusterID(rawValue: UUID()),
+            callID: callID,
+            speakerIndex: voice,
+            speakerLabel: "SPEAKER_\(voice)",
+            speechDurationMilliseconds: 10_000,
+            suggestedParticipantID: state == .confirmed ? ParticipantID(rawValue: UUID()) : nil,
+            state: state,
+            createdAt: Date()
+        )
+    }
+
     @Test("turns far apart are two bars")
     func turnsApartAreTwoBars() {
         let timeline = SpeakerTimeline.build(segments: [

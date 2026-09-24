@@ -188,3 +188,54 @@ public struct SpeakerTimeline: Equatable, Sendable {
         }
     }
 }
+
+extension SpeakerTimeline {
+    /// Listening to one voice's own words, with everything that is not theirs passed over.
+    ///
+    /// A sample is a voice's turn, and the pause before its next turn belongs to nobody. On a call
+    /// where a voice speaks at minute five and again at minute nine, playing the sample through
+    /// means hearing four minutes of a conversation the sample is not about, so the playhead moves
+    /// to the next turn instead. What is skipped is what the picture shows as a gap, because the
+    /// runs here are the runs it draws.
+    public struct ListeningPass: Equatable, Sendable {
+        public let startMs: Int
+        public let endMs: Int
+        private let runs: [Run]
+
+        public init(runs: [Run], startMs: Int, endMs: Int) {
+            self.startMs = max(0, startMs)
+            self.endMs = max(self.startMs, endMs)
+            self.runs = runs
+        }
+
+        public init(lane: Lane, startMs: Int, endMs: Int) {
+            self.init(runs: lane.runs, startMs: startMs, endMs: endMs)
+        }
+
+        /// What a player should do with the playhead at one moment of the sample.
+        public enum Step: Equatable, Sendable {
+            /// The voice is speaking here, or there is nothing to go by where it speaks.
+            case playOn
+            /// A pause before the voice's next turn: move there and play on.
+            case jump(toMs: Int)
+            /// Nothing of this voice is left in the sample, or its end was reached.
+            case finished
+        }
+
+        /// What to do at one moment, as a rule with three answers rather than two.
+        ///
+        /// The end of the last turn inside the sample is a finish, not a jump: a sample of a voice
+        /// that speaks at minute five and again at minute nine ends when its turn does, rather than
+        /// running on into whatever the recording holds next.
+        public func step(at positionMs: Int) -> Step {
+            guard positionMs < endMs else { return .finished }
+            // A voice the picture has no runs for, which is a call whose separation found nothing,
+            // has nothing to skip: the sample plays through.
+            guard !runs.isEmpty else { return .playOn }
+            if runs.contains(where: { $0.holds(positionMs) }) { return .playOn }
+            guard let next = runs.first(where: { $0.startMs > positionMs })?.startMs, next < endMs
+            else { return .finished }
+            return .jump(toMs: next)
+        }
+    }
+}

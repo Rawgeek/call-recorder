@@ -43,6 +43,25 @@ public struct SpeakerProfile: Equatable, Sendable {
     }
 }
 
+/// The cards one call shows: the voice the user just clicked, then the voices still waiting.
+///
+/// A voice named on an earlier pass has no card of its own, so a row on the picture that opened
+/// nothing would be a control that does nothing. Clicking that row puts its card at the top, where
+/// the picture is: the samples to listen to, the name to change, and the way back to review are one
+/// click from the row that was clicked. A voice that already had a card moves up rather than being
+/// listed twice: the click asks for that voice's samples and its picker under the picture, and a
+/// voice that is already waiting has both, so leaving it where it was answers with nothing.
+public enum SpeakerReviewList {
+    public static func cards(
+        waiting: [SpeakerReviewItem],
+        selected: SpeakerReviewItem?,
+        callID: CallID
+    ) -> [SpeakerReviewItem] {
+        guard let selected, selected.callID == callID else { return waiting }
+        return [selected] + waiting.filter { $0.clusterID != selected.clusterID }
+    }
+}
+
 /// The order a person is offered in when a voice has to be named.
 ///
 /// Naming a remote voice means matching transcript samples against people, and the people who were

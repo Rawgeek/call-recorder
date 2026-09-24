@@ -33,8 +33,18 @@ enum SpeakerPalette {
 struct SpeakerTimelineView: View {
     let timeline: SpeakerTimeline
     var audioURL: URL?
+    /// The player the window shares with the cards below.
+    ///
+    /// One recording, one player: pressing play on a sample has to move the playhead on the picture
+    /// the user is looking at, and two players over the same audio would answer with two voices.
+    /// A render passes nothing and gets a player of its own that is never started.
+    var playback: CallPlayback?
+    /// The voice whose card the window has opened below the picture.
+    var selectedClusterID: SpeakerClusterID?
+    /// Called when a row or one of its bars is clicked, with the voice behind it.
+    var onSelect: ((SpeakerClusterID) -> Void)?
 
-    @State private var playback = CallPlayback()
+    @State private var ownPlayback = CallPlayback()
     @State private var zoom: Double = 1
     @State private var follows = true
     @State private var pinchStart: Double?
@@ -47,8 +57,10 @@ struct SpeakerTimelineView: View {
     private let rulerHeight: CGFloat = 18
     private let labelWidth: CGFloat = 112
     private let overviewHeight: CGFloat = 26
-    /// How many voices are drawn as rows. The overview still carries every one of them.
-    private let laneLimit = 8
+    /// How many rows are on screen at once. Every voice has a row: a call with more voices than
+    /// this scrolls, where it used to draw the first eight and leave the rest off the picture
+    /// entirely, which on 2026-09-24 hid two voices that were waiting to be named.
+    private let maximumVisibleRows = 12
 
     var body: some View {
         VStack(alignment: .leading, spacing: CR.Space.item) {
@@ -60,24 +72,33 @@ struct SpeakerTimelineView: View {
         .crSurface(.rounded(CR.Radius.large))
         .task(id: audioURL) {
             guard let audioURL else { return }
-            playback.load(audioURL)
+            player.load(audioURL)
         }
-        .onDisappear { playback.pause() }
-        .onChange(of: playback.positionMs) { _, _ in followPlayhead() }
+        .onDisappear { player.pause() }
+        .onChange(of: player.positionMs) { _, _ in followPlayhead() }
     }
+
+    /// The recording this picture plays, whichever player the window handed over.
+    private var player: CallPlayback { playback ?? ownPlayback }
 
     // MARK: - Derived
 
     /// The length the picture covers. The recording answers when it is longer than the words: a
     /// call that ends with four minutes of silence is drawn with that silence.
-    private var durationMs: Int { max(1, max(timeline.durationMs, playback.durationMs)) }
+    private var durationMs: Int { max(1, max(timeline.durationMs, player.durationMs)) }
 
-    private var rows: [SpeakerTimeline.Lane] { Array(timeline.lanes.prefix(laneLimit)) }
+    private var rows: [SpeakerTimeline.Lane] { timeline.lanes }
 
     private var contentWidth: CGFloat { max(containerWidth, 1) * zoom }
 
     private var lanesHeight: CGFloat {
-        CGFloat(rows.count) * (laneHeight + laneGap) - laneGap
+        max(0, CGFloat(rows.count) * (laneHeight + laneGap) - laneGap)
+    }
+
+    /// How much of the rows is on screen before the rest is scrolled to.
+    private var visibleLanesHeight: CGFloat {
+        guard rows.count > maximumVisibleRows else { return lanesHeight }
+        return CGFloat(maximumVisibleRows) * (laneHeight + laneGap) - laneGap
     }
 
     private var tickStepMs: Int { TimelineTicks.step(durationMs: durationMs, width: contentWidth) }
@@ -97,20 +118,20 @@ struct SpeakerTimelineView: View {
     private var playerRow: some View {
         HStack(spacing: CR.Space.item) {
             Button {
-                playback.toggle()
+                player.toggle()
             } label: {
-                Image(systemName: playback.isPlaying ? "pause.fill" : "play.fill")
+                Image(systemName: player.isPlaying ? "pause.fill" : "play.fill")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.white)
                     .frame(width: CR.Icon.circle, height: CR.Icon.circle)
                     .background(CR.Tone.working.color, in: Circle())
             }
             .buttonStyle(.plain)
-            .disabled(playback.url == nil || playback.durationMs == 0)
-            .help(playback.isPlaying ? "Pause" : "Play the recording")
-            .accessibilityLabel(playback.isPlaying ? "Pause" : "Play")
+            .disabled(player.url == nil || player.durationMs == 0)
+            .help(player.isPlaying ? "Pause" : "Play the recording")
+            .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 
-            Text(timelineClock(playback.positionMs))
+            Text(timelineClock(player.positionMs))
                 .font(CR.Font.caption.monospacedDigit())
                 .foregroundStyle(CR.Ink.readable)
 
@@ -120,7 +141,7 @@ struct SpeakerTimelineView: View {
                 .font(CR.Font.caption.monospacedDigit())
                 .foregroundStyle(CR.Ink.readable)
 
-            if playback.failure != nil {
+            if player.failure != nil {
                 CRStatusChip(tone: .failed, text: "Recording unavailable")
                     .help("The audio file beside this call could not be opened. The words are safe.")
             }
@@ -131,7 +152,7 @@ struct SpeakerTimelineView: View {
     private var positionTrack: some View {
         GeometryReader { proxy in
             let width = max(proxy.size.width, 1)
-            let fraction = Double(playback.positionMs) / Double(durationMs)
+            let fraction = Double(player.positionMs) / Double(durationMs)
             ZStack(alignment: .leading) {
                 Capsule()
                     .fill(Color.primary.opacity(0.14))
@@ -151,7 +172,7 @@ struct SpeakerTimelineView: View {
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
                         let ratio = min(max(0, value.location.x / width), 1)
-                        playback.seek(toMs: Int(ratio * Double(durationMs)))
+                        player.seek(toMs: Int(ratio * Double(durationMs)))
                     }
             )
         }
@@ -166,7 +187,7 @@ struct SpeakerTimelineView: View {
         HStack(spacing: CR.Space.snug) {
             Text("Timeline")
                 .font(CR.Font.headline)
-            Text("\(timelineClock(playback.positionMs)) / \(timelineClock(durationMs))")
+            Text("\(timelineClock(player.positionMs)) / \(timelineClock(durationMs))")
                 .font(CR.Font.caption.monospacedDigit())
                 .foregroundStyle(CR.Ink.readable)
             Spacer(minLength: CR.Space.inner)
@@ -196,10 +217,14 @@ struct SpeakerTimelineView: View {
 
     private var lanes: some View {
         VStack(alignment: .leading, spacing: CR.Space.inner) {
-            HStack(alignment: .top, spacing: CR.Space.inner) {
-                labelColumn
-                laneScroller
+            ScrollView(.vertical) {
+                HStack(alignment: .top, spacing: CR.Space.inner) {
+                    labelColumn
+                    laneScroller
+                }
             }
+            .frame(height: rulerHeight + visibleLanesHeight)
+            .scrollIndicators(rows.count > maximumVisibleRows ? .automatic : .hidden)
             overview
             hint
         }
@@ -216,8 +241,40 @@ struct SpeakerTimelineView: View {
         .frame(width: labelWidth, alignment: .leading)
     }
 
+    /// One row's name, and the control that opens the row's card below the picture.
+    ///
+    /// The chip is a button whenever the window can name the voice, which is whenever the voice
+    /// has a cluster behind it: clicking a row is how somebody who hears the wrong name reaches the
+    /// one place that can change it.
+    @ViewBuilder
     private func laneChip(_ lane: SpeakerTimeline.Lane, color: Color) -> some View {
-        let speaking = lane.holds(playback.positionMs)
+        let isSelected = lane.clusterID != nil && lane.clusterID == selectedClusterID
+        let chip = laneChipBody(lane, color: color)
+            .frame(width: labelWidth, height: laneHeight, alignment: .leading)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .strokeBorder(CR.Ink.action, lineWidth: isSelected ? 2 : 0)
+                    .padding(-2)
+            )
+            .help(
+                onSelect != nil && lane.clusterID != nil
+                    ? "\(lane.label) spoke for \(timelineSpoken(lane.speakingMilliseconds)) · click to name or rename"
+                    : "\(lane.label) spoke for \(timelineSpoken(lane.speakingMilliseconds))"
+            )
+        if let onSelect, let clusterID = lane.clusterID {
+            Button {
+                onSelect(clusterID)
+            } label: {
+                chip
+            }
+            .buttonStyle(.plain)
+        } else {
+            chip
+        }
+    }
+
+    private func laneChipBody(_ lane: SpeakerTimeline.Lane, color: Color) -> some View {
+        let speaking = lane.holds(player.positionMs)
         return HStack(spacing: CR.Space.snug) {
             Text(lane.label)
                 .font(.system(size: 11, weight: .semibold))
@@ -236,8 +293,6 @@ struct SpeakerTimelineView: View {
                 .foregroundStyle(CR.Ink.readable)
                 .lineLimit(1)
         }
-        .frame(width: labelWidth, height: laneHeight, alignment: .leading)
-        .help("\(lane.label) spoke for \(timelineSpoken(lane.speakingMilliseconds))")
     }
 
     private var laneScroller: some View {
@@ -246,7 +301,7 @@ struct SpeakerTimelineView: View {
                 timeline: timeline,
                 rows: rows,
                 durationMs: durationMs,
-                positionMs: playback.positionMs,
+                positionMs: player.positionMs,
                 rulerHeight: rulerHeight,
                 laneHeight: laneHeight,
                 laneGap: laneGap,
@@ -299,7 +354,7 @@ struct SpeakerTimelineView: View {
                     size: size,
                     timeline: timeline,
                     durationMs: durationMs,
-                    positionMs: playback.positionMs,
+                    positionMs: player.positionMs,
                     visible: CGRect(
                         x: offsetX / max(contentWidth, 1) * width,
                         y: 0,
@@ -325,7 +380,10 @@ struct SpeakerTimelineView: View {
     }
 
     private var hint: some View {
-        Text("Click a bar to jump there · scroll to pan · pinch or − and + to zoom")
+        Text(
+            "Click a name to open its samples · click a bar to jump there · scroll to pan "
+                + "· pinch or − and + to zoom"
+        )
             .font(CR.Font.caption)
             .foregroundStyle(CR.Ink.readable)
     }
@@ -352,10 +410,17 @@ struct SpeakerTimelineView: View {
             let run = rows[row].runs.last(where: { $0.startMs <= milliseconds }),
             run.holds(milliseconds)
         {
-            playback.play(fromMs: run.startMs)
+            select(rows[row])
+            player.play(fromMs: run.startMs)
             return
         }
-        playback.seek(toMs: milliseconds)
+        player.seek(toMs: milliseconds)
+    }
+
+    /// Tells the window which voice was clicked, when the row has one behind it.
+    private func select(_ lane: SpeakerTimeline.Lane) {
+        guard let onSelect, let clusterID = lane.clusterID else { return }
+        onSelect(clusterID)
     }
 
     /// Keeps the playhead where it can be seen, once the user asked for that.
@@ -364,8 +429,8 @@ struct SpeakerTimelineView: View {
     /// transcript follows: a view that pulls itself back while somebody is reading is worse than
     /// one that stops moving.
     private func followPlayhead() {
-        guard follows, playback.isPlaying, containerWidth > 0 else { return }
-        let x = contentX(ofMs: playback.positionMs)
+        guard follows, player.isPlaying, containerWidth > 0 else { return }
+        let x = contentX(ofMs: player.positionMs)
         let margin = containerWidth * 0.2
         guard x < offsetX + margin || x > offsetX + containerWidth - margin else { return }
         scroll.scrollTo(x: min(max(0, x - containerWidth / 2), max(0, contentWidth - containerWidth)))

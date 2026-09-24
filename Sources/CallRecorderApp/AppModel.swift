@@ -188,6 +188,12 @@ final class AppModel {
     private var recordingActivity: NSObjectProtocol?
 
     private(set) var speakerReviews: [SpeakerReviewItem] = []
+    /// Every voice of the calls the window shows, by cluster, whatever was decided about it.
+    ///
+    /// The list above is the voices still waiting, which is what the cards are made of. The picture
+    /// draws every voice, so clicking one that was named on an earlier pass needs the stored review
+    /// for it, not a card: without this the window could show a name and offer no way to change it.
+    private(set) var speakerReviewsByCluster: [SpeakerClusterID: SpeakerReviewItem] = [:]
     /// How many voices each call's transcript holds, and how many of them carry a name.
     ///
     /// Read while the review window loads its evidence, from the transcript of each call that has a
@@ -441,6 +447,14 @@ final class AppModel {
     /// Set by the renderer once it has put a review card in place, so the window's own refresh
     /// does not clear it. Only the renderer sets this.
     private(set) var previewSeededReviewCard = false
+
+    /// The voice the picture is drawn with its selection on, for a render.
+    ///
+    /// A click comes from a pointer and an off-screen render has none, so the three things a click
+    /// does had never been in a picture: the stroke on the row that was clicked, the stroke on the
+    /// card it opens, and that card moving to the top of the list. The renderer names the voice, and
+    /// the window starts with it selected. Only the renderer sets this, and only in preview mode.
+    var previewSelectedSpeakerClusterID: SpeakerClusterID?
     private let captureSession = AudioCaptureSession()
     private var captureOperationInFlight = false
     private var activeSessionDirectory: URL?
@@ -1016,6 +1030,43 @@ final class AppModel {
         }
     }
 
+    /// Takes the name off a voice the picture shows and puts it back among the cards.
+    ///
+    /// A call named on an earlier pass has no cards left, so a wrong name had nowhere to be
+    /// corrected from: the picture showed the voice and the window offered nothing to do about it.
+    /// The stored review is read whatever its state, which is what lets a voice decided months ago
+    /// come back to review with one click.
+    func returnSpeakerToReview(clusterID: SpeakerClusterID) {
+        Task { await returnSpeakerToReviewNow(clusterID: clusterID) }
+    }
+
+    private func returnSpeakerToReviewNow(clusterID: SpeakerClusterID) async {
+        guard let speakerStore else {
+            speakerReviewFailure = Self.speakerReviewMessage(
+                for: SpeakerReviewError.identityUnavailable,
+                detail: "The voice profiles could not be opened."
+            )
+            return
+        }
+        do {
+            guard let review = try await speakerStore.review(clusterID: clusterID) else {
+                speakerReviewFailure = "This voice is no longer stored for its call."
+                await refreshSpeakerReviews()
+                return
+            }
+            if let failure = await reopenSpeakerReview(review) {
+                speakerReviewFailure = failure
+            }
+        } catch {
+            report(error, context: "Speaker Return From Timeline", category: .database)
+            speakerReviewFailure = Self.speakerReviewMessage(
+                for: error,
+                detail: DiagnosticsReporter.redacted(error: String(reflecting: error))
+            )
+        }
+        await refreshSpeakerReviews()
+    }
+
     /// Moves the lines of one excerpt onto a person, whatever voice they were detected as.
     ///
     /// Detection returns whole voices, and a real call defeats it: two people on one headset come
@@ -1125,6 +1176,7 @@ final class AppModel {
             speakerVoiceCounts = [:]
             speakerTimelines = [:]
             speakerCallAudioURLs = [:]
+            speakerReviewsByCluster = [:]
             return
         }
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
@@ -1132,6 +1184,7 @@ final class AppModel {
         var voiceCounts: [CallID: SpeakerVoiceCount] = [:]
         var timelines: [CallID: SpeakerTimeline] = [:]
         var audioURLs: [CallID: URL] = [:]
+        var byCluster: [SpeakerClusterID: SpeakerReviewItem] = [:]
         for (callID, reviews) in Dictionary(grouping: speakerReviews, by: \.callID) {
             do {
                 guard
@@ -1152,10 +1205,16 @@ final class AppModel {
                     ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
                 // The picture the user names voices from: every voice the call holds, against
                 // the recording they are in. The reviews are the voices still waiting, so a row
-                // can say which one it belongs to.
+                // can say which one it belongs to; the voices already named are read as well, or
+                // their rows would be the only ones on the picture that cannot be corrected.
+                var timelineVoices = reviews
+                if let speakerStore, let everyVoice = try? await speakerStore.reviews(for: callID) {
+                    timelineVoices = everyVoice
+                }
+                for voice in timelineVoices { byCluster[voice.clusterID] = voice }
                 timelines[callID] = SpeakerTimeline.build(
                     segments: document.segments,
-                    reviews: reviews
+                    reviews: timelineVoices
                 )
                 if let audio = SpeakerReviewPlayback.resolveAudio(
                     callID: callID,
@@ -1187,6 +1246,7 @@ final class AppModel {
         speakerVoiceCounts = voiceCounts
         speakerTimelines = timelines
         speakerCallAudioURLs = audioURLs
+        speakerReviewsByCluster = byCluster
     }
 
     func voiceProfileSummary(for participantID: ParticipantID) -> VoiceProfileSummary? {
@@ -4157,10 +4217,21 @@ final class AppModel {
                     createdAt: call.startedAt
                 )
             ]
-            let audioURL = record.markdownPath.isEmpty
-                ? nil
-                : URL(filePath: record.markdownPath).deletingLastPathComponent()
-                    .appending(path: "system.m4a")
+            // The recording, resolved the way the window resolves it. The markdown of a call is
+            // written beside the call's folder as well as inside it, so the folder the markdown
+            // sits in is the call's folder only by coincidence: read that way, a render of this
+            // card drew samples whose play button said the recording was unavailable, because it
+            // was looking for system.m4a in the recordings root.
+            let callDirectory =
+                (try? await store.call(id: call.id))?.audioPath
+                .map { URL(filePath: $0).deletingLastPathComponent() }
+                ?? URL(filePath: record.jsonPath).deletingLastPathComponent()
+            let audioURL = SpeakerReviewPlayback.resolveAudio(
+                callID: call.id,
+                callDirectory: callDirectory,
+                recoverableArtifacts: recoverableArtifacts,
+                fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+            )
             let excerpts = SpeakerReviewPlayback.excerpts(
                 from: document.segments,
                 speakerIndex: speakerIndex
@@ -4208,19 +4279,54 @@ final class AppModel {
         let startedAt = recentCalls.first?.startedAt ?? Date.now.addingTimeInterval(-3_600 * 5)
         let segments = Self.previewReviewSegments
         speakerReviewCallDates[callID] = startedAt
-        speakerReviews = [1, 3].map { index in
-            SpeakerReviewItem(
+        // Every voice the invented call holds, not only the ones waiting to be named. The picture
+        // draws all of them, and a voice on the picture is one the window has to be able to act on,
+        // which is what the cluster behind each row is for.
+        //
+        // Which voices wait follows from the invented cast rather than from a second list of
+        // indices: a voice with one of the invented people on it is named, and a voice without one
+        // is waiting. Two lists that disagree draw a voice marked as named with nobody named on it,
+        // which is a card the app cannot produce and a state a check would read as a fault.
+        //
+        // The library seed runs before the metadata load that follows it, and that load replaces the
+        // invented cast with the people the throwaway home holds, which is a home with nobody but
+        // "Me" in it. The invented call's voices are named after the cast, so it is put back with
+        // the call: without it every voice of the call would wait for a name, and a render of the
+        // window would show the one state that explains no fault at all. A render of a real library
+        // keeps the people it has, because the call it draws is a real one.
+        if Self.previewHomeDirectory() != nil {
+            let known = Set(participants.map(\.name))
+            participants += Self.previewParticipants.filter { !known.contains($0.name) }
+            // The people who were on the invented call, so its roster reads like a real call's and
+            // the picker puts them first: a voice is offered the call's own people before the rest.
+            if let call = recentCalls.first {
+                callParticipants[call.id] = participants.filter {
+                    call.participantNames.contains($0.name)
+                }
+            }
+        }
+        var byCluster: [SpeakerClusterID: SpeakerReviewItem] = [:]
+        var waitingItems: [SpeakerReviewItem] = []
+        for index in Self.previewReviewVoices {
+            let person = Self.previewReviewNames[index].flatMap { name in
+                participants.first { $0.name == name }?.id
+            }
+            let review = SpeakerReviewItem(
                 clusterID: SpeakerClusterID(rawValue: UUID()),
                 callID: callID,
                 speakerIndex: index,
                 speakerLabel: "SPEAKER_\(index)",
                 speechDurationMilliseconds: Self.previewReviewSpeechMs[index] ?? 30_000,
-                suggestedParticipantID: nil,
-                state: .unknown,
+                suggestedParticipantID: person,
+                state: person == nil ? .unknown : .automatic,
                 createdAt: startedAt
             )
+            byCluster[review.clusterID] = review
+            if person == nil { waitingItems.append(review) }
         }
-        for review in speakerReviews {
+        speakerReviews = waitingItems
+        speakerReviewsByCluster = byCluster
+        for review in byCluster.values {
             speakerReviewEvidence[review.clusterID] = SpeakerReviewPlayback.Evidence(
                 excerpts: SpeakerReviewPlayback.excerpts(
                     from: segments,
@@ -4231,13 +4337,41 @@ final class AppModel {
         }
         speakerTimelines[callID] = SpeakerTimeline.build(
             segments: segments,
-            reviews: speakerReviews
+            reviews: Array(byCluster.values)
         )
         previewSeededReviewCard = true
     }
 
     /// How long each invented voice spoke, as the card counts it.
-    private static let previewReviewSpeechMs: [Int: Int] = [1: 41_000, 3: 12_000]
+    private static let previewReviewSpeechMs: [Int: Int] = [1: 41_000, 3: 12_000, 9: 22_000]
+
+    /// The cluster behind one voice of the picture a render has seeded, so it can draw it clicked.
+    ///
+    /// The renderer names the voice by its speaker index, which is what the picture and the cards
+    /// are drawn by, and the cluster is what a click carries. It is read from the seeded picture
+    /// rather than from the call, because the render's call is invented and has no row in the list.
+    func previewSeededClusterID(speakerIndex: Int) -> SpeakerClusterID? {
+        speakerTimelines.values
+            .flatMap(\.lanes)
+            .first { $0.speakerIndex == speakerIndex }?
+            .clusterID
+    }
+
+    /// The voices of the invented call, and the people they are named after.
+    ///
+    /// Twelve of them, which is the most the picture shows before it scrolls: the cap it used to
+    /// draw was eight, so a render with twelve is a render of the fault that hid Speaker 17 and
+    /// Speaker 3 from a call that held them.
+    ///
+    /// Three of the twelve are missing from the map, and those are the voices that wait for a name,
+    /// which is one row in the picture and one card under it per waiting voice. A voice with no
+    /// person here is a voice the review window has to be able to name, and one with a person is a
+    /// voice it has to be able to rename, which is the other half of the fault.
+    static let previewReviewVoices = Array(0...11)
+    static let previewReviewNames: [Int: String] = [
+        0: "Dana Holt", 2: "Ilya Marsh", 4: "Ravi Menon", 5: "Noor Aziz", 6: "Tomas Berg",
+        7: "Lena Fischer", 8: "Omar Haddad", 10: "Sofia Lang", 11: "Jonas Reed",
+    ]
 
     /// The invented conversation a render of the review window shows.
     ///
@@ -4257,8 +4391,18 @@ final class AppModel {
             (1, 79.0, 90.5, "Understood. I will write both of them up today."),
             (3, 95.0, 101.4, "Send the sheet to me and I will check the columns."),
             (0, 120.0, 132.0, "Then let us finish there. Same time next week."),
+            (4, 150.0, 168.0, "The carrier feed lands at four, so the sheet is stale by evening."),
+            (5, 174.0, 190.0, "I can hold the export until six and send one file."),
+            (6, 198.0, 214.0, "That works. The warehouse counts on the evening file."),
+            (7, 240.0, 268.0, "Two invoices came in under the old rate and both were paid."),
+            (8, 276.0, 295.0, "Then the difference is a credit note, not a second charge."),
+            (9, 320.0, 342.0, "I will take the credit note and check the ledger afterwards."),
+            (10, 400.0, 430.0, "The scanner in the Android app reads the label twice on a reprint."),
+            (11, 438.0, 470.0, "It reads the second label because the first scan stays in the queue."),
+            (4, 700.0, 724.0, "That would explain the duplicate rows in the morning report."),
+            (6, 1_100.0, 1_140.0, "Let us take the last two items off the agenda and close."),
         ]
-        let names = [0: "Dana Holt", 2: "Ilya Marsh"]
+        let names = Self.previewReviewNames
         return script.map { line in
             TranscriptSegment(
                 startMs: Int(line.start * 1_000),
@@ -4331,29 +4475,7 @@ final class AppModel {
     /// release renderer points the model at a throwaway home and asks for this instead, so the
     /// pictures in the README can show the panes without showing anyone.
     func seedPreviewLibrary() {
-        participants = [
-            Participant(
-                id: ParticipantID(rawValue: UUID()),
-                name: "Dana Holt",
-                role: "Operations",
-                company: "Globex Freight",
-                email: "dana@globex.example"
-            ),
-            Participant(
-                id: ParticipantID(rawValue: UUID()),
-                name: "Ilya Marsh",
-                role: "Engineering",
-                company: "Globex Freight",
-                email: "ilya@globex.example"
-            ),
-            Participant(
-                id: ParticipantID(rawValue: UUID()),
-                name: "Priya Raman",
-                role: "Customer support",
-                company: "Initech",
-                email: "priya@initech.example"
-            ),
-        ]
+        participants = Self.previewParticipants
         glossary = [
             GlossaryTerm(
                 id: GlossaryTermID(rawValue: UUID()),
@@ -4426,6 +4548,88 @@ final class AppModel {
             )
         }
     }
+
+    /// The people of the invented library, and the cast of the invented call the review window draws.
+    ///
+    /// The cast is the invented call's speakers: a voice the review window names is named after one
+    /// of these people, and the picker on its card offers them. A render with a voice but no people
+    /// would draw a name picked from an empty list, which is not a state the app can reach.
+    static let previewParticipants: [Participant] = [
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Dana Holt",
+            role: "Operations",
+            company: "Globex Freight",
+            email: "dana@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Ilya Marsh",
+            role: "Engineering",
+            company: "Globex Freight",
+            email: "ilya@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Priya Raman",
+            role: "Customer support",
+            company: "Initech",
+            email: "priya@initech.example"
+        ),
+        // The rest of the invented call's cast. The review window draws a call with twelve
+        // voices, and a voice whose person is not in this list would be drawn as named with
+        // nobody named on it: the people here are what makes the named rows of that picture
+        // the same shape as the named rows of a real call.
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Ravi Menon",
+            role: "Warehouse",
+            company: "Globex Freight",
+            email: "ravi@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Noor Aziz",
+            role: "Finance",
+            company: "Initech",
+            email: "noor@initech.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Tomas Berg",
+            role: "Carrier relations",
+            company: "Globex Freight",
+            email: "tomas@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Lena Fischer",
+            role: "Support",
+            company: "Initech",
+            email: "lena@initech.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Omar Haddad",
+            role: "Engineering",
+            company: "Globex Freight",
+            email: "omar@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Sofia Lang",
+            role: "Finance",
+            company: "Globex Freight",
+            email: "sofia@globex.example"
+        ),
+        Participant(
+            id: ParticipantID(rawValue: UUID()),
+            name: "Jonas Reed",
+            role: "Operations",
+            company: "Initech",
+            email: "jonas@initech.example"
+        ),
+    ]
 
     private func refreshMetadataFromProcessor() async {
         guard let store else { return }
