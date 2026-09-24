@@ -1256,7 +1256,15 @@ final class AppModel {
                 // How many voices this call was separated into, read from the transcript itself.
                 // The list of reviews holds only the voices still waiting, so a call with fourteen
                 // voices and one left used to report one voice detected.
-                voiceCounts[callID] = SpeakerVoiceCount.counting(document.segments)
+                //
+                // The voices still waiting are counted as unnamed even when their lines carry a
+                // name: moving one line of a voice onto a person does not name the voice, and the
+                // header of the 2026-09-23 14:16 call read "11 of 11 named" beside a button that
+                // read "1 to name" because five of that voice's lines had been moved by hand.
+                voiceCounts[callID] = SpeakerVoiceCount.counting(
+                    document.segments,
+                    waiting: Set(reviews.map(\.speakerIndex))
+                )
                 let callDirectory = call.audioPath
                     .map { URL(filePath: $0).deletingLastPathComponent() }
                     ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
@@ -4448,7 +4456,7 @@ final class AppModel {
             (6, 1_100.0, 1_140.0, "Let us take the last two items off the agenda and close."),
         ]
         let names = Self.previewReviewNames
-        return script.map { line in
+        let voices = script.map { line in
             TranscriptSegment(
                 startMs: Int(line.start * 1_000),
                 endMs: Int(line.end * 1_000),
@@ -4458,6 +4466,26 @@ final class AppModel {
                 speakerName: names[line.voice]
             )
         }
+        // The person recording, on the invented call's own microphone track: it carries no voice
+        // number and the name the app knows, and the picture draws it as the row that says which
+        // words of the call are the user's. Without it a render showed the picture the user met on
+        // 2026-09-24, in which his own speech had no row and he read it out of the remote voice
+        // whose bars run under it.
+        let local: [(start: Double, end: Double, text: String)] = [
+            (9.6, 14.0, "I will take the rate change and the surcharge on one line."),
+            (63.2, 73.0, "Both invoices were paid, so the sheet needs the credit."),
+            (133.0, 149.5, "Then we are done, and the carrier feed can wait until four."),
+        ]
+        return (voices + local.map { line in
+            TranscriptSegment(
+                startMs: Int(line.start * 1_000),
+                endMs: Int(line.end * 1_000),
+                text: line.text,
+                speakerIndex: nil,
+                source: .microphone,
+                speakerName: Self.defaultLocalParticipantName
+            )
+        }).sorted { $0.startMs < $1.startMs }
     }
 
     func seedPreviewSpeakerIssue() {

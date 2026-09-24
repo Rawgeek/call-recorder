@@ -4,6 +4,33 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.30] - 2026-09-24
+
+The picture names a voice by what the user named it and by nothing else, and the person recording
+gets the one row that says which words of the call are theirs.
+
+### Fixed
+
+- **A voice waiting to be named is drawn by its number, not by a name off its own lines.** Moving
+  one line of a voice onto a person is not naming the voice. The row of the 21-minute voice of the
+  2026-09-23 14:16 call read "Alexey Ponomaryov" while the card under it read "Speaker 1", because
+  five of that voice's lines had been moved onto him by hand; the user read the two names as one
+  voice and asked for it to be named after himself. A row now takes a name only from the store's
+  decided voices, and a voice the store still holds as a question keeps its number, which is the
+  number its card carries.
+- **Moved lines no longer count their voice as named.** The same call's header read "11 of 11
+  named" beside a button that read "1 to name", for the same five lines. The count of named voices
+  reads the store's waiting voices as unnamed, so the header and the button agree.
+
+### Added
+
+- **The person recording has a row of their own.** The picture drew the voices the separation
+  found and dropped the microphone track, so the user's own words had no row: on 2026-09-24 he read
+  his own speech out of the remote voice whose bars run under it and asked for that voice to be
+  named after him. The microphone track carries no voice number and does carry the name the app
+  knows, and it is drawn named, with its turns as the bars to jump to. It is the one row that is not
+  a question: nobody has to name the person recording.
+
 ## [0.1.29] - 2026-09-24
 
 A voice on the picture carries one number wherever it is read, the samples are ready for every voice

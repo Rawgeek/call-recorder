@@ -380,14 +380,25 @@ public struct SpeakerVoiceCount: Equatable, Sendable {
     /// A segment with no number is not a detected voice: the renderer falls back to its own tag for
     /// those, and counting them would report a voice nobody separated. A named segment with no
     /// number is a voice all the same -- the local microphone track is one -- so it counts.
-    public static func counting(_ segments: [TranscriptSegment]) -> SpeakerVoiceCount {
+    ///
+    /// - Parameter waiting: The voices the store still holds as a question. A name on one of their
+    ///   lines is a name the user put on that line, not on the voice, and the header of the
+    ///   2026-09-23 14:16 call read "11 of 11 named" beside a button that read "1 to name" because
+    ///   five lines of the waiting voice had been moved onto a person by hand. A call whose reviews
+    ///   have expired passes none, and the transcript is read the way it was before.
+    public static func counting(
+        _ segments: [TranscriptSegment],
+        waiting: Set<Int> = []
+    ) -> SpeakerVoiceCount {
         var indexes = Set<Int>()
         var namedIndexes = Set<Int>()
         var namedWithoutIndex = Set<String>()
         for segment in segments {
             if let index = segment.speakerIndex {
                 indexes.insert(index)
-                if segment.speakerName != nil { namedIndexes.insert(index) }
+                if segment.speakerName != nil, !waiting.contains(index) {
+                    namedIndexes.insert(index)
+                }
             } else if let name = segment.speakerName {
                 namedWithoutIndex.insert(name)
             }

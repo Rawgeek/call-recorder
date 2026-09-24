@@ -77,6 +77,12 @@ public struct SpeakerTimeline: Equatable, Sendable {
     /// The length the picture covers: the last run, or the recording when that is longer.
     public let durationMs: Int
 
+    /// The row the person recording gets.
+    ///
+    /// The microphone track carries no voice number of its own: it is not one of the voices the
+    /// separation found, it is the person doing the recording.
+    public static let localSpeakerIndex = -1
+
     public var isEmpty: Bool { lanes.isEmpty }
 
     /// Below this a turn is not speech. The same number the separation writes with.
@@ -100,9 +106,9 @@ public struct SpeakerTimeline: Equatable, Sendable {
     /// Builds the rows from a transcript, in the order the voices were first heard.
     ///
     /// - Parameters:
-    ///   - reviews: The voices of this call that are still waiting to be named, so a row can say
-    ///     which one it belongs to. A call whose voices are all named has none, and the rows are
-    ///     read from the transcript alone.
+    ///   - reviews: The voices of this call, so a row can say which one it belongs to and whether
+    ///     the store holds a name for it. A call whose reviews have expired has none, and the rows
+    ///     are read from the transcript alone.
     ///   - durationMs: The length of the recording, when it is known. It is the floor of the
     ///     picture: a call whose last words are at four minutes is drawn on the five minutes the
     ///     file holds.
@@ -111,14 +117,39 @@ public struct SpeakerTimeline: Equatable, Sendable {
         reviews: [SpeakerReviewItem] = [],
         durationMs: Int = 0
     ) -> SpeakerTimeline {
+        // A voice the store still holds as a question has no name, whatever its lines say. Moving
+        // one line of a voice onto a person is not naming the voice, and reading the name off the
+        // lines drew "Alexey Ponomaryov" over the row of a voice the card under it called
+        // "Speaker 1" on 2026-09-24, from the five lines of that voice that had been moved by hand.
+        var unnamedIndexes: Set<Int> = []
+        for review in reviews where review.state == .suggested || review.state == .unknown {
+            unnamedIndexes.insert(review.speakerIndex)
+        }
         var turnsByVoice: [Int: [Run]] = [:]
         var namesByVoice: [Int: String] = [:]
         for segment in segments {
-            // A turn with no voice number is not a detected voice: the local microphone track is
-            // one of those, and drawing it would put the user's own words among the voices the
-            // separation found and the user is being asked to name.
-            guard let index = segment.speakerIndex, segment.endMs > segment.startMs else { continue }
-            if let name = segment.speakerName, !name.isEmpty { namesByVoice[index] = name }
+            guard segment.endMs > segment.startMs else { continue }
+            // A turn with no voice number is not a detected voice, and a line with neither a number
+            // nor a name is not a voice at all. The microphone track has no number and does have a
+            // name: it is the person recording, and it is the row that says which words of the call
+            // are theirs. It used to be dropped, and on 2026-09-24 the user read his own speech out
+            // of the remote voice whose bars run under it and asked for that voice to be named
+            // after him, because his own voice had no row to point at.
+            let index: Int
+            if let numbered = segment.speakerIndex {
+                index = numbered
+            } else if segment.speakerName != nil {
+                index = localSpeakerIndex
+            } else {
+                continue
+            }
+            // The person recording is named by the name on their own track: no store keeps it, and
+            // nobody is asked to name them.
+            if let name = segment.speakerName, !name.isEmpty,
+                index == localSpeakerIndex || !unnamedIndexes.contains(index)
+            {
+                namesByVoice[index] = name
+            }
             turnsByVoice[index, default: []].append(
                 Run(startMs: max(0, segment.startMs), endMs: segment.endMs)
             )

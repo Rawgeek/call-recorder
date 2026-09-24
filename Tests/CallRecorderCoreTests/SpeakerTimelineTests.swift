@@ -389,6 +389,133 @@ struct SpeakerTimelineTests {
         #expect(timeline.lane(for: 11)?.label == "Speaker 12")
     }
 
+    @Test("a voice waiting to be named is drawn by its number, not by a name off its own lines")
+    func aWaitingVoiceIsNotDrawnWithAName() {
+        // On 2026-09-24 the row of the 21-minute voice of the 2026-09-23 14:16 call read
+        // "Alexey Ponomaryov" while the card under it read "Speaker 1", and the row was the one on
+        // screen when the user asked for that voice to be named after himself. Five of the voice's
+        // lines had been moved onto Alexey Ponomaryov by hand, and the row had taken the name off
+        // them: a line can be moved without the voice being named, so the lines cannot name a
+        // voice the store still holds as a question.
+        let cluster = SpeakerClusterID(rawValue: UUID())
+        let timeline = SpeakerTimeline.build(
+            segments: [
+                turn(1_000, 2_000, voice: 6),
+                TranscriptSegment(
+                    startMs: 3_000,
+                    endMs: 4_000,
+                    text: "a line moved onto somebody else",
+                    speakerIndex: 6,
+                    source: .system,
+                    speakerName: "Alexey Ponomaryov"
+                ),
+            ],
+            reviews: [
+                review(
+                    voice: 6,
+                    cluster: cluster,
+                    participantID: ParticipantID(rawValue: UUID()),
+                    state: .suggested
+                )
+            ]
+        )
+
+        // The seventh voice of the call is Speaker 7, and the card under the row says the same.
+        #expect(timeline.lane(for: 6)?.label == "Speaker 7")
+        // The row still knows which voice it is, so it can still be clicked and named.
+        #expect(timeline.lane(for: 6)?.clusterID == cluster)
+    }
+
+    @Test("the microphone track is a row of its own, named after the person recording")
+    func thePersonRecordingGetsARow() {
+        // The picture drew the voices the separation found and dropped the microphone track, so the
+        // user's own words had no row at all. On 2026-09-24 he read his own speech out of the
+        // remote voice whose bars run under it and asked for that voice to be named after him. The
+        // microphone track carries no voice number: it is the person recording, and it is the one
+        // row that says which words of the call are theirs.
+        let cluster = SpeakerClusterID(rawValue: UUID())
+        let timeline = SpeakerTimeline.build(
+            segments: [
+                TranscriptSegment(
+                    startMs: 1_000,
+                    endMs: 9_000,
+                    text: "my own words",
+                    speakerIndex: nil,
+                    source: .microphone,
+                    participantID: ParticipantID(rawValue: UUID()),
+                    speakerName: "Stas"
+                ),
+                turn(2_000, 4_000, voice: 0),
+            ],
+            reviews: [
+                review(voice: 0, cluster: cluster, participantID: nil, state: .unknown)
+            ]
+        )
+
+        let local = timeline.lane(for: SpeakerTimeline.localSpeakerIndex)
+        #expect(local?.label == "Stas")
+        #expect(local?.runs == [
+            SpeakerTimeline.Run(startMs: 1_000, endMs: 9_000)
+        ])
+        // Naming it is not a question: the person recording is the one person the app knows.
+        #expect(local?.clusterID == nil)
+        #expect(timeline.lanes.count == 2)
+        // A line with neither a voice number nor a name is not a voice, and still gets no row.
+        #expect(
+            SpeakerTimeline.build(segments: [
+                TranscriptSegment(
+                    startMs: 0,
+                    endMs: 1_000,
+                    text: "nobody",
+                    speakerIndex: nil,
+                    source: .microphone
+                )
+            ]).lanes.isEmpty
+        )
+    }
+
+    @Test("a line moved by hand does not make its voice count as named")
+    func aMovedLineDoesNotNameItsVoice() {
+        // The header of the 2026-09-23 14:16 call read "11 of 11 named" while the button beside it
+        // read "1 to name". Five of the waiting voice's lines had been moved onto a person by hand,
+        // and the count read the name off the lines: the store is the record of what was named, and
+        // a voice it still holds as a question is one the user has not answered yet.
+        let segments = [
+            TranscriptSegment(
+                startMs: 1_000,
+                endMs: 2_000,
+                text: "a line moved onto somebody else",
+                speakerIndex: 0,
+                source: .system,
+                speakerName: "Alexey Ponomaryov"
+            ),
+            TranscriptSegment(
+                startMs: 3_000,
+                endMs: 4_000,
+                text: "a voice that was really named",
+                speakerIndex: 1,
+                source: .system,
+                speakerName: "Arcady"
+            ),
+            TranscriptSegment(
+                startMs: 5_000,
+                endMs: 6_000,
+                text: "my own words",
+                speakerIndex: nil,
+                source: .microphone,
+                speakerName: "Stas"
+            ),
+        ]
+
+        let counts = SpeakerVoiceCount.counting(segments, waiting: [0])
+
+        // The waiting voice and the two named ones, and the person recording counts as named.
+        #expect(counts.total == 3)
+        #expect(counts.named == 2)
+        // A call with no voice waiting reads the transcript the way it did before.
+        #expect(SpeakerVoiceCount.counting(segments).named == 3)
+    }
+
     @Test("the window loads samples for every voice it draws, not only the waiting ones")
     func theWindowIsReadyForEveryVoiceItDraws() {
         let callID = CallID(rawValue: UUID())

@@ -1,4 +1,4 @@
-# Call Recorder 0.1.29 — install, features, and Codex MCP
+# Call Recorder 0.1.30 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
 of a call, transcribes them on this Mac with Whisper, labels who spoke, and indexes every
