@@ -36,6 +36,10 @@ struct AppSettingsDecodingTests {
         // And the check runs on the step the app shipped with, which is what a blob written before
         // the step could be chosen has to mean.
         #expect(decoded.appUpdateCheckInterval == .everySixHours)
+        // The engine is new in this release, so a blob written before it falls on Parakeet. That
+        // is safe rather than brave: a Mac without the model falls back to whisper.cpp on its own,
+        // and the rules that decide it are in SpeechEngineChoice.
+        #expect(decoded.speechEngine == .parakeet)
         // A Mac that has never been asked about a missing microphone records the other side of the
         // call, which is the behaviour this release introduced.
         #expect(decoded.recordsWithoutMicrophone)

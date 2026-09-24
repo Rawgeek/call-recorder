@@ -4,6 +4,49 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.25] - 2026-09-24
+
+A recorded call is read by Parakeet, which reads Russian and English in one pass on the Neural
+Engine, and whisper.cpp is kept for the languages it was not trained for.
+
+### Added
+
+- **Calls are transcribed by Parakeet TDT 0.6B v3.** One pass reads a call that mixes Russian with
+  English product names without being told which language it is in, which is the call this app
+  meets every day. The model runs on the Neural Engine, and it reads the file the recorder wrote
+  itself. Measured on this Mac through this app's own reader: a four-minute thirty-six second
+  recording of English speech is read in 2.4 seconds, after a model that loads in 0.2 seconds.
+  whisper.cpp reads the same file in 16.2 seconds. Twenty-five European languages are read this
+  way, Russian and Ukrainian among them.
+- **The engine is a setting.** Settings, Models, Components names it, and the row says which engine
+  would read the next call rather than which one was asked for, because a setting that cannot be
+  honoured falls back instead of failing the call: a language Parakeet was not trained for, or a Mac
+  whose Parakeet model has not been downloaded, keeps reading with whisper.cpp and says so in the
+  row. This is the engine that reads the saved transcript; the live window beside a recording still
+  reads with whisper.cpp.
+- **The Parakeet model is a download, not part of the app.** Four Core ML graphs and a vocabulary,
+  fetched from the publisher into the folder the other models live in, with the fraction that has
+  arrived shown in the row while it runs. Deleting it gives the space back and falls the app back on
+  whisper.cpp.
+
+### Changed
+
+- **A recording is no longer cut into five-minute pieces before it is read.** The pieces existed
+  because whisper.cpp reads one at a time; Parakeet takes a file of any length and holds a constant
+  amount of memory while it does, so the turns of a transcript are no longer decided by where a
+  piece happened to end.
+- **Nothing is written to disk to read a call.** The wave file converted with ffmpeg and the chunk
+  files beside it are whisper.cpp's requirement, not the reader's: the track the recorder wrote is
+  handed over as it is, resampled and mixed by the model itself.
+- **A recording that holds nothing reads as no words rather than as a fault.** A muted microphone
+  and a room with nobody in it land on the app's own "No speech" answer, which is what whisper.cpp
+  with its silence filter already produced. Words the reader could not give a time stay a fault,
+  because nothing honest can be placed in the call with them.
+- **The whisper model file is needed only by the engine that will read the call.** A Mac that
+  switched to Parakeet and gave the whisper files their space back still transcribes; one that kept
+  the engine on whisper without a model is told before the call is claimed for work that could not
+  finish.
+
 ## [0.1.24] - 2026-09-24
 
 The voices of a call are drawn against its recording, so naming one starts with hearing it: a row

@@ -105,6 +105,14 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// call came back with "биспер" for Whisper and "Роза" for Rasa. Pinning the language the call
     /// was actually spoken in is what keeps a loan word the word it is.
     public var transcriptionLanguage: String
+    /// Which engine reads a finished recording.
+    ///
+    /// Parakeet runs on the Neural Engine, reads the languages these calls are held in, and reads
+    /// them in one pass; whisper.cpp stays for the languages Parakeet was not trained for and for
+    /// a Mac whose Parakeet model was removed. A setting that cannot be honoured falls back to
+    /// whisper rather than failing the call, and those rules live in `SpeechEngineChoice`, where
+    /// they can be read and tested without a model on disk.
+    public var speechEngine: SpeechEngine
     /// Whether a saved transcript prints the time each turn started.
     ///
     /// Off by default: a file is read for what was said, and a printed time in the middle of a
@@ -152,6 +160,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case appUpdateCheckInterval
         case removeAudioAfterTranscription
         case transcriptionLanguage
+        case speechEngine
         case transcriptTimestamps
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
@@ -182,6 +191,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
             appUpdateCheckInterval: .default,
             removeAudioAfterTranscription: true,
             transcriptionLanguage: "auto",
+            speechEngine: .parakeet,
             transcriptTimestamps: false,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
@@ -299,6 +309,12 @@ extension AppSettings {
         transcriptionLanguage =
             try container.decodeIfPresent(String.self, forKey: .transcriptionLanguage)
             ?? fallback.transcriptionLanguage
+        // Added after the first release, with the rule the interval above follows: a settings blob
+        // written before the engine could be chosen lands on the engine this release reads with,
+        // and a value from a build that does not know this one costs the user nothing else.
+        let storedEngine =
+            (try? container.decodeIfPresent(String.self, forKey: .speechEngine)) ?? nil
+        speechEngine = storedEngine.flatMap(SpeechEngine.init(rawValue:)) ?? fallback.speechEngine
         transcriptTimestamps =
             try container.decodeIfPresent(Bool.self, forKey: .transcriptTimestamps)
             ?? fallback.transcriptTimestamps

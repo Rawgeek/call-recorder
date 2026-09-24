@@ -327,6 +327,11 @@ final class AppModel {
     let modelManager: ModelManager
     /// The models the app needs but does not ask anyone to choose between.
     let supportingManager: SupportingModelManager
+    /// The reader that runs Parakeet on the calls it can read.
+    let parakeetEngine: ParakeetEngine
+    /// How much of the Parakeet model a running download has fetched, or nil when none is running.
+    private(set) var parakeetDownloadFraction: Double?
+    private(set) var parakeetDownloadError: String?
     private let applicationDirectory: URL
     private let store: CallStore?
     private var speakerStore: SpeakerStore?
@@ -523,6 +528,11 @@ final class AppModel {
         // The components beside them keep another: a model that is one file and a model that is
         // five are not the same shape, and a shared record would have to describe both.
         supportingManager = SupportingModelManager(applicationDirectory: applicationDirectory)
+        // The Parakeet reader is made once and kept: its graphs take seconds to load, and the call
+        // read at noon should not load them again after the call read at nine.
+        parakeetEngine = ParakeetEngine(
+            repository: ParakeetModel.repository(in: applicationDirectory)
+        )
         // Watch every window, so windows opened from menus or the Window menu also come forward.
         WindowPresentation.startObservingWindows()
         if
@@ -3451,6 +3461,62 @@ final class AppModel {
         throw TranscriberError.vadModelUnavailable
     }
 
+    // MARK: - Parakeet
+
+    /// Whether the Parakeet model is complete on disk.
+    var parakeetModelIsInstalled: Bool {
+        ParakeetModel.isComplete(in: applicationDirectory)
+    }
+
+    /// What the Parakeet model takes on disk.
+    var parakeetModelBytes: Int64 {
+        ParakeetModel.installedBytes(in: applicationDirectory)
+    }
+
+    /// The engine a call would be read with right now.
+    ///
+    /// The setting can ask for Parakeet while the model is missing, or while the call is in a
+    /// language Parakeet was not trained for, and in both cases whisper.cpp is what reads. The
+    /// Models pane reports this answer rather than the setting, because this is the one that
+    /// decides what a recording sounds like when it comes back.
+    var activeSpeechEngine: SpeechEngine {
+        SpeechEngineChoice.engine(
+            requested: settings.speechEngine,
+            language: settings.transcriptionLanguage,
+            parakeetIsReady: parakeetModelIsInstalled
+        )
+    }
+
+    /// Fetches the Parakeet model, reporting the fraction that has arrived.
+    ///
+    /// A half-downloaded model is worth nothing, so the fetch is not offered as something to stop
+    /// and start: it runs to the end, and a failure leaves the app reading with whisper.cpp until
+    /// it is asked for again.
+    func downloadParakeetModel() {
+        guard parakeetDownloadFraction == nil else { return }
+        parakeetDownloadError = nil
+        parakeetDownloadFraction = 0
+        Task { @MainActor in
+            do {
+                try await ParakeetModel.download(in: applicationDirectory) { fraction in
+                    Task { @MainActor in self.parakeetDownloadFraction = fraction }
+                }
+                self.parakeetDownloadFraction = nil
+            } catch {
+                self.parakeetDownloadFraction = nil
+                self.parakeetDownloadError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Gives the space back. Calls fall to whisper.cpp until the model is fetched again.
+    func deleteParakeetModel() {
+        try? FileManager.default.removeItem(
+            at: ParakeetModel.repository(in: applicationDirectory)
+        )
+        Task { await parakeetEngine.forgetLoadedModels() }
+    }
+
     private func performProcessingStage(
         _ job: ProcessingJob,
         cancellation: ProcessCancellation
@@ -3467,23 +3533,29 @@ final class AppModel {
                 let audioPath = call.audioPath,
                 Self.audioIsOnDisk(call)
             else { throw BackgroundProcessingError.audioUnavailable }
-            guard let whisperCLI = ToolLocator.standard.locate("whisper-cli") else {
-                throw BackgroundProcessingError.whisperUnavailable
+            let whisperCLI = ToolLocator.standard.locate("whisper-cli")
+            // The whisper file is needed only by the engine that will read this call. A Mac that
+            // switched to Parakeet and gave the whisper files their space back still transcribes;
+            // one that kept the setting on whisper without a file is told so here, before the call
+            // is claimed for work that could not finish.
+            let whisperModel = modelManager.models.first {
+                $0.id == settings.selectedWhisperModelID
+                    && modelManager.state(for: $0) == .installed
             }
-            guard
-                let model = modelManager.models.first(where: {
-                    $0.id == settings.selectedWhisperModelID
-                }),
-                modelManager.state(for: model) == .installed
-            else { throw BackgroundProcessingError.modelUnavailable }
+            if
+                activeSpeechEngine == .whisper,
+                whisperModel == nil || whisperCLI == nil
+            {
+                throw BackgroundProcessingError.modelUnavailable
+            }
             let participants = try await store.participants(for: job.callID)
             let glossary = try await store.listGlossaryTerms()
             let audio = URL(filePath: audioPath)
             _ = try await pipeline.transcribe(
                 callID: job.callID,
                 audio: audio,
-                modelID: model.id,
-                modelFile: modelManager.fileURL(for: model),
+                modelID: whisperModel?.id ?? ParakeetModel.modelName,
+                modelFile: whisperModel.map { modelManager.fileURL(for: $0) },
                 participantIDs: participants.map(\.id),
                 localParticipantID: settings.localParticipantID,
                 glossary: glossary,
@@ -3495,7 +3567,10 @@ final class AppModel {
                     vadModel: try await ensuredVADModel(),
                     language: settings.transcriptionLanguage,
                     includeTimestamps: settings.transcriptTimestamps,
-                    cancellation: cancellation
+                    cancellation: cancellation,
+                    speechEngine: settings.speechEngine,
+                    parakeetRepository: ParakeetModel.repository(in: applicationDirectory),
+                    parakeet: parakeetEngine
                 )
             )
             return .diarizing

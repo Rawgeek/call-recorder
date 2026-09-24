@@ -755,6 +755,7 @@ struct ModelSettingsView: View {
     @Bindable var model: AppModel
     @State private var pendingDeletion: WhisperModel?
     @State private var pendingComponentDeletion: SupportingModel?
+    @State private var pendingParakeetDeletion = false
     /// Whether the models outside the four the card shows by default are unfolded.
     @State private var showsAllModels = false
 
@@ -800,10 +801,11 @@ struct ModelSettingsView: View {
                     + "recording waits for the selected model. Downloads are kept in Application "
                     + "Support. Small is the pick for everyday calls and Large v3 Turbo is the "
                     + "pick when accuracy matters; a model that fits this Mac with thirty percent "
-                    + "of its memory still in reserve is marked green."
+                    + "of its memory still in reserve is marked green. Only the whisper.cpp "
+                    + "engine reads these files; Parakeet brings its own model."
             ) {
                 CRSettingsRow(
-                    title: "Use for new recordings",
+                    title: "Use when whisper.cpp reads",
                     info: "The English-only files cannot transcribe anything but English, so the "
                         + "menu is grouped by that first."
                 ) {
@@ -906,6 +908,10 @@ struct ModelSettingsView: View {
                     + "read, and the engine and model a brief is written with. A download is "
                     + "accepted only when its published hash matches the publisher's."
             ) {
+                speechEngineRow
+                CRSettingsDivider()
+                parakeetModelRow
+                CRSettingsDivider()
                 whisperEngineRow
                 CRSettingsDivider()
                 llamaEngineRow
@@ -956,6 +962,21 @@ struct ModelSettingsView: View {
             )
         }
         .confirmationDialog(
+            "Delete the Parakeet model?",
+            isPresented: $pendingParakeetDeletion,
+            titleVisibility: .visible
+        ) {
+            Button("Delete", role: .destructive) {
+                model.deleteParakeetModel()
+            }
+            Button("Keep", role: .cancel) {}
+        } message: {
+            Text(
+                "Calls are read with whisper.cpp until it is downloaded again. It is about "
+                    + ModelSizeLabel.file(bytes: model.parakeetModelBytes) + "."
+            )
+        }
+        .confirmationDialog(
             "Delete this model?",
             isPresented: Binding(
                 get: { pendingDeletion != nil },
@@ -973,6 +994,95 @@ struct ModelSettingsView: View {
 
     // MARK: - Components
 
+    /// Which engine reads a recording, and which one would read the next call.
+    ///
+    /// The app carries two. Parakeet reads the languages these calls are held in, in one pass, and
+    /// needs no language named; whisper.cpp is what every earlier version read with and stays for
+    /// the languages Parakeet was not trained for. A setting can ask for an engine that cannot
+    /// answer, so the second line names the one that would answer instead: the call is read either
+    /// way, and which engine read it is worth knowing before it is read.
+    @ViewBuilder
+    private var speechEngineRow: some View {
+        let requested = model.settings.speechEngine
+        let answering = model.activeSpeechEngine
+        CRSettingsRow(
+            title: "Transcription engine",
+            detail: requested == answering
+                ? nil
+                : requested.label + " is not answering yet, so " + answering.label
+                    + " reads. "
+                    + (model.parakeetModelIsInstalled
+                        ? "This call is in a language Parakeet was not trained for."
+                        : "The Parakeet model is not downloaded."),
+            info: "Parakeet runs on the Neural Engine and reads Russian and English in one pass, "
+                + "including a call that mixes them, without being told which language it is in. "
+                + "whisper.cpp is the engine this app read with before, and it stays for the "
+                + "languages Parakeet was not trained for. This is the engine that reads the "
+                + "transcript of a finished call; the live window beside a recording still reads "
+                + "with whisper.cpp.",
+            warning: requested != answering
+        ) {
+            Picker("", selection: $model.settings.speechEngine) {
+                ForEach(SpeechEngine.allCases) { engine in
+                    Text(engine.label).tag(engine)
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 200, alignment: .trailing)
+        }
+    }
+
+    /// The Parakeet model, and the size it costs to read a call with it.
+    @ViewBuilder
+    private var parakeetModelRow: some View {
+        CRSettingsRow(
+            title: "Parakeet model",
+            detail: parakeetModelDetail,
+            info: "Four Core ML graphs and a vocabulary, read on the Neural Engine. It is not "
+                + "part of the app, so the download is the last step of switching engines, and a "
+                + "Mac without it keeps reading with whisper.cpp.",
+            warning: model.parakeetDownloadError != nil
+        ) {
+            if let fraction = model.parakeetDownloadFraction {
+                HStack(spacing: CR.Space.inner) {
+                    CRProgressRing(progress: fraction)
+                    Text(fraction.formatted(.percent.precision(.fractionLength(0))))
+                        .font(CR.Font.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(CR.Ink.readable)
+                        .frame(width: 30, alignment: .trailing)
+                }
+            } else if model.parakeetModelIsInstalled {
+                HStack(spacing: CR.Space.inner) {
+                    CRStatusChip(tone: .ready, text: "Ready")
+                    CRButton(title: "Delete", kind: .destructive) {
+                        pendingParakeetDeletion = true
+                    }
+                }
+            } else {
+                CRButton(title: "Download", kind: .primary) {
+                    model.downloadParakeetModel()
+                }
+            }
+        }
+    }
+
+    /// The one line the Parakeet row says out loud.
+    ///
+    /// A failure is the reason it has to speak, so that comes first; otherwise the row says what
+    /// the model costs on disk, because that is the number a person deciding to keep it wants.
+    private var parakeetModelDetail: String? {
+        if let error = model.parakeetDownloadError {
+            return "The download stopped: " + error
+        }
+        guard model.parakeetModelIsInstalled else {
+            return model.settings.speechEngine == .parakeet
+                ? "Not downloaded, so calls are read with whisper.cpp."
+                : nil
+        }
+        return ModelSizeLabel.file(bytes: model.parakeetModelBytes) + " on disk."
+    }
+
     /// The whisper.cpp build transcription runs on.
     ///
     /// The app does not ship it: it runs the tool it finds on PATH. The row names that tool,
@@ -980,14 +1090,18 @@ struct ModelSettingsView: View {
     /// is decoded.
     @ViewBuilder
     private var whisperEngineRow: some View {
+        let needed = model.activeSpeechEngine == .whisper
         CRSettingsRow(
             title: "whisper.cpp",
             // The one case that has to be said out loud is the one where nothing can transcribe.
             detail: model.whisperCLIPath == nil
-                ? "Not found. Install it with: brew install whisper-cpp"
+                ? (needed
+                    ? "Not found. Install it with: brew install whisper-cpp"
+                    : "Not installed. Parakeet reads the calls it was trained for; whisper.cpp "
+                        + "would read the rest.")
                 : nil,
             info: whisperEngineDetail,
-            warning: model.whisperCLIPath == nil
+            warning: needed && model.whisperCLIPath == nil
         ) {
             if model.whisperCLIPath == nil {
                 CRStatusChip(tone: .failed, text: "Not found")
@@ -1001,8 +1115,9 @@ struct ModelSettingsView: View {
 
     private var whisperEngineDetail: String {
         guard let path = model.whisperCLIPath else {
-            return "Call Recorder transcribes with whisper.cpp and cannot find it. "
-                + "Install it with: brew install whisper-cpp"
+            return "Call Recorder reads a call with Parakeet, and with whisper.cpp for the "
+                + "languages Parakeet was not trained for. It is not installed here; install it "
+                + "with: brew install whisper-cpp"
         }
         return "The transcription engine, found at " + path + ". Homebrew updates it; Call "
             + "Recorder only runs it."

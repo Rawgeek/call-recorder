@@ -45,7 +45,7 @@ struct CallPipeline: Sendable {
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL,
+        modelFile: URL?,
         participantIDs: [ParticipantID],
         localParticipantID: ParticipantID? = nil,
         glossary: [GlossaryTerm],

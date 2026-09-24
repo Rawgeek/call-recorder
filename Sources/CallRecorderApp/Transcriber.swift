@@ -7,6 +7,9 @@ enum TranscriberError: LocalizedError {
     case missingWhisperOutput
     case vadModelUnavailable
     case repetitiveTranscript
+    case parakeetUnavailable
+    case missingWhisperModel
+    case missingWhisperTool
 
     var errorDescription: String? {
         switch self {
@@ -18,13 +21,23 @@ enum TranscriberError: LocalizedError {
             "The Silero VAD model is not installed. Download it in Settings, Models, Components."
         case .repetitiveTranscript:
             "The transcript looks repetitive and was not saved."
+        case .parakeetUnavailable:
+            "The Parakeet model is not installed. Download it in Settings, Models, Components."
+        case .missingWhisperModel:
+            "The whisper model this Mac reads with is not installed. Download it in Settings, Models."
+        case .missingWhisperTool:
+            "whisper.cpp is not installed. Install it with: brew install whisper-cpp"
         }
     }
 }
 
 struct Transcriber: Sendable {
     let ffmpeg: URL
-    let whisperCLI: URL
+    /// The whisper.cpp build, when this Mac has one.
+    ///
+    /// Only the engine that will read the call needs it: a Mac that switched to Parakeet and never
+    /// installed the tool still transcribes, and the row that reports the tool says what is missing.
+    let whisperCLI: URL?
     let vadModel: URL?
     /// The language to decode, or "auto" to let the model decide per chunk.
     let language: String
@@ -32,14 +45,23 @@ struct Transcriber: Sendable {
     let includeTimestamps: Bool
     /// Set when this run may be stopped from the surface. Nil for a run nobody can stop.
     let cancellation: ProcessCancellation?
+    /// The engine the user chose for the calls it can read.
+    let speechEngine: SpeechEngine
+    /// Where the Parakeet model is read from, when the app has one on disk.
+    let parakeetRepository: URL?
+    /// The reader that runs it. Kept across calls, because the graphs take seconds to load.
+    let parakeet: ParakeetEngine?
 
     init(
         ffmpeg: URL,
-        whisperCLI: URL,
+        whisperCLI: URL?,
         vadModel: URL? = nil,
         language: String = "auto",
         includeTimestamps: Bool = false,
-        cancellation: ProcessCancellation? = nil
+        cancellation: ProcessCancellation? = nil,
+        speechEngine: SpeechEngine = .whisper,
+        parakeetRepository: URL? = nil,
+        parakeet: ParakeetEngine? = nil
     ) {
         self.ffmpeg = ffmpeg
         self.whisperCLI = whisperCLI
@@ -47,6 +69,9 @@ struct Transcriber: Sendable {
         self.language = language
         self.includeTimestamps = includeTimestamps
         self.cancellation = cancellation
+        self.speechEngine = speechEngine
+        self.parakeetRepository = parakeetRepository
+        self.parakeet = parakeet
     }
 
     /// The silence filter, at the revision the app last verified.
@@ -122,7 +147,7 @@ struct Transcriber: Sendable {
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL,
+        modelFile: URL?,
         participants: [Participant],
         glossary: [GlossaryTerm],
         glossaryUsage: [String: Int] = [:],
@@ -130,7 +155,7 @@ struct Transcriber: Sendable {
         localParticipant: Participant? = nil
     ) async throws -> TranscriptRecord {
         try await Task.detached {
-            try transcribeSynchronously(
+            try await transcribeSynchronously(
                 callID: callID, audio: audio, modelID: modelID, modelFile: modelFile,
                 participants: participants, glossary: glossary, glossaryUsage: glossaryUsage,
                 directory: directory,
@@ -144,14 +169,14 @@ struct Transcriber: Sendable {
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL,
+        modelFile: URL?,
         participants: [Participant],
         glossary: [GlossaryTerm],
         glossaryUsage: [String: Int],
         directory: URL,
         localParticipant: Participant?,
         cancellation: ProcessCancellation?
-    ) throws -> TranscriptRecord {
+    ) async throws -> TranscriptRecord {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let markdownURL = directory.appending(path: "transcript.md")
         let jsonURL = directory.appending(path: "transcript.json")
@@ -197,7 +222,7 @@ struct Transcriber: Sendable {
         let hasMicrophone = FileManager.default.fileExists(atPath: microphoneURL.path)
         if hasSystem || hasMicrophone {
             let system = try hasSystem
-                ? transcribeSource(
+                ? await transcribeSource(
                     audio: systemURL,
                     label: "system",
                     token: token,
@@ -211,7 +236,7 @@ struct Transcriber: Sendable {
                 )
                 : nil
             let microphone = try hasMicrophone
-                ? transcribeSource(
+                ? await transcribeSource(
                     audio: microphoneURL,
                     label: "microphone",
                     token: token,
@@ -230,7 +255,7 @@ struct Transcriber: Sendable {
                 localParticipant: localParticipant
             )
         } else {
-            transcript = try transcribeSource(
+            transcript = try await transcribeSource(
                 audio: audio,
                 label: "mixed",
                 token: token,
@@ -365,14 +390,26 @@ struct Transcriber: Sendable {
         audio: URL,
         label: String,
         token: String,
-        modelFile: URL,
+        modelFile: URL?,
         participants: [Participant],
         glossary: [GlossaryTerm],
         glossaryUsage: [String: Int] = [:],
         directory: URL,
         sourceChunkDurationSeconds: Int,
         cancellation: ProcessCancellation? = nil
-    ) throws -> WhisperTranscript {
+    ) async throws -> WhisperTranscript {
+        // The engine is chosen for this track, here, where the language of the call and the state
+        // of the Parakeet model are both known. A track Parakeet cannot read, or a Mac whose
+        // Parakeet model was never downloaded, is read by whisper.cpp exactly as before.
+        if SpeechEngineChoice.engine(
+            requested: speechEngine,
+            language: language,
+            parakeetIsReady: parakeetRepository.map(ParakeetModel.isComplete(at:)) ?? false
+        ) == .parakeet {
+            return try await parakeetSource(audio: audio, cancellation: cancellation)
+        }
+        guard let modelFile else { throw TranscriberError.missingWhisperModel }
+        guard let whisperCLI else { throw TranscriberError.missingWhisperTool }
         let waveURL = directory.appending(path: ".transcribing-\(label)-\(token).wav")
         defer {
             try? FileManager.default.removeItem(at: waveURL)
@@ -458,6 +495,26 @@ struct Transcriber: Sendable {
             segments: chunks.flatMap(\.segments)
         )
         return combined
+    }
+
+    /// Reads one track with Parakeet.
+    ///
+    /// Nothing is converted first: the model resamples to its own rate and mixes to one channel
+    /// itself, so the track the recorder wrote is handed over as it is and no wave file is written
+    /// beside it. A stop asked for before the read is honoured, and a reading that turns out to be
+    /// a loop is refused the same way a whisper reading is.
+    private func parakeetSource(
+        audio: URL,
+        cancellation: ProcessCancellation?
+    ) async throws -> WhisperTranscript {
+        guard let parakeet else { throw TranscriberError.parakeetUnavailable }
+        try cancellation?.checkCancelled()
+        let transcript = try await parakeet.transcribe(audio: audio, language: language)
+        try cancellation?.checkCancelled()
+        guard !TranscriptQualityValidator.isRepetitive(transcript) else {
+            throw TranscriberError.repetitiveTranscript
+        }
+        return transcript
     }
 
 }
