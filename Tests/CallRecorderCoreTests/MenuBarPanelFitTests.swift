@@ -44,6 +44,14 @@ struct MenuBarPanelFitTests {
         return window
     }
 
+    /// The screen the fit places a window on: the one the window sits on, and the main screen only
+    /// when it has none yet. That is the rule the fit uses. `NSScreen.main` is not the screen a
+    /// window is on, and on a Mac with more than one display it is a different display: asked for it
+    /// here, these tests failed by the height of the gap between two screens.
+    private func fitScreen(of window: NSWindow) -> NSScreen? {
+        window.screen ?? NSScreen.main
+    }
+
     @Test("a window taller than its content is cut down to the content")
     func aTallerWindowIsCutDown() {
         // Given a panel that kept the height of a longer list, with a 200-point surface in it.
@@ -60,19 +68,20 @@ struct MenuBarPanelFitTests {
     func thePanelIsPutAgainstTheMenuBar() {
         let window = panel(height: 320, contentHeight: 200)
         WindowPresentation.fitMenuBarPanel(window)
-        // A window that has never been on screen reports no screen. The main one answers the same
-        // question, and a machine with no display at all has no menu bar to sit under.
-        guard let screen = window.screen ?? NSScreen.main else { return }
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
-        #expect(abs(window.frame.minY - (screen.visibleFrame.maxY - 200)) <= 0.5)
+        guard let screen = fitScreen(of: window) else { return }
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
+        #expect(abs(window.frame.minY - (WindowPresentation.menuBarBottom(of: screen) - 200)) <= 0.5)
     }
 
     @Test("a window that is already the right size where it belongs is left alone")
     func aCorrectPanelIsLeftAlone() {
-        guard let screen = NSScreen.main else { return }
         let window = panel(height: 200, contentHeight: 200)
+        guard let screen = fitScreen(of: window) else { return }
         window.setFrameOrigin(
-            NSPoint(x: window.frame.origin.x, y: screen.visibleFrame.maxY - 200)
+            NSPoint(
+                x: window.frame.origin.x,
+                y: WindowPresentation.menuBarBottom(of: screen) - 200
+            )
         )
         let before = window.frame
         WindowPresentation.fitMenuBarPanel(window)
@@ -83,20 +92,20 @@ struct MenuBarPanelFitTests {
     func aTitledPanelIsFitted() {
         // The panel the system makes carries a title bar that is never drawn, so a rule that went
         // by the style mask missed the one window that needed the fit and left the strip in place.
-        guard let screen = NSScreen.main else { return }
         let window = titledPanel(height: 320, contentHeight: 200)
+        guard let screen = fitScreen(of: window) else { return }
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
     }
 
     @Test("the panel goes back under the menu bar when the system resizes it")
     func thePanelGoesBackUnderTheMenuBarAfterAResize() throws {
-        guard let screen = NSScreen.main else { return }
         let window = panel(height: 320, contentHeight: 200)
+        guard let screen = fitScreen(of: window) else { return }
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
 
         // The system keeps the corner it placed and grows the window from there, which is what
         // moves the top edge down the screen: a row arrives, and the window gets taller while its
@@ -111,13 +120,12 @@ struct MenuBarPanelFitTests {
             ),
             display: false
         )
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
         #expect(window.frame.height == 200)
     }
 
     @Test("the sweep fits the panel and leaves a titled window that is not the panel alone")
     func theSweepTouchesOnlyThePanel() {
-        guard let screen = NSScreen.main else { return }
         let other = titledPanel(height: 320, contentHeight: 200)
         let before = other.frame
         // A borderless window that is not the panel: the window an open menu is drawn in is one of
@@ -125,11 +133,12 @@ struct MenuBarPanelFitTests {
         let loose = panel(height: 90, contentHeight: 400)
         let looseBefore = loose.frame
         let window = panel(height: 320, contentHeight: 200)
+        guard let screen = fitScreen(of: window) else { return }
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
         WindowPresentation.fitMenuBarPanels()
         #expect(window.frame.height == 200)
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
         #expect(other.frame == before)
         #expect(loose.frame == looseBefore)
     }
@@ -140,8 +149,8 @@ struct MenuBarPanelFitTests {
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
         #expect(window.frame.height == 120)
-        guard let screen = window.screen ?? NSScreen.main else { return }
-        #expect(abs(window.frame.maxY - screen.visibleFrame.maxY) <= 0.5)
+        guard let screen = fitScreen(of: window) else { return }
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
     }
 
     @Test("a menu bar that hides itself is still a menu bar")
@@ -174,7 +183,6 @@ struct MenuBarPanelFitTests {
         // The panel the system makes answers nothing when it is asked how tall its content is: a
         // fitting size of zero was measured on the machine this was reported on. The height comes
         // from the content that draws itself instead, and this is that path with the same silence.
-        guard let screen = NSScreen.main else { return }
         let window = NSWindow(
             contentRect: NSRect(x: 200, y: 40, width: 360, height: 499),
             styleMask: [.borderless],
@@ -182,6 +190,7 @@ struct MenuBarPanelFitTests {
             defer: false
         )
         window.contentView = NSView(frame: NSRect(x: 0, y: 0, width: 360, height: 499))
+        guard let screen = fitScreen(of: window) else { return }
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
         // The silence itself, so the test keeps saying what the real panel does.
@@ -199,11 +208,11 @@ struct MenuBarPanelFitTests {
         // notice that goes away would leave its room behind as a strip above the content, and
         // nothing about the window changes in that moment: the correction has to come from the
         // content asking to be measured again. This is that path, through a real hosting view.
-        guard let screen = NSScreen.main else { return }
         let content = PanelNoticeModel(showsNotice: true)
         let window = panel(height: 320, contentHeight: 200)
         window.contentView = NSHostingView(rootView: GrowingPanelContent(model: content))
         window.contentView?.layoutSubtreeIfNeeded()
+        guard let screen = fitScreen(of: window) else { return }
         PanelWindow.report(window)
         defer { PanelWindow.report(nil) }
         // The corrections made while the panel appears have run by now, so what is left to see is
