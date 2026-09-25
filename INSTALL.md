@@ -144,7 +144,7 @@ What makes the swap safe:
 
 A model installed before this feature existed has no recorded hash. Call Recorder hashes it once,
 stores the result, and reports it as "not verified yet" until then rather than claiming it is
-current. Settings > Models shows the state of each model and a Check Now button.
+current. Settings > Models shows the state of each model, and opening the pane asks the host again.
 
 The same tracking covers the local EmbeddingGemma model that powers meaning-based transcript
 search. It is a download from Settings > Models, and search finds passages by keyword until it

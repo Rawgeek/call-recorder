@@ -939,9 +939,9 @@ struct ModelSettingsView: View {
             return nil
         case .noPython:
             return model.speechRuntime.canBuildEnvironment
-                ? "The app reads calls in a Python environment of its own, beside its models, and "
-                    + "it is not here yet. Setting it up uses the Python on this Mac and fetches "
-                    + "the two packages the model runs on, about a gigabyte."
+                ? "The app runs the reader in a Python environment of its own, beside its models, "
+                    + "and that environment is not here yet. Setting it up uses the Python on this "
+                    + "Mac and fetches the two packages the model runs on, about a gigabyte."
                 : "The Python environment chosen in Speaker setup is not there. Choose another in "
                     + "Review Speakers, Speaker setup."
         case .missingModules:
@@ -1074,9 +1074,23 @@ struct ModelSettingsView: View {
                 ? "Calls wait for this."
                 : "Search finds passages by keyword until this is downloaded."
             return component.versionLabel + ". " + waiting
-        case .installed, .downloading:
+        case .installed:
+            return Self.installedComponentDetail(
+                versionLabel: component.versionLabel,
+                bytes: model.supportingManager.installedBytes(for: component)
+            )
+        case .downloading:
             return component.versionLabel
         }
+    }
+
+    /// The line under an installed model's name.
+    ///
+    /// What a copy costs on disk is one of the reasons the pane is opened, and it was written only
+    /// behind the information glyph. The version label leads the line: two copies of one model are
+    /// told apart by the quantisation, and only then by the bytes.
+    nonisolated static func installedComponentDetail(versionLabel: String, bytes: Int64) -> String {
+        versionLabel + " · " + ModelSizeLabel.file(bytes: bytes) + " on disk"
     }
 
     /// What the row would otherwise spend a paragraph on.
