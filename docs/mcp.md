@@ -46,7 +46,7 @@ seconds and happens once for each app version. Every later start uses that copy,
 above never changes, so an existing registration keeps working.
 
 - A failed unpack is written to `~/Library/Logs/CallRecorder/indexer-runtime.log`, and the app
-  reports it under Settings > Models > Components.
+  reports it under Settings > Models > Search.
 - The archive is kept at `~/Library/Application Support/CallRecorder/runtime.zip`, so a runtime
   folder that is deleted or damaged is rebuilt from it without a second download.
 - The app and this script both fetch the archive when it is missing, and both check it against the

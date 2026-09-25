@@ -969,7 +969,7 @@ struct ModelSettingsView: View {
         }
     }
 
-    // MARK: - Components
+    // MARK: - Search
 
     private var embeddingComponent: SupportingModel? {
         model.supportingManager.models.first { $0.id == SupportingModel.embeddingGemmaID }

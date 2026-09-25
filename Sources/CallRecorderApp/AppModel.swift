@@ -2996,7 +2996,7 @@ final class AppModel {
         speechRuntime.state.isReady && qwenModelIsInstalled
     }
 
-    /// The model this app records with, as the Components card names it.
+    /// The model this app records with, as the Speech card names it.
     var transcriptionModel: SupportingModel? {
         supportingManager.models.first { $0.id == SupportingModel.qwen3ASRID }
     }
