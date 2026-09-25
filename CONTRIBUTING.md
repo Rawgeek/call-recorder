@@ -19,7 +19,7 @@ Requirements: an Apple silicon Mac with macOS 15 or newer, Xcode 16 or newer (Sw
 toolchain), and Homebrew.
 
 ```sh
-brew install ffmpeg whisper-cpp bun
+brew install ffmpeg python3 bun
 swift build
 swift test
 cd mcp && bun install && bun run typecheck && bun test

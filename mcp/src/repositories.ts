@@ -61,7 +61,11 @@ export type CallSummary = {
   readonly endedAt: string | null
   readonly status: z.infer<typeof CallStatusSchema>
   readonly participants: readonly Participant[]
-  /// Whether the app has written a brief of this call.
+  /// Whether a brief of this call is stored.
+  ///
+  /// Versions before 0.1.33 wrote one after every call; this one writes none, so a call recorded
+  /// since then answers false. The field stays because the library keeps the briefs it holds, and
+  /// an agent reading an older call should still be told one is there.
   readonly hasBrief: boolean
 }
 
@@ -88,7 +92,8 @@ export type CallDetail = CallSummary & {
     /// asking what was said on the call receives an empty answer and no reason for it.
     readonly hasSpeech: boolean
   } | null
-  /// The brief the app wrote for this call, or null when none was written.
+  /// The brief stored for this call, or null when none was written. Only versions before 0.1.33
+  /// wrote one, so a call recorded since then answers null and the transcript is the whole record.
   ///
   /// It is served with the call rather than behind a second tool because it is the answer to the
   /// first question a caller has about a call, and a round trip to fetch a hundred and fifty words
@@ -151,7 +156,7 @@ const participantsForCall = async (database: Client, callId: CallId): Promise<Pa
     })
   ).rows.map(participant)
 
-/// Whether this database has the table the app writes call briefs to.
+/// Whether this database has the table earlier versions wrote call briefs to.
 ///
 /// The server travels with one version of the app and can be pointed at the database of another,
 /// so a table this build knows about is not a table the database has. Asking first turns that

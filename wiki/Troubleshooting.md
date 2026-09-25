@@ -3,7 +3,8 @@
 | Symptom | Fix |
 | --- | --- |
 | "ffmpeg and ffprobe are required" | `brew install ffmpeg`, then restart the app. |
-| No transcript after a call | Settings -> Models: confirm a Whisper model is downloaded. |
+| No transcript after a call | Settings -> Models: confirm the speech runtime says Ready and Qwen3-ASR 1.7B is downloaded. |
+| The speech runtime offers Reinstall | The `mlx` packages on this Mac are not the versions this build reads with. Press Reinstall to put the pinned ones back. |
 | Transcript saved, speakers unnamed | Speaker detection is not set up or failed. Open Review Speakers and retry; the audio is kept until speakers are reviewed. |
 | Speaker detection keeps failing | Review Speakers -> Speaker setup -> Check Speaker Setup, and re-select the Python environment. |
 | Nothing recorded from the other side | System Settings -> Privacy & Security -> Screen & System Audio Recording: enable Call Recorder, then restart the app. |

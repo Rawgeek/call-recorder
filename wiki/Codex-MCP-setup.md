@@ -28,7 +28,7 @@ The default database is `~/Library/Application Support/CallRecorder/calls.db`. S
 | `upsert_participants` | Add or update people. |
 | `merge_participants` | Fold a duplicate person into the one kept. |
 | `list_glossary` | Vocabulary terms and alternatives. |
-| `upsert_glossary_terms` | Add terms and the spellings Whisper produces. |
+| `upsert_glossary_terms` | Add terms and the spellings the reader produces. |
 | `delete_glossary_terms` | Remove terms by spelling. |
 | `list_speaker_reviews` | Unresolved voices with samples and suggestions. |
 | `get_diarization_quality` | Coverage report for one call. |

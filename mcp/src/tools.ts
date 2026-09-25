@@ -149,7 +149,7 @@ export const registerTools = (
     "list_calls",
     {
       description:
-        "List recent locally recorded calls with participants, and whether each one has a brief. Reports the total so a partial page is visible as one.",
+        "List recent locally recorded calls with participants, and whether each one carries a brief from an earlier version. Versions from 0.1.33 on write no brief, so read the transcript. Reports the total so a partial page is visible as one.",
       inputSchema: z.object({ limit: LimitSchema, offset: OffsetSchema }),
       outputSchema: z.object({ calls: z.array(CallSummarySchema), ...paginationFields }),
       annotations: ReadAnnotations,
@@ -189,7 +189,7 @@ export const registerTools = (
     "get_call",
     {
       description:
-        "Get one local call: its participants, its transcript metadata, and its brief when the app has written one. The brief is the short written version of the call, so read it before the transcript.",
+        "Get one local call: its participants, its transcript metadata, and its brief when an earlier version wrote one. Versions from 0.1.33 on write no brief, so the transcript is the record of the call.",
       inputSchema: z.object({ callId: CallIdSchema }),
       outputSchema: z.object({ call: CallDetailSchema }),
       annotations: ReadAnnotations,

@@ -91,4 +91,41 @@ enum TestEnvironment {
 
     /// Whether this run was told to read a recording of its own.
     static let canReadNamedRecording = canRunTranscriptionModel && namedRecording != nil
+
+    /// Whether the speaker script can run here: an interpreter that holds what `diarize.py` reads.
+    ///
+    /// The transcription modules are not the speaker ones. 0.1.33 reads a call with a package that
+    /// the speaker separation does not use, and the environment both run in has to hold both.
+    static let speakerRuntimePython: URL? = {
+        guard let python = speechRuntimePython else { return nil }
+        let probe = "import pyannote.audio, torch"
+        guard
+            let outcome = try? ProcessRunner.run(executable: python, arguments: ["-c", probe]),
+            outcome.exitCode == 0
+        else { return nil }
+        return python
+    }()
+
+    /// The speaker script as the app wires it, from the checkout this suite was built from.
+    static let diarizationScript: URL? = {
+        let url = packageRoot.appending(path: "Sources/CallRecorderApp/diarize.py")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }()
+
+    /// A recording a run was told to take a whole call from, when one was named.
+    ///
+    /// The engine suite reads a recording and measures it. This one drives the same recording
+    /// through every stage a finished call takes, so it is asked for by name as well:
+    ///
+    ///   CALL_RECORDER_PIPELINE_AUDIO=/path/to/system.m4a swift test --filter RealPipelineTests
+    static let pipelineRecording: URL? = ProcessInfo.processInfo
+        .environment["CALL_RECORDER_PIPELINE_AUDIO"]
+        .map { URL(filePath: $0) }
+
+    /// Whether this run was told to take a whole call from a recording of its own.
+    static let canRunWholePipeline = canRunTranscriptionModel
+        && pipelineRecording != nil
+        && speakerRuntimePython != nil
+        && diarizationScript != nil
+        && ToolLocator.standard.locate("ffprobe") != nil
 }

@@ -3,25 +3,27 @@
 ## Requirements
 
 - Apple silicon Mac, macOS 15 (Sequoia) or newer.
-- Homebrew packages: `ffmpeg` and `whisper-cpp`.
-- Optional, for speaker labels: a local Python environment with `pyannote.audio`, `librosa`, and
-  transformers 5.18.
+- Homebrew packages: `ffmpeg`, and `python3` at version 3.10 or newer. The app uses the Python
+  once to build the environment the transcription model runs in.
+- Optional, for speaker labels: that same environment holding `pyannote.audio`, `librosa`, and
+  transformers 5.18, plus the local speaker models.
 
 ## From a release
 
-1. Download `CallRecorder-0.1.2.zip` from the releases page and unzip it.
+1. Download the latest `CallRecorder-<version>.zip` from the releases page and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
    notarized by Apple.
 4. Approve **Microphone** and **Screen & System Audio Recording**.
-5. Settings -> Models: download a Whisper model (`medium` is a good default).
+5. Settings -> Models: press **Set Up** beside the speech runtime, which builds the Python
+   environment and fetches `mlx` and `mlx-audio`, then download **Qwen3-ASR 1.7B** (2.3 GB).
 6. Settings -> General: choose the microphone and the recordings folder.
 7. Settings -> Participants: add people and mark which one is you.
 
 ## From source
 
 ```sh
-brew install ffmpeg whisper-cpp bun
+brew install ffmpeg python3 bun
 git clone https://github.com/Rawgeek/call-recorder.git
 cd call-recorder
 swift build -c release
@@ -30,7 +32,7 @@ swift build -c release
 Create a distributable bundle with:
 
 ```sh
-scripts/package-app.sh "dist/Call Recorder 0.1.2"
+scripts/package-app.sh "dist/Call Recorder <version>"
 ```
 
 ## Speaker identification (optional)
