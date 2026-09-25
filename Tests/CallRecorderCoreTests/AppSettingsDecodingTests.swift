@@ -10,7 +10,7 @@ struct AppSettingsDecodingTests {
       "automaticDetectionEnabled": true,
       "automaticStopGraceSeconds": 4,
       "selectedMicrophoneID": "Yeti",
-      "selectedWhisperModelID": "medium",
+      "transcriptionLanguage": "ru",
       "outputDirectory": "/tmp/recordings"
     }
     """
@@ -20,7 +20,7 @@ struct AppSettingsDecodingTests {
         let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacyJSON.utf8))
         // The choices the user made must survive; only the new field falls back.
         #expect(decoded.selectedMicrophoneID == "Yeti")
-        #expect(decoded.selectedWhisperModelID == "medium")
+        #expect(decoded.transcriptionLanguage == "ru")
         #expect(decoded.outputDirectory == "/tmp/recordings")
         #expect(decoded.automaticStopGraceSeconds == 4)
         #expect(decoded.automaticModelUpdatesEnabled == true)
@@ -36,10 +36,6 @@ struct AppSettingsDecodingTests {
         // And the check runs on the step the app shipped with, which is what a blob written before
         // the step could be chosen has to mean.
         #expect(decoded.appUpdateCheckInterval == .everySixHours)
-        // The engine is new in this release, so a blob written before it falls on Parakeet. That
-        // is safe rather than brave: a Mac without the model falls back to whisper.cpp on its own,
-        // and the rules that decide it are in SpeechEngineChoice.
-        #expect(decoded.speechEngine == .parakeet)
         // A Mac that has never been asked about a missing microphone records the other side of the
         // call, which is the behaviour this release introduced.
         #expect(decoded.recordsWithoutMicrophone)
@@ -47,25 +43,6 @@ struct AppSettingsDecodingTests {
         // which is what a blob written before the option existed meant and what this release does
         // by default: the separation counts the voices it hears unless the count is asked for.
         #expect(decoded.diarizationUsesParticipantCount == false)
-        // A blob written before briefs existed asks for them, which is the behaviour this release
-        // introduced: a finished call is written up unless somebody says otherwise.
-        #expect(decoded.summarizesCalls)
-        // The running summary came with the live transcript, and a blob written before it existed
-        // asks for it too: a window that follows a call is worth summarizing unless somebody says
-        // otherwise.
-        #expect(decoded.summarizesLiveCalls)
-        #expect(decoded.liveSummaryInterval == .ninetySeconds)
-    }
-
-    @Test("switching briefs off survives a save")
-    func switchingBriefsOffSurvivesASave() throws {
-        var settings = AppSettings.default
-        settings.summarizesCalls = false
-
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
-
-        #expect(decoded.summarizesCalls == false)
-        #expect(decoded == settings)
     }
 
     @Test("leaving the voice count to the detector survives a save")
@@ -90,36 +67,6 @@ struct AppSettingsDecodingTests {
         #expect(decoded == settings)
     }
 
-    @Test("the chosen summary step is remembered, and one this build cannot read costs only itself")
-    func summaryIntervalSurvivesASave() throws {
-        // Given a settings blob with a step that is not the default.
-        var settings = AppSettings.default
-        settings.liveSummaryInterval = .thirtySeconds
-        settings.summarizesLiveCalls = false
-
-        // Then both come back, rather than the defaults overwriting them.
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
-        #expect(decoded == settings)
-        #expect(decoded.liveSummaryInterval == .thirtySeconds)
-        #expect(decoded.summarizesLiveCalls == false)
-
-        // And a step no build writes — 45 seconds, say — falls back on its own while everything
-        // beside it is kept.
-        let unknown = """
-        {
-          "selectedMicrophoneID": "Yeti",
-          "selectedWhisperModelID": "medium",
-          "outputDirectory": "/tmp/recordings",
-          "liveSummaryInterval": 45
-        }
-        """
-        let damaged = try JSONDecoder().decode(AppSettings.self, from: Data(unknown.utf8))
-        #expect(damaged.liveSummaryInterval == LiveSummaryInterval.default)
-        #expect(damaged.selectedMicrophoneID == "Yeti")
-        #expect(damaged.selectedWhisperModelID == "medium")
-        #expect(damaged.outputDirectory == "/tmp/recordings")
-    }
-
     @Test("the chosen check step is remembered, and one this build cannot read costs only itself")
     func checkIntervalSurvivesASave() throws {
         // Given a settings blob with a step that is not the default.
@@ -132,12 +79,12 @@ struct AppSettingsDecodingTests {
         #expect(decoded.appUpdateCheckInterval == .everyThirtyMinutes)
 
         // And a step this build has never heard of — written by a later build, or by a file that
-        // was damaged — falls back on its own. The microphone, the model, and the folder beside it
-        // are the reason: one unreadable value may not cost a person their whole setup.
+        // was damaged — falls back on its own. The microphone and the folder beside it are the
+        // reason: one unreadable value may not cost a person their whole setup.
         let unknown = """
         {
           "selectedMicrophoneID": "Yeti",
-          "selectedWhisperModelID": "medium",
+          "transcriptionLanguage": "ru",
           "outputDirectory": "/tmp/recordings",
           "appUpdateCheckInterval": "3m"
         }
@@ -145,7 +92,7 @@ struct AppSettingsDecodingTests {
         let damaged = try JSONDecoder().decode(AppSettings.self, from: Data(unknown.utf8))
         #expect(damaged.appUpdateCheckInterval == AppUpdateInterval.default)
         #expect(damaged.selectedMicrophoneID == "Yeti")
-        #expect(damaged.selectedWhisperModelID == "medium")
+        #expect(damaged.transcriptionLanguage == "ru")
         #expect(damaged.outputDirectory == "/tmp/recordings")
     }
 

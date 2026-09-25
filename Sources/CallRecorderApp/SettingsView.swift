@@ -567,17 +567,17 @@ struct RecoverySettingsView: View {
                 }
                 CRSettingsDivider()
                 // The one repair that removes a file, so it says so in the row rather than in a
-                // footnote. A recording where nobody spoke comes back from Whisper holding a
+                // footnote. A recording where nobody spoke comes back from the transcriber holding a
                 // phrase it learned from video credits -- "Thank you for watching." -- attributed
                 // to a real person on the call, and a file like that claims a meeting happened.
                 CRSettingsRow(
                     title: "Remove files for calls where nobody spoke",
                     detail: model.noSpeechTranscriptCount == 0
-                        ? "Whisper answers silence with text it learned from video credits, which "
+                        ? "The transcriber answers silence with text it learned from video credits, which "
                             + "would read as a real transcript. There is nothing of that kind here."
                         : "\(model.noSpeechTranscriptCount) transcript "
                             + (model.noSpeechTranscriptCount == 1 ? "file holds" : "files hold")
-                            + " nothing but words Whisper wrote over silence. Each is copied into "
+                            + " nothing but words the transcriber wrote over silence. Each is copied into "
                             + "the Backups folder before it is removed.",
                     warning: model.noSpeechTranscriptCount > 0
                 ) {
@@ -656,12 +656,12 @@ struct RecoverySettingsView: View {
                     .disabled(model.glossary.isEmpty)
                 }
                 CRSettingsDivider()
-                // The same pass does both jobs, and the second button previews it. Whisper repeating
+                // The same pass does both jobs, and the second button previews it. A reader repeating
                 // itself is the fault a user cannot see for themselves in a long transcript, so the
                 // count is offered before the rewrite rather than after it.
                 CRSettingsRow(
                     title: "Remove lines nobody said",
-                    detail: "Whisper repeats itself when it loses the audio, and it writes the "
+                    detail: "The transcriber repeats itself when it loses the audio, and it writes the "
                         + "glossary into the transcript as if it had been spoken. The same pass "
                         + "removes those, keeps the first copy of a repeated sentence, and runs "
                         + "by itself when the rules change."
@@ -755,17 +755,13 @@ struct RecoverySettingsView: View {
 
 struct ModelSettingsView: View {
     @Bindable var model: AppModel
-    @State private var pendingDeletion: WhisperModel?
     @State private var pendingComponentDeletion: SupportingModel?
-    @State private var pendingParakeetDeletion = false
-    /// Whether the models outside the four the card shows by default are unfolded.
-    @State private var showsAllModels = false
 
     /// A language a call is likely to be in, in the order the menu shows them.
     ///
     /// The list is the languages the people on these calls actually speak rather than every
-    /// language Whisper knows: a menu of ninety-nine entries is a worse answer than one of twelve,
-    /// and the one that matters most is first.
+    /// language the model knows: a menu of ninety-nine entries is a worse answer than one of
+    /// twelve, and the one that matters most is first.
     private struct SpokenLanguage: Identifiable {
         let code: String
         let name: String
@@ -790,59 +786,32 @@ struct ModelSettingsView: View {
     var body: some View {
         SettingsPane(
             title: "Models",
-            subtitle: "The transcription model, the silence filter, the search embeddings, and "
-                + "the model that writes briefs."
+            subtitle: "The model that reads a call, the runtime it runs in, and the models search reads."
         ) {
-            // The choice and the library are one card, because they are one decision: which file a
-            // new recording uses, and which files this Mac has. Two cards made the same list twice
-            // — a picker that named a model, and a table that held it — and the reader had to join
-            // them by name.
+            // Reading is one decision with two halves: the weights, and the environment that runs
+            // them. They are one card, because a Mac missing either cannot transcribe, and the
+            // reader should see both halves of that answer together.
             CRSettingsCard(
-                title: "Whisper models",
-                info: "Larger models transcribe more accurately and take longer to run. A new "
-                    + "recording waits for the selected model. Downloads are kept in Application "
-                    + "Support. Small is the pick for everyday calls and Large v3 Turbo is the "
-                    + "pick when accuracy matters; a model that fits this Mac with thirty percent "
-                    + "of its memory still in reserve is marked green. Only the whisper.cpp "
-                    + "engine reads these files; Parakeet brings its own model."
+                title: "Speech",
+                info: "Qwen3-ASR reads a recording into words in Russian and English, including a "
+                    + "call that mixes them, and names the language it found. The weights are "
+                    + "published for MLX, a Python library, so the app keeps a Python environment "
+                    + "beside its models and runs the model in it. Both halves are checked against "
+                    + "the publisher's hashes before anything uses them."
             ) {
-                CRSettingsRow(
-                    title: "Use when whisper.cpp reads",
-                    info: "The English-only files cannot transcribe anything but English, so the "
-                        + "menu is grouped by that first."
-                ) {
-                    Picker("", selection: $model.settings.selectedWhisperModelID) {
-                        // Two groups, because the choice between them is the one a reader has to
-                        // make first: the English-only files cannot transcribe anything else.
-                        Section("Multilingual") {
-                            ForEach(multilingualModels) { whisperModel in
-                                Text(whisperModel.displayName).tag(whisperModel.id)
-                            }
-                        }
-                        Section("English only") {
-                            ForEach(englishOnlyModels) { whisperModel in
-                                Text(whisperModel.displayName).tag(whisperModel.id)
-                            }
-                        }
-                    }
-                    .labelsHidden()
-                    // A capped width keeps a long model name from pushing the label aside, but the
-                    // menu that SwiftUI draws inside it is only as wide as its own title. Centring
-                    // that in the cap left it floating seventy points short of the gutter that the
-                    // switches and pop-up menus of every other row end on. Trailing alignment puts
-                    // it back on the row's edge.
-                    .frame(maxWidth: 220, alignment: .trailing)
+                if let transcription = model.transcriptionModel {
+                    componentRow(transcription)
+                    componentNotes(transcription)
+                    CRSettingsDivider()
                 }
-                if let selected = selectedModel {
-                    selectedModelStatus(selected)
-                }
+                speechRuntimeRow
                 CRSettingsDivider()
                 CRSettingsRow(
                     title: "Spoken language",
-                    info: "Whisper decides the language of each recording unless it is told one. A "
-                        + "call that mixes one language with English product names comes back with "
-                        + "those names read as words of the other language, so a call that is in one "
-                        + "language is transcribed better when the language is named here."
+                    info: "The model decides the language of each recording unless it is told one. "
+                        + "Naming the language holds it to that language's script when two readings "
+                        + "are close, so a call that is in one language is read better when the "
+                        + "language is named here."
                 ) {
                     Picker("", selection: $model.settings.transcriptionLanguage) {
                         Text("Detect automatically").tag("auto")
@@ -863,72 +832,16 @@ struct ModelSettingsView: View {
                     Toggle("", isOn: $model.settings.transcriptTimestamps)
                         .labelsHidden()
                 }
-                ForEach(listedModels) { whisperModel in
-                    CRSettingsDivider()
-                    modelRow(whisperModel)
-                }
-                if !advancedModels.isEmpty {
-                    CRSettingsDivider()
-                    CRSettingsRow(
-                        title: "Advanced",
-                        info: "The English-only files transcribe one language a little better than "
-                            + "their twin, and the older large models stay for a Mac that already "
-                            + "downloaded one."
-                    ) {
-                        CRButton(
-                            title: showsAllModels ? "Hide" : "Show \(advancedModels.count) more"
-                        ) {
-                            withAnimation(.easeInOut(duration: 0.15)) { showsAllModels.toggle() }
-                        }
-                    }
-                }
-                if showsAllModels {
-                    ForEach(advancedModels) { whisperModel in
-                        CRSettingsDivider()
-                        modelRow(whisperModel)
-                    }
-                }
-                if model.modelManager.installedBytes > 0 {
-                    CRSettingsDivider()
-                    CRSettingsRow(
-                        title: "On disk",
-                        detail: "Total size of the models installed on this Mac."
-                    ) {
-                        Text(ModelSizeLabel.file(bytes: model.modelManager.installedBytes))
-                        .font(CR.Font.body)
-                        .foregroundStyle(CR.Ink.readable)
-                        .monospacedDigit()
-                    }
-                }
             }
-
-            updateSection
 
             CRSettingsCard(
                 title: "Components",
-                info: "The engine transcription runs on, and the models transcription and search "
-                    + "read, and the engine and model a brief is written with. A download is "
-                    + "accepted only when its published hash matches the publisher's."
+                info: "The models the app keeps beside the transcription model: the one that turns "
+                    + "text into vectors for search, and the runtime the indexer and the MCP server "
+                    + "run on. A download is accepted only when its published hash matches the "
+                    + "publisher's."
             ) {
-                speechEngineRow
-                CRSettingsDivider()
-                parakeetModelRow
-                CRSettingsDivider()
-                whisperEngineRow
-                CRSettingsDivider()
-                llamaEngineRow
-                if let component = silenceFilterComponent {
-                    CRSettingsDivider()
-                    componentRow(component)
-                    componentNotes(component)
-                }
                 if let component = embeddingComponent {
-                    CRSettingsDivider()
-                    componentRow(component)
-                    componentNotes(component)
-                }
-                if let component = briefComponent {
-                    CRSettingsDivider()
                     componentRow(component)
                     componentNotes(component)
                 }
@@ -937,11 +850,11 @@ struct ModelSettingsView: View {
             }
         }
         .task {
-            // Both are read from this Mac, not from the network: the tool's own version, and the
-            // hashes of a model that was installed before Call Recorder recorded them.
-            await model.refreshWhisperVersion()
-            await model.refreshLlamaVersion()
+            // Both are read from this Mac rather than from the network: the hashes of a model that
+            // was installed before Call Recorder recorded them, and whether the environment can
+            // import the two modules the transcription script needs.
             await model.supportingManager.bootstrapManifest()
+            model.speechRuntime.refresh()
         }
         .confirmationDialog(
             "Delete this model?",
@@ -963,213 +876,98 @@ struct ModelSettingsView: View {
                     + component.displayName + " works offline until then."
             )
         }
-        .confirmationDialog(
-            "Delete the Parakeet model?",
-            isPresented: $pendingParakeetDeletion,
-            titleVisibility: .visible
+    }
+
+    // MARK: - The speech runtime
+
+    /// The Python environment the model runs in.
+    ///
+    /// It earns a row for the same reason the indexer runtime does: it is a few hundred megabytes
+    /// the app fetches rather than carries, and a Mac that cannot transcribe is owed the reason in
+    /// a sentence rather than behind an information glyph.
+    @ViewBuilder
+    private var speechRuntimeRow: some View {
+        let runtime = model.speechRuntime
+        CRSettingsRow(
+            title: "Speech runtime",
+            detail: speechRuntimeDetail,
+            info: "The transcription model is published for MLX, which is a Python library. The app "
+                + "installs mlx and mlx-audio into a Python environment beside its models, and runs "
+                + "the model in it. Speaker analysis runs in the same environment.",
+            warning: speechRuntimeNeedsAttention
         ) {
-            Button("Delete", role: .destructive) {
-                model.deleteParakeetModel()
+            switch runtime.state {
+            case .ready:
+                CRStatusChip(tone: .ready, text: "Ready")
+            case .noPython:
+                if runtime.canBuildEnvironment {
+                    CRButton(title: "Set Up", kind: .primary) { runtime.install() }
+                } else {
+                    CRStatusChip(tone: .failed, text: "No Python")
+                }
+            case .missingModules:
+                CRButton(title: "Install", kind: .primary) { runtime.install() }
+            case .otherVersions:
+                CRStatusChip(tone: .waiting, text: "Other versions")
+                CRButton(title: "Reinstall") { runtime.install() }
+            case .installing:
+                HStack(spacing: CR.Space.inner) {
+                    ProgressView().controlSize(.small)
+                    Text(runtime.progress?.formatted(
+                        .percent.precision(.fractionLength(0))
+                    ) ?? "Working")
+                        .font(CR.Font.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(CR.Ink.readable)
+                }
+            case .failed:
+                CRStatusChip(tone: .failed, text: "Failed")
+                CRButton(title: "Retry") { runtime.install() }
             }
-            Button("Keep", role: .cancel) {}
-        } message: {
-            Text(
-                "Calls are read with whisper.cpp until it is downloaded again. It is about "
-                    + ModelSizeLabel.file(bytes: model.parakeetModelBytes) + "."
-            )
         }
-        .confirmationDialog(
-            "Delete this model?",
-            isPresented: Binding(
-                get: { pendingDeletion != nil },
-                set: { if !$0 { pendingDeletion = nil } }
-            ),
-            titleVisibility: .visible,
-            presenting: pendingDeletion
-        ) { whisperModel in
-            Button("Delete \(whisperModel.displayName)", role: .destructive) {
-                try? model.modelManager.delete(whisperModel)
-                pendingDeletion = nil
-            }
+    }
+
+    private var speechRuntimeDetail: String? {
+        let runtime = model.speechRuntime
+        switch runtime.state {
+        case .ready:
+            return nil
+        case .noPython:
+            return model.speechRuntime.canBuildEnvironment
+                ? "The app reads calls in a Python environment of its own, beside its models, and "
+                    + "it is not here yet. Setting it up uses the Python on this Mac and fetches "
+                    + "the two packages the model runs on, about a gigabyte."
+                : "The Python environment chosen in Speaker setup is not there. Choose another in "
+                    + "Review Speakers, Speaker setup."
+        case .missingModules:
+            return "Python is here; the two modules the model runs on are not."
+        case .otherVersions(let installed):
+            let found = installed.sorted { $0.key < $1.key }
+                .map { "\($0.key) \($0.value)" }
+                .joined(separator: ", ")
+            return "\(found) is installed, and this build reads calls with "
+                + SpeechRuntimeRequirement.packages.joined(separator: " and ")
+                + ". Reinstall puts the tested versions back."
+        case .installing:
+            return runtime.status
+        case .failed(let message):
+            return message
+        }
+    }
+
+    private var speechRuntimeNeedsAttention: Bool {
+        switch model.speechRuntime.state {
+        case .failed, .noPython, .otherVersions:
+            return true
+        case .ready, .installing, .missingModules:
+            return false
         }
     }
 
     // MARK: - Components
 
-    /// Which engine reads a recording, and which one would read the next call.
-    ///
-    /// The app carries two. Parakeet reads the languages these calls are held in, in one pass, and
-    /// needs no language named; whisper.cpp is what every earlier version read with and stays for
-    /// the languages Parakeet was not trained for. A setting can ask for an engine that cannot
-    /// answer, so the second line names the one that would answer instead: the call is read either
-    /// way, and which engine read it is worth knowing before it is read.
-    @ViewBuilder
-    private var speechEngineRow: some View {
-        let requested = model.settings.speechEngine
-        let answering = model.activeSpeechEngine
-        CRSettingsRow(
-            title: "Transcription engine",
-            detail: requested == answering
-                ? nil
-                : requested.label + " is not answering yet, so " + answering.label
-                    + " reads. "
-                    + (model.parakeetModelIsInstalled
-                        ? "This call is in a language Parakeet was not trained for."
-                        : "The Parakeet model is not downloaded."),
-            info: "Parakeet runs on the Neural Engine and reads Russian and English in one pass, "
-                + "including a call that mixes them, without being told which language it is in. "
-                + "whisper.cpp is the engine this app read with before, and it stays for the "
-                + "languages Parakeet was not trained for. This is the engine that reads the "
-                + "transcript of a finished call; the live window beside a recording still reads "
-                + "with whisper.cpp.",
-            warning: requested != answering
-        ) {
-            Picker("", selection: $model.settings.speechEngine) {
-                ForEach(SpeechEngine.allCases) { engine in
-                    Text(engine.label).tag(engine)
-                }
-            }
-            .labelsHidden()
-            .frame(maxWidth: 200, alignment: .trailing)
-        }
-    }
-
-    /// The Parakeet model, and the size it costs to read a call with it.
-    @ViewBuilder
-    private var parakeetModelRow: some View {
-        CRSettingsRow(
-            title: "Parakeet model",
-            detail: parakeetModelDetail,
-            info: "Four Core ML graphs and a vocabulary, read on the Neural Engine. It is not "
-                + "part of the app, so the download is the last step of switching engines, and a "
-                + "Mac without it keeps reading with whisper.cpp.",
-            warning: model.parakeetDownloadError != nil
-        ) {
-            if let fraction = model.parakeetDownloadFraction {
-                HStack(spacing: CR.Space.inner) {
-                    CRProgressRing(progress: fraction)
-                    Text(fraction.formatted(.percent.precision(.fractionLength(0))))
-                        .font(CR.Font.caption)
-                        .monospacedDigit()
-                        .foregroundStyle(CR.Ink.readable)
-                        .frame(width: 30, alignment: .trailing)
-                }
-            } else if model.parakeetModelIsInstalled {
-                HStack(spacing: CR.Space.inner) {
-                    CRStatusChip(tone: .ready, text: "Ready")
-                    CRButton(title: "Delete", kind: .destructive) {
-                        pendingParakeetDeletion = true
-                    }
-                }
-            } else {
-                CRButton(title: "Download", kind: .primary) {
-                    model.downloadParakeetModel()
-                }
-            }
-        }
-    }
-
-    /// The one line the Parakeet row says out loud.
-    ///
-    /// A failure is the reason it has to speak, so that comes first; otherwise the row says what
-    /// the model costs on disk, because that is the number a person deciding to keep it wants.
-    private var parakeetModelDetail: String? {
-        if let error = model.parakeetDownloadError {
-            return "The download stopped: " + error
-        }
-        guard model.parakeetModelIsInstalled else {
-            return model.settings.speechEngine == .parakeet
-                ? "Not downloaded, so calls are read with whisper.cpp."
-                : nil
-        }
-        return ModelSizeLabel.file(bytes: model.parakeetModelBytes) + " on disk."
-    }
-
-    /// The whisper.cpp build transcription runs on.
-    ///
-    /// The app does not ship it: it runs the tool it finds on PATH. The row names that tool,
-    /// because two installs of the same tool can be years apart and the version decides how audio
-    /// is decoded.
-    @ViewBuilder
-    private var whisperEngineRow: some View {
-        let needed = model.activeSpeechEngine == .whisper
-        CRSettingsRow(
-            title: "whisper.cpp",
-            // The one case that has to be said out loud is the one where nothing can transcribe.
-            detail: model.whisperCLIPath == nil
-                ? (needed
-                    ? "Not found. Install it with: brew install whisper-cpp"
-                    : "Not installed. Parakeet reads the calls it was trained for; whisper.cpp "
-                        + "would read the rest.")
-                : nil,
-            info: whisperEngineDetail,
-            warning: needed && model.whisperCLIPath == nil
-        ) {
-            if model.whisperCLIPath == nil {
-                CRStatusChip(tone: .failed, text: "Not found")
-            } else if let version = model.whisperVersionLabel {
-                CRStatusChip(tone: .ready, text: "v" + version)
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        }
-    }
-
-    private var whisperEngineDetail: String {
-        guard let path = model.whisperCLIPath else {
-            return "Call Recorder reads a call with Parakeet, and with whisper.cpp for the "
-                + "languages Parakeet was not trained for. It is not installed here; install it "
-                + "with: brew install whisper-cpp"
-        }
-        return "The transcription engine, found at " + path + ". Homebrew updates it; Call "
-            + "Recorder only runs it."
-    }
-
-    /// The silence filter, which is a download of under a megabyte.
-    ///
-    /// whisper.cpp ships no model files at all, which its own Homebrew formula says, so this one
-    /// comes from ggml-org/whisper-vad. Version 6.2.1 of the upstream repository changed only how
-    /// the ONNX runtime is packaged: the weights are identical, and no converted 6.2.1 file is
-    /// published, so 6.2.0 is what whisper.cpp loads.
-    private var silenceFilterComponent: SupportingModel? {
-        model.supportingManager.models.first { $0.id == SupportingModel.sileroVADID }
-    }
-
-    /// The model that turns text into vectors for search.
     private var embeddingComponent: SupportingModel? {
         model.supportingManager.models.first { $0.id == SupportingModel.embeddingGemmaID }
-    }
-
-    /// The model that writes the brief of a finished call.
-    private var briefComponent: SupportingModel? {
-        model.supportingManager.models.first { $0.id == SupportingModel.callBriefID }
-    }
-
-    /// The llama.cpp build the brief model runs on.
-    ///
-    /// It is a row for the same reason whisper.cpp is one: the app does not ship it, Homebrew
-    /// updates it, and a Mac without it can record and transcribe perfectly well while writing no
-    /// brief at all. That has to be visible somewhere before a call ends.
-    @ViewBuilder
-    private var llamaEngineRow: some View {
-        CRSettingsRow(
-            title: "llama.cpp",
-            detail: model.llamaServerPath == nil
-                ? "Not found. Install it with: brew install llama.cpp"
-                : nil,
-            info: "The runtime that loads the brief model. Call Recorder finds it on PATH and "
-                + "runs it for the length of one brief: it is started when a call is written up "
-                + "and stopped when the brief is saved, so it holds no memory while you record.",
-            warning: model.llamaServerPath == nil
-        ) {
-            if model.llamaServerPath == nil {
-                CRStatusChip(tone: .failed, text: "Not found")
-            } else if let version = model.llamaVersionLabel {
-                CRStatusChip(tone: .ready, text: "v" + version)
-            } else {
-                ProgressView().controlSize(.small)
-            }
-        }
     }
 
     /// The JavaScript runtime the indexer and the MCP server both run on.
@@ -1259,16 +1057,16 @@ struct ModelSettingsView: View {
 
     /// The one line a component row says out loud, and only when something needs doing.
     ///
-    /// The model's own version leads it. Which copy of a model is on disk -- a size, and for the
-    /// brief model the quantisation that decides how much memory it needs -- was only ever written
-    /// in the catalog, so the row could not be read to tell one download from another.
+    /// The model's own version leads it. Which copy of a model is on disk — a size, and the
+    /// quantisation that decides how much memory it needs — was only ever written in the catalog,
+    /// so the row could not be read to tell one download from another.
     private func componentRowDetail(_ component: SupportingModel) -> String? {
         switch model.supportingManager.state(for: component) {
         case .failed:
             return component.versionLabel + ". The download did not finish."
         case .notInstalled:
-            let waiting = component.id == SupportingModel.sileroVADID
-                ? "Transcription waits for this."
+            let waiting = component.id == SupportingModel.qwen3ASRID
+                ? "Calls wait for this."
                 : "Search finds passages by keyword until this is downloaded."
             return component.versionLabel + ". " + waiting
         case .installed, .downloading:
@@ -1335,168 +1133,6 @@ struct ModelSettingsView: View {
         }
     }
 
-    /// The model the picker points at, when it names one this build knows about.
-    private var selectedModel: WhisperModel? {
-        model.modelManager.models.first { $0.id == model.settings.selectedWhisperModelID }
-    }
-
-    @ViewBuilder
-    private func selectedModelStatus(_ whisperModel: WhisperModel) -> some View {
-        // Said before the download and before the next recording, because a model that does not
-        // fit shows up as a transcription that crawls or fails, not as a message of its own.
-        let fit = whisperModel.memoryFit(inMemoryOf: physicalMemoryBytes)
-        if fit != .comfortable {
-            CRSettingsDivider()
-            CRSettingsNote(
-                icon: "exclamationmark.triangle",
-                text: "\(whisperModel.displayName) needs "
-                    + ModelSizeLabel.memory(bytes: whisperModel.recommendedMemoryBytes)
-                    + " with headroom; this Mac has "
-                    + ModelSizeLabel.memory(bytes: physicalMemoryBytes) + ". A smaller model is "
-                    + "the safe choice.",
-                tone: fit == .tight ? .waiting : .failed
-            )
-        }
-        switch model.modelManager.state(for: whisperModel) {
-        case .installed:
-            // Nothing to say: the row above names the model, and its chip says what it costs.
-            EmptyView()
-        case .downloading:
-            CRSettingsDivider()
-            CRSettingsRow(
-                title: "Downloading",
-                info: "New recordings wait until \(whisperModel.displayName) is on disk."
-            ) {
-                CRButton(title: "Cancel") { model.modelManager.cancel(whisperModel) }
-            }
-        case .notInstalled:
-            CRSettingsDivider()
-            CRSettingsRow(
-                title: "Not downloaded",
-                info: "New recordings cannot be transcribed until it is downloaded.",
-                warning: true
-            ) {
-                CRButton(title: "Download Now", kind: .primary) {
-                    model.modelManager.download(whisperModel)
-                }
-            }
-        case let .failed(message):
-            CRSettingsDivider()
-            CRSettingsRow(
-                title: "Download failed",
-                detail: message,
-                warning: true
-            ) {
-                CRButton(title: "Retry") { model.modelManager.download(whisperModel) }
-            }
-        }
-    }
-
-    /// Automatic model updates, and what the last check found.
-    ///
-    /// The caption states the two things a person would otherwise have to guess: that a download
-    /// is only accepted when its published hash matches, and that the previous copy is kept.
-    @ViewBuilder
-    private var updateSection: some View {
-        CRSettingsCard(
-            title: "Updates",
-            info: "A download is installed only when its published hash matches, the swap is "
-                + "instant, and the previous copy is kept."
-        ) {
-            CRSettingsRow(
-                title: "Update automatically",
-                info: "Call Recorder checks the model host after launch and every few hours. "
-                    + "Nothing changes while a call is recorded or transcribed."
-            ) {
-                Toggle("", isOn: $model.settings.automaticModelUpdatesEnabled)
-                    .labelsHidden()
-                    .toggleStyle(.switch)
-                    .controlSize(.small)
-            }
-            CRSettingsDivider()
-            CRSettingsRow(
-                // The row is named for what it does, like the switch row above it. It used to be
-                // titled with its own status, so one card held a feature on its first row and a
-                // read-out on its second, and the two did not read as the same kind of thing.
-                title: "Check for updates",
-                detail: updateDetail,
-                warning: model.isModelInUse
-            ) {
-                HStack(spacing: CR.Space.inner) {
-                    if model.modelManager.checking {
-                        ProgressView().controlSize(.small)
-                    }
-                    CRButton(title: "Check Now") {
-                        Task { await model.modelManager.performAutomaticPass() }
-                    }
-                    .disabled(model.modelManager.checking)
-                }
-            }
-            ForEach(pendingUpdates) { whisperModel in
-                CRSettingsDivider()
-                CRSettingsRow(
-                    title: whisperModel.displayName + " has a newer copy",
-                    info: "The model host publishes a different file than the one installed. "
-                        + "Downloading it keeps the present copy so the change can be undone.",
-                    warning: model.isModelInUse
-                ) {
-                    CRButton(title: "Update") {
-                        model.modelManager.applyUpdate(whisperModel)
-                    }
-                    .disabled(model.isModelInUse)
-                }
-            }
-            ForEach(unverifiableModels) { whisperModel in
-                CRSettingsDivider()
-                CRSettingsNote(
-                    icon: "questionmark.circle",
-                    text: "\(whisperModel.displayName): \(unverifiableReason(whisperModel))"
-                )
-            }
-            if let failure = model.modelManager.failingModels.values.first {
-                CRSettingsDivider()
-                CRSettingsNote(icon: "exclamationmark.triangle", text: failure, tone: .failed)
-            }
-        }
-    }
-
-    /// What the check row says under its title: the last result, then the reason updates are
-    /// paused when a call is running.
-    private var updateDetail: String {
-        var lines: [String] = []
-        lines.append(checkSummary)
-        if let message = model.modelManager.statusMessage { lines.append(message) }
-        if model.isModelInUse { lines.append("A call is in progress, so updates are paused.") }
-        if lines.isEmpty { lines.append("Checks run in the background and never interrupt a call.") }
-        return lines.joined(separator: " ")
-    }
-
-
-    private var checkSummary: String {
-        guard let last = model.modelManager.lastCheckedAt else {
-            return "Not checked yet."
-        }
-        return "Last checked \(last.formatted(date: .abbreviated, time: .shortened))."
-    }
-
-    private var pendingUpdates: [WhisperModel] {
-        model.modelManager.models.filter { model.modelManager.decision(for: $0)?.isUpdateAvailable == true }
-    }
-
-    private var unverifiableModels: [WhisperModel] {
-        model.modelManager.models.filter {
-            model.modelManager.state(for: $0).isInstalled
-                && model.modelManager.decision(for: $0)?.hasVerdict == false
-        }
-    }
-
-    private func unverifiableReason(_ whisperModel: WhisperModel) -> String {
-        guard case .cannotVerify(let reason) = model.modelManager.decision(for: whisperModel) else {
-            return ""
-        }
-        return reason
-    }
-
     /// A download in flight: a ring that fills, the share it has reached, and the way to stop it.
     ///
     /// The share is a number beside the ring rather than a word under the row. Its column is
@@ -1515,183 +1151,6 @@ struct ModelSettingsView: View {
             CRButton(title: "Cancel", action: cancel)
         }
     }
-
-    @ViewBuilder
-    private func modelRow(_ whisperModel: WhisperModel) -> some View {
-        let fit = whisperModel.memoryFit(inMemoryOf: physicalMemoryBytes)
-        CRSettingsRow(
-            title: whisperModel.displayName,
-            detail: rowDetail(whisperModel, fit: fit),
-            info: modelSummary(whisperModel),
-            warning: fit != .comfortable
-        ) {
-            HStack(spacing: CR.Space.inner) {
-                // A model that is simply fine carries nothing. The page marks the one in use, the
-                // picks, and the problems, and leaves the rest of the list as names.
-                let isSelected = whisperModel.id == model.settings.selectedWhisperModelID
-                // While a download is running the row says what is left and how to stop it, and
-                // nothing else. A chip beside a ring, a share, and a button was wider than the
-                // card, and the Cancel button was pushed off its edge.
-                let isDownloading = model.modelManager.state(for: whisperModel).isDownloading
-                if isSelected, !isDownloading {
-                    CRStatusChip(tone: .working, text: "Selected")
-                }
-                if !isDownloading, let chip = fitChip(
-                    whisperModel,
-                    fit: fit,
-                    isSelected: isSelected
-                ) {
-                    chip
-                }
-                switch model.modelManager.state(for: whisperModel) {
-                case .notInstalled:
-                    CRButton(title: "Download", kind: .primary) {
-                        model.modelManager.download(whisperModel)
-                    }
-                case .downloading:
-                    downloadRow(progress: model.modelManager.progress(for: whisperModel)) {
-                        model.modelManager.cancel(whisperModel)
-                    }
-                case .installed:
-                    // Only offered once an update has replaced something, because that is the
-                    // only time an earlier copy exists to go back to.
-                    if model.modelManager.canRevert(whisperModel) {
-                        CRButton(title: "Revert") {
-                            try? model.modelManager.revert(whisperModel)
-                        }
-                        .help("Restore the copy from before the last update")
-                    }
-                    CRButton(title: "Delete", kind: .destructive) {
-                        pendingDeletion = whisperModel
-                    }
-                case .failed(let message):
-                    CRStatusChip(tone: .failed, text: "Failed").help(message)
-                    CRButton(title: "Retry") { model.modelManager.download(whisperModel) }
-                }
-            }
-        }
-    }
-
-    /// The chip a row earns, if it earns one.
-    private func fitChip(
-        _ whisperModel: WhisperModel,
-        fit: ModelMemoryFit,
-        isSelected: Bool
-    ) -> CRStatusChip? {
-        switch fit {
-        case .comfortable:
-            guard model.modelManager.state(for: whisperModel).isInstalled else {
-                // Nothing is installed and nothing is wrong: the only thing left to say is which
-                // of the two picks this is.
-                // The blue chip already says which model is in use, so the green one would repeat
-                // it.
-                return whisperModel.isRecommended && !isSelected
-                    ? CRStatusChip(tone: .ready, text: "Recommended")
-                    : nil
-            }
-            return isSelected ? nil : CRStatusChip(tone: .ready, text: "Installed")
-        case .tight:
-            return CRStatusChip(tone: .waiting, text: "Tight")
-        case .insufficient:
-            return CRStatusChip(tone: .failed, text: "Too large")
-        }
-    }
-
-    /// The line under a model's name: what it is for, what it costs to download, and, when the
-    /// model is a problem, why.
-    private func rowDetail(_ whisperModel: WhisperModel, fit: ModelMemoryFit) -> String {
-        var parts = [
-            whisperModel.detail,
-            ModelSizeLabel.file(bytes: whisperModel.expectedBytes),
-        ]
-        if let warning = fitDetail(whisperModel, fit: fit) { parts.append(warning) }
-        return parts.joined(separator: " · ")
-    }
-
-    /// What a row says about memory, and only when it has something to say.
-    private func fitDetail(_ whisperModel: WhisperModel, fit: ModelMemoryFit) -> String? {
-        switch fit {
-        case .comfortable:
-            return nil
-        case .tight:
-            return "Needs " + ModelSizeLabel.memory(bytes: whisperModel.recommendedMemoryBytes)
-                + " with headroom; this Mac has "
-                + ModelSizeLabel.memory(bytes: physicalMemoryBytes) + "."
-        case .insufficient:
-            return "Needs " + ModelSizeLabel.memory(bytes: whisperModel.memoryBytes)
-                + "; this Mac has " + ModelSizeLabel.memory(bytes: physicalMemoryBytes) + "."
-        }
-    }
-
-    /// Every figure the model publishes, for the pointer rather than for the row.
-    private func modelSummary(_ whisperModel: WhisperModel) -> String {
-        specLine(whisperModel)
-    }
-
-
-    // MARK: - Model guidance
-
-    /// The Mac's memory, which is what the fit warning compares a model against.
-    private var physicalMemoryBytes: Int64 {
-        // A design preview can stand in for a smaller Mac, because the warning it draws is the one
-        // thing about this pane a large machine never shows. The app itself never sets this.
-        if
-            let raw = ProcessInfo.processInfo.environment["CALL_RECORDER_PREVIEW_MEMORY_GB"],
-            let gigabytes = Int64(raw), gigabytes > 0
-        {
-            return gigabytes * 1_000_000_000
-        }
-        return Int64(ProcessInfo.processInfo.physicalMemory)
-    }
-
-    private var multilingualModels: [WhisperModel] {
-        model.modelManager.models.filter { !$0.englishOnly }
-    }
-
-    /// The rows the card shows before anything is unfolded, and the rows it keeps folded.
-    ///
-    /// The rule belongs to the catalog: the rows it answers with, and with them the model a new
-    /// recording would use. A model picked from the unfolded list is a decision the card keeps
-    /// showing, because its row is where the file's state and its Delete button live; a choice
-    /// that could only be found by unfolding twenty-nine rows would read as though it had been
-    /// forgotten.
-    private var modelListing: (shown: [WhisperModel], folded: [WhisperModel]) {
-        WhisperModel.listing(
-            from: model.modelManager.models,
-            inMemoryOf: physicalMemoryBytes,
-            selectedID: model.settings.selectedWhisperModelID
-        )
-    }
-
-    private var listedModels: [WhisperModel] { modelListing.shown }
-
-    private var advancedModels: [WhisperModel] { modelListing.folded }
-
-    private var englishOnlyModels: [WhisperModel] {
-        model.modelManager.models.filter(\.englishOnly)
-    }
-
-    /// One row's figures, in the order a person chooses by: what it is for, then what it costs.
-    private func specLine(_ whisperModel: WhisperModel) -> String {
-        var parts = [
-            whisperModel.detail,
-            "\(whisperModel.parameters) params",
-            "\(ModelSizeLabel.file(bytes: whisperModel.expectedBytes)) download",
-            "\(ModelSizeLabel.memory(bytes: whisperModel.memoryBytes)) RAM",
-            "\(whisperModel.speed) vs Large",
-        ]
-        if let english = whisperModel.englishWordErrorRate {
-            parts.append("English WER \(english)")
-        }
-        if let multilingual = whisperModel.multilingualWordErrorRate {
-            parts.append("other languages \(multilingual)")
-        }
-        if !whisperModel.fits(inMemoryOf: physicalMemoryBytes) {
-            parts.append("needs more memory than this Mac has with headroom")
-        }
-        return parts.joined(separator: " · ")
-    }
-
 }
 
 struct PeopleSettingsView: View {
@@ -1810,8 +1269,8 @@ struct VocabularySettingsView: View {
     @State private var search = ""
     @State private var editingTerm: GlossaryTerm?
     @State private var pendingDelete: GlossaryTerm?
-    /// Only the terms inside the prompt budget reach the model. Showing which ones are in force
-    /// answers the question the list could not: is the term I added actually being used?
+    /// Only the terms inside the word limit reach the model. Showing which ones are in force answers
+    /// the question the list could not: is the term I added actually being used?
     @State private var showingOnlyPromptTerms = false
 
     private var filteredTerms: [GlossaryTerm] {
@@ -1860,13 +1319,13 @@ struct VocabularySettingsView: View {
             title: "Vocabulary",
             subtitle: "Names and terms the transcriber should spell your way."
         ) {
-            CRSettingsCard(title: "How this reaches Whisper") {
+            CRSettingsCard(title: "How this reaches the transcriber") {
                 VStack(alignment: .leading, spacing: CR.Space.inner) {
                     Text(
-                        "Whisper accepts a limited amount of context per recording, so Call Recorder "
-                            + "sends your participants' names first, then the terms you use most. "
-                            + "Terms outside that budget stay saved and are still matched when a "
-                            + "transcript is corrected, but they are not sent to the model."
+                        "Call Recorder sends your participants' names first, then the terms you use "
+                            + "most, up to 60 words for a recording. Terms past that stay saved and "
+                            + "are still matched when a transcript is corrected, but they are not "
+                            + "sent to the model."
                     )
                     .font(CR.Font.caption)
                     .foregroundStyle(CR.Ink.readable)
@@ -1875,7 +1334,7 @@ struct VocabularySettingsView: View {
                     HStack(spacing: CR.Space.inner) {
                         CRStatusChip(
                             tone: promptTermIDs.isEmpty ? .muted : .ready,
-                            text: "\(promptTermIDs.count) of \(model.glossary.count) in the prompt"
+                            text: "\(promptTermIDs.count) of \(model.glossary.count) sent with the audio"
                         )
                         Toggle("Show only these terms", isOn: $showingOnlyPromptTerms)
                             .toggleStyle(.checkbox)
@@ -1902,7 +1361,7 @@ struct VocabularySettingsView: View {
 
             CRSettingsCard(
                 title: "Terms",
-                footnote: "Most used first. Terms without a checkmark are saved but outside the prompt."
+                footnote: "Most used first. Terms without a checkmark are saved but not sent."
             ) {
                 HStack(spacing: CR.Space.inner) {
                     CRSearchField(placeholder: "Search terms or alternatives", text: $search)
@@ -1952,7 +1411,7 @@ struct VocabularySettingsView: View {
                                     .font(.system(size: 11))
                                     .foregroundStyle(CR.Tone.ready.ink)
                                     .help("This term is sent to the transcriber.")
-                                    .accessibilityLabel("\(term.preferred) is in the prompt")
+                                    .accessibilityLabel("\(term.preferred) is sent to the transcriber")
                             } else {
                                 Image(systemName: "clock")
                                     .font(.system(size: 11))
@@ -1960,10 +1419,10 @@ struct VocabularySettingsView: View {
                                     // that does not is this glyph, and nothing else on the row.
                                     .foregroundStyle(CR.Ink.readable)
                                     .help(
-                                        "Saved, but outside the prompt budget. It will be applied "
-                                            + "when a transcript is corrected, not sent to the model."
+                                        "Saved, but past the word limit. It will be applied when a "
+                                            + "transcript is corrected, not sent to the model."
                                     )
-                                    .accessibilityLabel("\(term.preferred) is outside the prompt")
+                                    .accessibilityLabel("\(term.preferred) is not sent to the transcriber")
                             }
                             Text(usageLabel(for: term))
                                 .font(CR.Font.caption)
@@ -2044,7 +1503,7 @@ struct GlossaryTermEditor: View {
     /// Nonisolated so a test can read the words without a window.
     nonisolated static func subtitle(isNew: Bool) -> String {
         isNew
-            ? "Spell the term the way it should appear. Alternatives catch the ways Whisper mishears it."
+            ? "Spell the term the way it should appear. Alternatives catch the ways the transcriber mishears it."
             : "Alternatives also correct saved transcripts, at the next start or from Re-apply in Recovery."
     }
 

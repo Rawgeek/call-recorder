@@ -2,6 +2,12 @@
 
 Status: Phase 1 planned, Phase 2 designed. Owner: Stas. Date: 2026-09-18.
 
+**Removed in 0.1.33.** The live window, the running summary, and the quick chat were built and then
+removed by request, because each was a second reader of the same recording and the sum of them was
+more than the machine should carry. The post-call brief went with them. This note is kept as the
+record of what was designed and measured; every engine it names was replaced in 0.1.33 by Qwen3-ASR
+on MLX, which is what reads a call now.
+
 ## 1. Problem
 
 Call Recorder writes the transcript after the call ends. During the call the screen holds nothing

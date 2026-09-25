@@ -284,8 +284,7 @@ final class AudioCaptureSession {
         directory: URL,
         index: Int,
         microphoneDeviceID: String?,
-        allowsMissingMicrophone: Bool,
-        liveTap: LiveAudioTap? = nil
+        allowsMissingMicrophone: Bool
     ) async throws -> CaptureSourcePaths {
         guard activeCapture == nil else { throw AudioCaptureError.alreadyCapturing }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -325,7 +324,7 @@ final class AudioCaptureSession {
         configuration.microphoneCaptureDeviceID = microphone?.uniqueID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        let router = AudioCaptureRouter(paths: paths, levels: levels, liveTap: liveTap)
+        let router = AudioCaptureRouter(paths: paths, levels: levels)
         try stream.addStreamOutput(
             router,
             type: .audio,

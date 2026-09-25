@@ -80,6 +80,7 @@ cp .build/release/CallRecorder "$task_contents/MacOS/CallRecorder"
 cp Resources/Info.plist "$task_contents/Info.plist"
 cp Resources/AppIcon.icns "$task_contents/Resources/AppIcon.icns"
 cp Sources/CallRecorderApp/diarize.py "$task_contents/Resources/diarize.py"
+cp Sources/CallRecorderApp/qwen_asr.py "$task_contents/Resources/qwen_asr.py"
 chmod 755 "$task_contents/MacOS/CallRecorder"
 # The binary carries a symbol table the app never reads: 13 MB of it is 8.5 MB without one.
 /usr/bin/strip -x -S "$task_contents/MacOS/CallRecorder"
@@ -200,6 +201,7 @@ task_required=(
     "$task_contents/MacOS/CallRecorder"
     "$task_contents/Info.plist"
     "$task_contents/Resources/diarize.py"
+    "$task_contents/Resources/qwen_asr.py"
     "$task_indexer/bun"
     "$task_indexer/runtime.sha256"
 )
@@ -214,12 +216,8 @@ if [[ ! -s "$task_indexer/runtime.zip" && ! -s "$task_indexer/runtime.url" ]]; t
     print -u2 "the bundle has no runtime archive and no address to fetch one from"
     exit 1
 fi
-# The Silero VAD model is a download now, and the runtime is an archive. A copy inside the bundle
-# is the mistake this guards against: it is what made the app 150 MB.
-if rg --files "$task_app" | rg -q 'ggml-silero'; then
-    print -u2 "the Silero VAD model must be downloaded, not bundled"
-    exit 1
-fi
+# The runtime travels as an archive, and a copy unpacked inside the bundle is the mistake this
+# guards against: it is what made the app 150 MB.
 if rg --files "$task_app" | rg -q 'Resources/indexer/node_modules/'; then
     print -u2 "the indexer runtime must ship as an archive, not unpacked"
     exit 1

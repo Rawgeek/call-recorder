@@ -1,7 +1,7 @@
 # Call Recorder
 
 A private, local-first call recorder for macOS. Call Recorder records both sides of a call,
-transcribes it on your Mac with Whisper, labels who spoke, and keeps every transcript
+transcribes it on your Mac with Qwen3-ASR, labels who spoke, and keeps every transcript
 searchable by keyword and by meaning. Codex can search, read, and curate the library through a
 built-in MCP server.
 
@@ -42,8 +42,11 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 **Transcription**
 
-- Whisper runs locally through whisper.cpp, in roughly a hundred languages; the language is
-  detected per call, so English and Russian calls need no configuration.
+- Qwen3-ASR 1.7B runs locally on MLX, in a Python environment the app keeps beside its models.
+  It reads Russian and English in one pass, including a call that mixes them, and names the
+  language it found; the language can also be named per call, or left automatic.
+- A long call is read in pieces, so a meeting is never cut short by a token budget. A piece that
+  loops instead of speaking is read again through a narrower window and dropped if it loops again.
 - Output is cleaned for reading: no timestamps, no `[music]`-style annotations, one line per
   spoken turn.
 - The same sentence is written once. A chunk seam or a room echo that put the same words into a
@@ -61,19 +64,12 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 **Vocabulary**
 
-- A glossary holds product names, people, and the ways Whisper mishears them. Preferred
-  spellings are given to the model before transcription, and the saved text is corrected
+- A glossary holds product names, people, and the ways the transcriber mishears them. The names
+  on the call and the terms you use most are sent with the audio, and the saved text is corrected
   afterwards with the same rules.
 
 **Library and Codex**
 
-- Every finished call is written up as a brief: what it was about, what was agreed, who owes what,
-  and what is left open, in the language the call was held in. A local model writes it on this
-  Mac; nothing about the call leaves the Mac. The menu-bar row copies it, and the MCP server
-  returns it, so a task that needs the call's context reads a hundred and fifty words rather than
-  the whole transcript. **Settings > General > "Write a brief"** switches it off, and the model is
-  downloaded from **Settings > Models**.
-- A call recorded before briefs existed can be written up from its row, without recording it again.
 - Every transcript is indexed into a local Turso/libsql database with FTS5 (BM25) ranking and
   256-dimension vector embeddings from a local model that is downloaded once. Search is hybrid
   by default.
@@ -104,18 +100,17 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 ## Requirements
 
 - Apple silicon Mac running macOS 15 (Sequoia) or newer.
-- [Homebrew](https://brew.sh) packages: `ffmpeg` (capture and conversion) and `whisper-cpp`
-  (transcription).
+- [Homebrew](https://brew.sh) package: `ffmpeg` (capture and conversion).
+- Python 3.10 or newer, which the app uses once to build the environment the transcription model
+  runs in. A Homebrew `python3` is the usual one: `brew install python3`.
 - Optional, for speaker labels: a local Python environment with `pyannote.audio`, `librosa` and
-  transformers 5.18.
-- Optional, for briefs: `llama.cpp` (the runtime that loads the brief model) and the model
-  itself from **Settings > Models**.
+  transformers 5.18. The transcription model runs in the same environment when one is chosen.
 
 ## Install
 
 ### From a release
 
-1. Download `CallRecorder-0.1.32.zip` from the
+1. Download `CallRecorder-0.1.33.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -124,9 +119,10 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 4. Approve the macOS prompts: **Microphone** and **Screen & System Audio Recording**. The
    second permission is what records the other side of the call.
 5. Open the menu-bar icon and choose **Settings**:
-   - **Models**: download a Whisper model. `medium` is a good default; larger models are more
-     accurate and slower. The silence filter, about 865 KB, downloads on its own. Everything
-     runs locally.
+   - **Models**: set the speech runtime up, then download the transcription model (`Qwen3-ASR
+     1.7B`, 2.3 GB). The runtime is a Python environment the app keeps beside its models, about a
+     gigabyte, and both halves run locally. A call waits for whichever half is missing, and the
+     row says which one it is.
    - **General**: choose the microphone or follow the system's own choice, the recordings folder
      (default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
      microphone, whether a Mac with no audio input records the other side alone, whether the people
@@ -144,7 +140,7 @@ while it runs. **Settings -> Updates -> Restart** closes the app and reopens the
 ### From source
 
 ```sh
-brew install ffmpeg whisper-cpp bun
+brew install ffmpeg bun
 git clone https://github.com/Rawgeek/call-recorder.git
 cd call-recorder
 swift build -c release
@@ -175,7 +171,7 @@ inside the bundle, nothing is fetched, and that build needs no network.
 
 ### Speaker identification (optional)
 
-Whisper transcribes speech; it does not know who is speaking. Nemotron 3 Diarization says who
+The transcriber turns speech into words; it does not know who is speaking. Nemotron 3 Diarization says who
 spoke when, the pyannote.audio community-1 embedder turns each of those voices into the profile a
 name is matched against, and the app learns that profile when you confirm a name. All of it runs
 on the Mac.
@@ -199,6 +195,9 @@ on the Mac.
    Review Speakers...**), then **Speaker setup -> Choose Python Environment**, and select
    `~/pyannote-env/bin/python3`. Press **Check Speaker Setup**; the panel should report that
    the local speaker model is ready.
+
+   The environment chosen here is also the one the transcription model runs in, so **Settings ->
+   Models** offers to install the transcription packages into it when they are missing.
 
 If a call comes out with one person as two voices, or two people as one, Review Speakers shows how
 many voices the call was separated into, and separates it again with the number you count. A
@@ -228,7 +227,8 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 | --- | --- |
 | `~/Desktop/Call Recordings` | Transcripts (`<date-time>.md`) and a small metadata file per call. The folder is configurable. |
 | `~/Library/Application Support/CallRecorder/calls.db` | The local library: calls, participants, glossary, transcripts, search index. |
-| `~/Library/Application Support/CallRecorder/models` | Downloaded Whisper, VAD, and embedding models. |
+| `~/Library/Application Support/CallRecorder/models` | The downloaded transcription model (Qwen3-ASR) and the embedding model search uses. |
+| `~/Library/Application Support/CallRecorder/python` | The Python environment the transcription model runs in, built from the Mac's own Python and the two pinned packages. |
 | `~/Library/Application Support/CallRecorder/runtime` | The JavaScript runtime the search index and the MCP server run on, unpacked from the app once per version. |
 | `~/Library/Application Support/CallRecorder/Recently Deleted` | Working folders kept for 24 hours after a call is finished or discarded. |
 | `~/Library/Application Support/CallRecorder/Speaker Samples` | Short clips cut for speaker review, with the silence removed. Kept for a fortnight. |
@@ -250,30 +250,30 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 
 ```
 microphone --------\
-                    >-- capture -- finalize (ffmpeg) --+-- whisper.cpp -- clean -- glossary fix
-system audio ------ /                                  |                      |
-                                                       |                      v
-                                                       |            transcript + metadata
-                                                       v                      |
-                                              VAD / Silero (speech)           |
-                                                       |                      v
+                    >-- capture -- finalize (ffmpeg) --+-- 16 kHz mono -- Qwen3-ASR  -- clean
+system audio ------ /                                  |   (MLX, in pieces)      |   glossary fix
+                                                       |                          v
+                                                       |                transcript + metadata
+                                                       v                          |
+                                              Nemotron 3 diarization                  |
+                                                       |                          v
                                                        v            Turso/libsql (chunks,
-                                              Nemotron 3 diarization  FTS5 + vector index)
-                                                       |                      |
-                                                       v                      v
-                                              speaker review  <----  MCP server for Codex
+                                              speaker review  <----  FTS5 + vector index)
+                                                                                 |
+                                                                                 v
+                                                                   MCP server for Codex
 ```
 
 - **Capture**: microphone and system audio are recorded as separate sources, then mixed into
   one `call.m4a` during finalization.
-- **Silence**: Silero VAD marks speech regions so silence never reaches Whisper.
+- **Reading**: each track is converted to 16 kHz mono and read in pieces of fifteen seconds. A
+  piece that loops instead of speaking is read again through a narrower window; one that loops
+  twice is dropped and counted. A recording of silence answers with no words at all, which is how
+  a call nobody spoke on is written no file.
 - **Diarization**: Nemotron 3 splits speech into voices and the pyannote.audio embedder measures
   each of them; unmatched voices wait in Review Speakers.
 - **Indexing**: the transcript is split into chunks; each chunk gets an embedding from the
   bundled local model and a row in the FTS5 index. Search ranks with BM25, vectors, or both.
-- **Brief**: the finished transcript is read once by a local model, which writes the short version
-  of the call. A call too long for one pass is read in parts, and the parts are joined into one
-  brief. The model is started for that call and stopped when the brief is saved.
 - **Cleanup**: once the transcript and the index are verified and speaker review is settled,
   the working folder moves to Recently Deleted for 24 hours and is then purged.
 

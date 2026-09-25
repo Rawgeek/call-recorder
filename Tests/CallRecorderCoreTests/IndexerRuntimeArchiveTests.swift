@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import CallRecorderCore
 @testable import CallRecorderApp
 
 /// What the app does with the archive an earlier run left behind.
@@ -22,7 +23,7 @@ struct IndexerRuntimeArchiveTests {
     func matchingArchiveIsKept() async throws {
         let (directory, archive) = try makeArchive("the runtime")
         defer { try? FileManager.default.removeItem(at: directory) }
-        let hash = await ModelManager.sha256(of: archive)
+        let hash = try ModelFileVerifier.sha256(of: archive)
         #expect(await IndexerRuntimeInstaller.archive(archive, matches: hash))
     }
 
@@ -32,7 +33,7 @@ struct IndexerRuntimeArchiveTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let other = directory.appending(path: "other.zip")
         try Data("another runtime".utf8).write(to: other)
-        let otherHash = await ModelManager.sha256(of: other)
+        let otherHash = try ModelFileVerifier.sha256(of: other)
         #expect(await IndexerRuntimeInstaller.archive(archive, matches: otherHash) == false)
     }
 

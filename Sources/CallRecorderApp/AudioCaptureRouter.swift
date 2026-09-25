@@ -14,18 +14,10 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     private let microphoneWriter: AudioSampleWriter
     /// The level of everything the capture delivers, which is what the silence rail reads.
     private let levels: AudioLevelMeter
-    /// The live transcript's own reader of the same audio, when one is attached.
-    ///
-    /// It is optional and it is asked for: a recording with the live view switched off copies
-    /// nothing and holds nothing, which is the rule amanu's relay keeps — a live feature must not
-    /// cost a recording that is not using it.
-    private let liveTap: LiveAudioTap?
-
-    init(paths: CaptureSourcePaths, levels: AudioLevelMeter, liveTap: LiveAudioTap? = nil) {
+    init(paths: CaptureSourcePaths, levels: AudioLevelMeter) {
         systemWriter = AudioSampleWriter(destination: paths.system)
         microphoneWriter = AudioSampleWriter(destination: paths.microphone)
         self.levels = levels
-        self.liveTap = liveTap
     }
 
     func stream(
@@ -37,11 +29,9 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
             switch outputType {
             case .audio:
                 levels.observe(sampleBuffer)
-                liveTap?.append(sampleBuffer, source: .system)
                 try systemWriter.append(sampleBuffer)
             case .microphone:
                 levels.observe(sampleBuffer)
-                liveTap?.append(sampleBuffer, source: .microphone)
                 try microphoneWriter.append(sampleBuffer)
             case .screen:
                 return
@@ -63,9 +53,6 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     func finish(index: Int) async throws -> CaptureSegment {
-        // The live tail is closed first, while the transcriber behind it is still running: the last
-        // words of a call are usually the ones somebody wants to read back.
-        liveTap?.finish()
         async let system = outcome(from: systemWriter)
         async let microphone = outcome(from: microphoneWriter)
         let outcomes = await (system, microphone)

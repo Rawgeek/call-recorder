@@ -103,26 +103,12 @@ final class AppModel {
     private var sessionUnlockObserver: NSObjectProtocol?
     private var appTerminationObserver: NSObjectProtocol?
     private(set) var recentCalls: [RecentCallSummary] = []
-    /// The brief of each call on screen, keyed by call.
-    ///
-    /// A brief is written once and read many times, so the ones the list needs are held beside the
-    /// list rather than read from the store on every draw.
-    private(set) var briefs: [CallID: CallSummary] = [:]
-    /// The calls whose brief is being written right now.
-    private(set) var writingBriefs: Set<CallID> = []
-    /// Why the last brief was not written, in a sentence a person can act on.
-    private(set) var briefFailure: String?
     /// True once the first read of the database has finished, successfully or not.
     ///
     /// The menu bar can look empty for two different reasons: there is nothing to show, or the
     /// read has not finished. A render and a person both need to tell those apart.
     private(set) var metadataIsLoaded = false
     private(set) var copiedTranscriptCallID: CallID?
-    /// The call whose brief was just copied, so the button can say it worked.
-    ///
-    /// Kept apart from the transcript's copy: the two buttons sit next to each other, and one
-    /// tick for both would say the wrong one had been copied.
-    private(set) var copiedBriefCallID: CallID?
     private(set) var processingJobs: [ProcessingJob] = []
     /// The calls behind the unfinished jobs, so the Recovery rows can name them. A job carries
     /// only a call id, and four rows reading "Transcribing audio" identify nothing.
@@ -147,42 +133,6 @@ final class AppModel {
     /// the Recovery pane offers to remove the row instead of a button that fails again.
     private(set) var unfinishableCallIDs: Set<CallID> = []
 
-    // MARK: - Live transcript
-
-    /// The words of the recording that is running, as they arrive.
-    private(set) var liveTranscript = LiveTranscript()
-    /// What the live window says is happening.
-    private(set) var liveStatus: LiveTranscriptStatus = .idle
-    /// Counts the recordings that started with the live view on.
-    ///
-    /// The window is opened by the surface that owns windows rather than by this model, so the
-    /// model says a new session began and the menu bar draws the window for it. A number is used
-    /// rather than a flag because the second recording must open the window again, not find one
-    /// already open for the first.
-    private(set) var liveWindowToken = 0
-    /// The last question asked during a call, and the answer it was given.
-    private(set) var liveChatAnswer: LiveChatAnswer?
-    /// The running summary of the call so far, or empty before the first one is written.
-    ///
-    /// It stays when the recording ends, like the words it replaces: somebody who was reading it is
-    /// not finished reading it because the call stopped.
-    private(set) var liveSummary = ""
-    /// How many times the summary on screen has been written, so the window can say whether it is
-    /// the first one or a refresh.
-    private(set) var liveSummaryUpdates = 0
-    private(set) var liveChatRunning = false
-    private(set) var liveChatFailure: String?
-    /// What is typed in the live window's question field.
-    var liveQuestion = ""
-    /// The live path of the recording that is running, or nil when no recording is.
-    private var liveSession: LiveTranscriptSession?
-    /// The session whose events this model accepts.
-    ///
-    /// A live answer can arrive after the recording it belongs to has ended — the model was still
-    /// writing when the call stopped, or a chunk was still being read. Amanu's live path rejects
-    /// those by epoch; this is the same rule with one token per recording, so a sentence about one
-    /// call cannot appear in the window showing the next one.
-    private var liveSessionToken: UUID?
     /// The assertion that keeps this app out of App Nap, and the one kept while recording.
     private var applicationActivity: NSObjectProtocol?
     private var recordingActivity: NSObjectProtocol?
@@ -346,14 +296,12 @@ final class AppModel {
     var errorMessage: String?
     private(set) var errorDetails: String?
 
-    let modelManager: ModelManager
     /// The models the app needs but does not ask anyone to choose between.
     let supportingManager: SupportingModelManager
-    /// The reader that runs Parakeet on the calls it can read.
-    let parakeetEngine: ParakeetEngine
-    /// How much of the Parakeet model a running download has fetched, or nil when none is running.
-    private(set) var parakeetDownloadFraction: Double?
-    private(set) var parakeetDownloadError: String?
+    /// The Python environment the transcription model runs in.
+    let speechRuntime: SpeechRuntime
+    /// The reader that runs the model on a recording.
+    let qwenEngine: QwenEngine
     private let applicationDirectory: URL
     private let store: CallStore?
     private var speakerStore: SpeakerStore?
@@ -381,25 +329,56 @@ final class AppModel {
     /// detection needs setup" for a runtime that was working. The lookup is written out rather
     /// than using the generated accessor, which would stop the process instead of returning nil.
     private static func diarizerScriptURL() -> URL? {
-        if let url = Bundle.main.url(forResource: "diarize", withExtension: "py") { return url }
-        // The executable's own directory, with symlinks resolved: SwiftPM points .build/debug at
-        // the real build directory, and listing through the link fails.
-        guard let directory = Bundle.main.executableURL?
-            .resolvingSymlinksInPath()
-            .deletingLastPathComponent()
-        else { return nil }
-        let entries = (try? FileManager.default.contentsOfDirectory(
-            at: directory,
-            includingPropertiesForKeys: nil
-        )) ?? []
-        for entry in entries where entry.pathExtension == "bundle" {
-            if let bundle = Bundle(url: entry),
-               let url = bundle.url(forResource: "diarize", withExtension: "py") {
-                return url
+        scriptURL(named: "diarize")
+    }
+
+    /// The transcription script, found the same two ways as the speaker script.
+    private static func transcriptionScriptURL() -> URL? {
+        scriptURL(named: "qwen_asr")
+    }
+
+    /// Finds a Python script that travels inside the app.
+    ///
+    /// The installed app copies it into Contents/Resources, where the main bundle finds it. A bare
+    /// build keeps it in a resource bundle instead, which the main bundle does not look in: the
+    /// preview renderer found nothing, so every render reported a missing script for a runtime that
+    /// was working, and a test run found nothing either. Three places are looked in, because the
+    /// three layouts put the bundle in different rooms: the main bundle's own resources, the folder
+    /// beside the executable, and the Resources folder a test bundle keeps beside its executable.
+    /// The lookup is written out rather than using the generated accessor, which would stop the
+    /// process instead of returning nil.
+    nonisolated static func scriptURL(named name: String) -> URL? {
+        if let url = Bundle.main.url(forResource: name, withExtension: "py") { return url }
+        var directories: [URL] = []
+        if let resources = Bundle.main.resourceURL {
+            directories.append(resources)
+        }
+        // Symlinks are resolved: SwiftPM points .build/debug at the real build directory, and
+        // listing through the link fails.
+        if let executable = Bundle.main.executableURL?.resolvingSymlinksInPath() {
+            let beside = executable.deletingLastPathComponent()
+            directories.append(beside)
+            directories.append(
+                beside.deletingLastPathComponent().appending(path: "Resources", directoryHint: .isDirectory)
+            )
+        }
+        for directory in directories {
+            let entries = (try? FileManager.default.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            for entry in entries where entry.pathExtension == "bundle" {
+                if let bundle = Bundle(url: entry),
+                   let url = bundle.url(forResource: name, withExtension: "py") {
+                    return url
+                }
             }
         }
         return nil
     }
+
+    /// What a transcript says it was read with.
+    static let transcriptionModelName = "Qwen3-ASR 1.7B"
 
     private let pipeline: CallPipeline?
     private let indexer: IndexerClient?
@@ -550,18 +529,24 @@ final class AppModel {
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Library/Application Support/CallRecorder", directoryHint: .isDirectory)
         self.applicationDirectory = applicationDirectory
-        modelManager = ModelManager(
-            directory: applicationDirectory.appending(path: "models/whisper"),
-            // Whisper models keep one record of what has been verified.
-            manifestURL: applicationDirectory.appending(path: "models/manifest.json")
-        )
         // The components beside them keep another: a model that is one file and a model that is
         // five are not the same shape, and a shared record would have to describe both.
         supportingManager = SupportingModelManager(applicationDirectory: applicationDirectory)
-        // The Parakeet reader is made once and kept: its graphs take seconds to load, and the call
-        // read at noon should not load them again after the call read at nine.
-        parakeetEngine = ParakeetEngine(
-            repository: ParakeetModel.repository(in: applicationDirectory)
+        let python = SpeechRuntimeRequirement.python(applicationDirectory: applicationDirectory)
+        speechRuntime = SpeechRuntime(
+            python: python,
+            managedPython: SpeechRuntimeRequirement.managed(applicationDirectory: applicationDirectory)
+        )
+        // The reader is made once and kept: the model takes seconds to load into the graphics
+        // memory, and the call read at noon should not load it again after the call read at nine.
+        qwenEngine = QwenEngine(
+            python: python,
+            script: Self.transcriptionScriptURL(),
+            ffmpeg: ToolLocator.standard.locate("ffmpeg"),
+            model: SupportingModel.qwenModel(
+                in: applicationDirectory,
+                revision: supportingManager.record(forID: SupportingModel.qwen3ASRID)?.revision
+            )
         )
         // Watch every window, so windows opened from menus or the Window menu also come forward.
         WindowPresentation.startObservingWindows()
@@ -577,7 +562,6 @@ final class AppModel {
             forKey: Self.startAtLoginKey
         ) as? Bool ?? true
         errorDetails = defaults.string(forKey: "last-error")
-        whisperVersion = defaults.string(forKey: Self.whisperVersionKey)
         let localStore = try? CallStore(path: applicationDirectory.appending(path: "calls.db").path)
         let tools = ToolLocator.standard
         store = localStore
@@ -619,16 +603,15 @@ final class AppModel {
         }
         updateStartAtLogin()
         startApplicationActivity()
-        // A model server is a child process, and a child outlives a parent that was force quit: it
-        // holds the model and the port until the machine is restarted or somebody notices. Nothing
-        // of ours is running this early, so a transcriber still holding one of our model files is
-        // a leftover from a launch that ended badly, and it goes before it is joined by another.
-        let whisperModels = applicationDirectory.appending(
-            path: "models/whisper",
+        // Nothing of ours is running this early, so a model server still holding one of this app's
+        // model files is a leftover from a build that crashed or that leaked, and it goes before
+        // anything else happens.
+        let modelsDirectory = applicationDirectory.appending(
+            path: "models",
             directoryHint: .isDirectory
         )
         Task.detached(priority: .utility) {
-            LiveServerCleanup.endOrphanedTranscribers(whisperModelDirectory: whisperModels)
+            OrphanedModelServers.endLeftovers(modelsDirectory: modelsDirectory)
         }
         // Read through the setting every time, so turning automatic updates off takes effect at
         // the next check rather than at the next launch.
@@ -698,15 +681,13 @@ final class AppModel {
 
     /// Gets what the next recording needs out of the way while the app is idle.
     ///
-    /// Two things are prepared here. The transcript indexer's runtime is 36 MB and arrives as a
-    /// download, so it is fetched at launch rather than while a call waits to be indexed. The
-    /// silence filter is a download of under a megabyte that every transcription waits for.
-    /// Neither is urgent, and both are worse to hit at the end of a call than at launch.
+    /// The transcript indexer's runtime is 36 MB and arrives as a download, so it is fetched at
+    /// launch rather than while a call waits to be indexed. The transcription model is not fetched
+    /// here: it is two and a half gigabytes, and that is a download somebody has to agree to. The
+    /// row on the Models pane is where they do.
     private func prepareSupportingModels() {
         indexerRuntime.install()
-        if let vad = supportingManager.models.first(where: { $0.id == SupportingModel.sileroVADID }) {
-            supportingManager.downloadIfNeeded(vad)
-        }
+        speechRuntime.refresh()
     }
 
     var menuBarSymbol: String {
@@ -1360,23 +1341,8 @@ final class AppModel {
         ) { [weak self] _ in
             MainActor.assumeIsolated {
                 self?.appUpdater.applyStagedOnExit()
-                // The models this app puts in memory are held by child processes, and a child does
-                // not die with its parent. Quitting ends them here rather than leaving a gigabyte
-                // somewhere nobody can see it.
-                self?.endModelServersOnQuit()
             }
         }
-    }
-
-    /// Ends the model servers this app started, for the moment it quits.
-    private func endModelServersOnQuit() {
-        LiveServerCleanup.endServersOnQuit(
-            whisperModelDirectory: applicationDirectory.appending(
-                path: "models/whisper",
-                directoryHint: .isDirectory
-            ),
-            briefModel: briefModelFile
-        )
     }
 
     func checkSpeakerRuntime() async {
@@ -1409,6 +1375,17 @@ final class AppModel {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         guard !Self.isPreviewMode else { return }
         defaults.set(url.path, forKey: "speaker-python")
+        // One environment serves both jobs now, so the choice is not only the speaker script's: the
+        // reader is moved onto it as well. Without this, a Mac whose pyannote environment is the
+        // only one it has would go on reporting the app's own folder, and offer to build a second
+        // environment beside the one the person just chose.
+        let chosen = SpeechRuntimeRequirement.python(
+            applicationDirectory: applicationDirectory,
+            defaults: defaults
+        )
+        speechRuntime.use(python: chosen)
+        let engine = qwenEngine
+        Task { await engine.use(python: chosen) }
         Task { await checkSpeakerRuntime() }
     }
 
@@ -1617,209 +1594,6 @@ final class AppModel {
         }
     }
 
-    /// The llama.cpp binary that serves the brief model, when this Mac has one.
-    ///
-    /// It is looked for on every use rather than kept: a person who installs llama.cpp while the
-    /// app is running should not have to restart it to write their first brief.
-    private var briefRuntime: URL? {
-        ToolLocator.standard.locate("llama-server")
-    }
-
-    private var briefModel: SupportingModel? {
-        supportingManager.models.first { $0.id == CallBrief.modelID }
-    }
-
-    /// The downloaded file the brief model runs from, or nil when it is not installed.
-    private var briefModelFile: URL? {
-        // The installed copy's own file is used, not the one the catalog names. A model update that
-        // renames the file leaves the copy on disk under the name it was downloaded with, and the
-        // brief would be refused as "not downloaded" with its model sitting on the disk.
-        guard let briefModel, supportingManager.state(for: briefModel).isInstalled else { return nil }
-        return supportingManager.installedGGUFFile(for: briefModel)
-    }
-
-    /// Whether this Mac can write a brief, and what is missing when it cannot.
-    var briefReadiness: SummarizerError? {
-        Summarizer.readiness(runtime: briefRuntime, model: briefModelFile)
-    }
-
-    /// Copies the brief of a call, which is the part of it a person pastes somewhere else.
-    func copyBrief(for call: RecentCallSummary) {
-        guard let brief = briefs[call.id] else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(brief.text, forType: .string)
-        copiedBriefCallID = call.id
-        Task {
-            try? await Task.sleep(for: .seconds(2))
-            if copiedBriefCallID == call.id { copiedBriefCallID = nil }
-        }
-    }
-
-    /// Writes the brief of a call now, because somebody asked for it again.
-    ///
-    /// The work is the same work the pipeline does after a call, so a transcript that was read
-    /// before the model was downloaded can be written up without re-recording anything.
-    func writeBriefNow(for callID: CallID) async {
-        guard let store else { return }
-        writingBriefs.insert(callID)
-        defer { writingBriefs.remove(callID) }
-        do {
-            let outcome = try await writeBrief(
-                callID: callID,
-                store: store,
-                cancellation: ProcessCancellation()
-            )
-            if case .skipped(let reason) = outcome { briefFailure = reason }
-        } catch {
-            report(error, context: "Write Brief", category: .models)
-        }
-    }
-
-    /// Whether a call can be written up on request right now.
-    ///
-    /// A call that already has a brief, a call with no speech in it, and a Mac without the runtime
-    /// or the model are all answered by the row drawing no button, rather than by a button that
-    /// fails when it is pressed.
-    func canWriteBrief(for call: RecentCallSummary) -> Bool {
-        call.hasTranscript && call.hasSpeech && briefs[call.id] == nil && briefReadiness == nil
-    }
-
-    /// Writes the brief of a call whose transcript has just been saved.
-    ///
-    /// This runs inside the call's own processing, before the files are tidied, because the brief
-    /// is the last thing that needs the transcript and the first thing a person reads. It is not
-    /// allowed to fail the call: a Mac with no llama.cpp, or with the model half downloaded, still
-    /// has a complete transcript, and the sentence explaining what is missing belongs to the
-    /// Summary pane rather than to the call.
-    private func writeBriefAfterCall(
-        _ callID: CallID,
-        store: CallStore,
-        cancellation: ProcessCancellation
-    ) async {
-        guard settings.summarizesCalls else { return }
-        writingBriefs.insert(callID)
-        defer { writingBriefs.remove(callID) }
-        do {
-            _ = try await writeBrief(
-                callID: callID,
-                store: store,
-                cancellation: cancellation
-            )
-        } catch is CancellationError {
-            // The user stopped the work, so there is nothing to explain and nothing to retry.
-        } catch {
-            briefFailure = SummarizerError.requestFailed(
-                DiagnosticsReporter.redacted(error: String(reflecting: error))
-            ).errorDescription
-            report(error, context: "Write Brief", category: .models)
-        }
-    }
-
-    /// What became of an attempt to write a brief.
-    private enum BriefOutcome: Equatable {
-        case written
-        /// Nothing was written, and this is why, in a sentence for the person who asked.
-        case skipped(String)
-    }
-
-    /// Writes the brief of one finished call, and never fails the call over it.
-    ///
-    /// The transcript is already saved and indexed by the time this runs, and a brief is a reading
-    /// Writes the brief of a call from the transcript it saved, whatever asked for it.
-    ///
-    /// The pipeline asks for this when a call finishes, and the menu-bar row asks for it when
-    /// somebody wants an older call written up: one path, so a brief written on request is the same
-    /// brief the pipeline would have written.
-    @discardableResult
-    private func writeBrief(
-        callID: CallID,
-        store: CallStore,
-        cancellation: ProcessCancellation
-    ) async throws -> BriefOutcome {
-        guard let transcript = try await store.transcript(for: callID) else {
-            return .skipped("This call has no transcript yet.")
-        }
-        let markdown = try String(
-            contentsOf: URL(filePath: transcript.markdownPath),
-            encoding: .utf8
-        )
-        return try await writeBrief(
-            callID: callID,
-            markdown: markdown,
-            language: transcript.language,
-            store: store,
-            cancellation: cancellation
-        )
-    }
-
-    /// Writes the brief of one finished call, and never fails the call over it.
-    ///
-    /// The transcript is already saved and indexed by the time this runs, and a brief is a reading
-    /// of it rather than part of it: a Mac without llama.cpp, or without the model, still has a
-    /// complete transcript, and the only thing that is missing is the part somebody would have
-    /// read first. So every reason not to write one is a sentence kept for the Summary pane, not
-    /// an error that stops the call.
-    @discardableResult
-    private func writeBrief(
-        callID: CallID,
-        markdown: String,
-        language: String?,
-        store: CallStore,
-        cancellation: ProcessCancellation
-    ) async throws -> BriefOutcome {
-        guard settings.summarizesCalls else { return .skipped("Briefs are switched off.") }
-        if let missing = briefReadiness {
-            let reason = missing.errorDescription ?? "The brief model is not ready."
-            briefFailure = reason
-            return .skipped(reason)
-        }
-        guard let runtime = briefRuntime, let model = briefModelFile else {
-            return .skipped("The brief model is not ready.")
-        }
-        let transcript = SummaryTranscript.plainText(fromMarkdown: markdown)
-        guard CallBrief.isWorthWriting(transcriptCharacters: transcript.count) else {
-            // A call with a sentence in it does not need a brief, and asking for one would spend
-            // minutes of model time to say so.
-            return .skipped("This call held too little speech to write up.")
-        }
-        let call = try await store.call(id: callID)
-        let people = try await store.participants(for: callID)
-        // The length comes from the call's own row rather than from the transcript: the marks each
-        // turn used to carry were taken out of the saved file, and a number read out of it would be
-        // a zero that reads like a very short call.
-        let seconds = max(0, call?.endedAt?.timeIntervalSince(call?.startedAt ?? .now) ?? 0)
-        let context = CallContext(
-            startedAt: call?.startedAt,
-            durationSeconds: seconds,
-            participants: people.map(\.name),
-            language: language
-        )
-        let summarizer = Summarizer(
-            runtime: runtime,
-            model: model,
-            log: { message in
-                Logger(subsystem: "local.callrecorder.app", category: "brief")
-                    .debug("\(message, privacy: .public)")
-            }
-        )
-        let text = try await summarizer.writeBrief(
-            transcript: transcript,
-            context: context,
-            cancellation: cancellation
-        )
-        let summary = CallSummary(
-            callID: callID,
-            text: text,
-            modelID: summarizer.modelID,
-            generatedAt: Date(),
-            coveredSeconds: context.durationSeconds
-        )
-        try await store.saveSummary(summary)
-        briefs[callID] = summary
-        briefFailure = nil
-        return .written
-    }
-
     func addGlossaryTerm(preferred: String, aliases: [String]) async {
         guard let store else { return }
         do {
@@ -1848,7 +1622,7 @@ final class AppModel {
     func startModelMaintenance() {
         Logger(subsystem: "local.callrecorder.app", category: "models")
             .notice("model maintenance requested")
-        setModelManagerBusyGuard()
+        setSupportingModelBusyGuard()
         guard modelMaintenanceTask == nil else { return }
         modelMaintenanceTask = Task { [weak self] in
             // Let the app finish starting up before touching the network.
@@ -1856,7 +1630,6 @@ final class AppModel {
             while !Task.isCancelled {
                 guard let self else { return }
                 if self.settings.automaticModelUpdatesEnabled {
-                    await self.modelManager.performAutomaticPass()
                     await self.supportingManager.performAutomaticPass()
                 }
                 try? await Task.sleep(for: .seconds(6 * 3600))
@@ -1864,12 +1637,8 @@ final class AppModel {
         }
     }
 
-    /// Tells the model manager when the app is using a model file.
-    private func setModelManagerBusyGuard() {
-        modelManager.isBusy = { [weak self] in
-            guard let self else { return true }
-            return self.isModelInUse
-        }
+    /// Tells the supporting-model manager when the app is using a model file.
+    private func setSupportingModelBusyGuard() {
         supportingManager.isBusy = { [weak self] in
             guard let self else { return true }
             return self.isModelInUse
@@ -1888,65 +1657,6 @@ final class AppModel {
     var embeddingModelIsInstalled: Bool {
         guard let model = supportingManager.models.first else { return false }
         return supportingManager.state(for: model).isInstalled
-    }
-
-    /// The version of the whisper.cpp tool this Mac transcribes with.
-    ///
-    /// The tool comes from Homebrew rather than from the app, so this is the only place that says
-    /// which engine is in use. It is read when the Models pane opens, because starting the tool
-    /// loads a graphics back end that took fourteen seconds on this machine the first time.
-    private(set) var whisperVersion: String?
-
-    /// Where the last reading of that version is kept, so the row has an answer to show before
-    /// the tool has been started again.
-    private static let whisperVersionKey = "last-whisper-version"
-
-    /// Where the tool was found, so the row can name the install rather than describe it.
-    var whisperCLIPath: String? {
-        ToolLocator.standard.locate("whisper-cli")?.path
-    }
-
-    func refreshWhisperVersion() async {
-        guard let executable = ToolLocator.standard.locate("whisper-cli") else {
-            whisperVersion = nil
-            return
-        }
-        whisperVersion = await Task.detached { WhisperCLIVersion.read(from: executable) }.value
-        // A render reads the real preferences but must not write to them, or taking a picture
-        // would change the settings of the installed app.
-        if let whisperVersion, !Self.isPreviewMode {
-            defaults.set(whisperVersion, forKey: Self.whisperVersionKey)
-        }
-    }
-
-    /// The version to show for the tool.
-    ///
-    /// What the tool answered when it was last asked, or, until then, the version written in the
-    /// install path it was found at. The second is instant, so the row has an answer to show on a
-    /// Mac that has never opened this pane before.
-    var whisperVersionLabel: String? {
-        whisperVersion
-            ?? whisperCLIPath.flatMap { WhisperCLIVersion.fromInstallPath(URL(filePath: $0)) }
-    }
-
-    /// Where llama.cpp was found, when it was.
-    var llamaServerPath: String? { briefRuntime?.path }
-
-    /// What llama.cpp answered when it was last asked, if it has been asked.
-    private(set) var llamaVersion: String?
-
-    /// Asks llama.cpp for its version, which its own settings row shows.
-    func refreshLlamaVersion() async {
-        guard let executable = briefRuntime else {
-            llamaVersion = nil
-            return
-        }
-        llamaVersion = await Task.detached { LlamaServerVersion.read(from: executable) }.value
-    }
-
-    /// The version to show for llama.cpp, from the tool or from its install path until it answers.
-    var llamaVersionLabel: String? {
-        llamaVersion ?? briefRuntime.flatMap { LlamaServerVersion.fromInstallPath($0) }
     }
 
     /// True while a recording is running or a transcript is being produced.
@@ -2065,13 +1775,12 @@ final class AppModel {
             let version = Bundle.main.object(
                 forInfoDictionaryKey: "CFBundleShortVersionString"
             ) as? String ?? "development"
-            let models = modelManager.models.compactMap { model in
-                modelManager.state(for: model) == .installed ? model.id : nil
-            }
             let archive = try await DiagnosticsReporter.exportBundle(
                 store: store,
                 appVersion: version,
-                modelVersions: models,
+                modelVersions: supportingManager.models.compactMap { model in
+                    supportingManager.state(for: model).isInstalled ? model.id : nil
+                },
                 to: directory
             )
             recoveryMessage = "Diagnostics exported: \(archive.lastPathComponent)"
@@ -2300,7 +2009,7 @@ final class AppModel {
             return
         }
         let files = "file" + (outcome.removed == 1 ? "" : "s")
-        var message = "Removed \(outcome.removed) \(files) that held nothing but words Whisper "
+        var message = "Removed \(outcome.removed) \(files) that held nothing but words the model "
             + "wrote over silence. Each was copied into the Backups folder first."
         if outcome.failed > 0 {
             message += " \(outcome.failed) could not be removed; see the empty-transcript report."
@@ -2556,7 +2265,7 @@ final class AppModel {
         if let data = try? Data(contentsOf: jsonURL), !data.isEmpty {
             let decoder = JSONDecoder()
             if var document = try? decoder.decode(NormalizedTranscript.self, from: data) {
-                let outcome = WhisperTranscript(language: document.language, segments: document.segments)
+                let outcome = SpeechTranscript(language: document.language, segments: document.segments)
                     .applyingGlossary(matcher)
                 let cleaned = TranscriptArtifacts.filter(segments: outcome.transcript.segments)
                 let deduplicated = TranscriptDeduplicator.deduplicate(segments: cleaned.segments)
@@ -2733,25 +2442,7 @@ final class AppModel {
     }
 
     private func apply(_ event: RecorderEvent) {
-        let phaseBefore = recorderState.phase
         recorderState = RecorderReducer.reduce(state: recorderState, event: event)
-        // A recording that ended for any reason takes the live path with it.
-        //
-        // This is the one place every ending passes through, so a capture that failed in the middle
-        // of a call cannot leave a model server running behind a window that has nothing left to
-        // show. The stop that is asked for by hand releases the same path before it queues the
-        // finished call, which matters because the batch run loads the model the live server holds.
-        //
-        // What says the call ended is the move between two phases, not the phase the reducer hands
-        // back: a start's own events leave the phase where they found it, so a rule written against
-        // the returned state ended a call that was just beginning. See
-        // `RecordingPhase.endsLiveTranscript(from:to:)`.
-        if
-            liveSession != nil,
-            RecordingPhase.endsLiveTranscript(from: phaseBefore, to: recorderState.phase)
-        {
-            Task { await self.finishLiveSession() }
-        }
     }
 
     /// Moves the recorder into a state for a layout render, and only for a layout render.
@@ -2794,91 +2485,6 @@ final class AppModel {
         }
     }
 
-    /// Fills the live window with a conversation, for a layout render.
-    ///
-    /// The window only exists while a recording runs, and a render must never start one: this is
-    /// the state a real call reaches, so the window can be looked at in both appearances and at any
-    /// width. The people are invented, the same invented people the rest of the release renders
-    /// use, because a picture that leaves this machine must not carry a real call.
-    func seedPreviewLiveTranscript(_ style: PreviewLiveTranscript = .inProgress) {
-        guard Self.isPreviewMode else { return }
-        liveTranscript = LiveTranscript(localSpeaker: "Dana Holt", remoteSpeaker: "Others")
-        // Every state starts without a summary, so a switch left on screen by the state rendered
-        // before this one cannot be mistaken for part of this one.
-        liveSummary = ""
-        liveSummaryUpdates = 0
-        liveChatAnswer = nil
-        liveChatFailure = nil
-        liveChatRunning = false
-        liveQuestion = ""
-        switch style {
-        case .inProgress, .behind:
-            liveTranscript.append(Self.previewLiveLines)
-            liveStatus = style == .behind ? .behind(seconds: 40) : .listening
-            liveTranscript.setDroppedChunks(style == .behind ? 2 : 0)
-            if style == .inProgress {
-                liveChatAnswer = LiveChatAnswer(
-                    question: "What have I missed?",
-                    answer: "The Globex rate card changes on 1 October, and bookings already made "
-                        + "keep the old one. The surcharge moves with the card. Dana will send the "
-                        + "mapping sheet and wants the last column settled by Friday."
-                )
-            }
-        case .summary:
-            liveTranscript.append(Self.previewLiveLines)
-            liveStatus = .listening
-            liveSummary = Self.previewLiveSummary
-            // Three passes: the window says so beside the switch, which is what tells a reader how
-            // fresh the paragraph in front of them is.
-            liveSummaryUpdates = 3
-        case .starting:
-            liveStatus = .starting
-        }
-    }
-
-    /// The running summary a live render shows, in the voice of the seeded conversation.
-    private static let previewLiveSummary =
-        "The Globex rate change lands on 1 October, and bookings already made keep the old card. "
-        + "The surcharge moves with the card, except the fuel index. Dana will send the mapping "
-        + "sheet and wants the last column settled by Friday."
-
-    /// The conversation a live render shows, written out so both renders say the same thing.
-    private static var previewLiveLines: [LiveTranscriptEntry] {
-        // A time, the side of the call, who said it, and the sentence, with the long sentences
-        // wrapped so no line runs past the width the linter allows.
-        [
-            (
-                6, LiveAudioSource.microphone, "Dana Holt",
-                "Thanks for joining. Let us pick up the rate change for the Globex lane."
-            ),
-            (
-                12, LiveAudioSource.system, "Others",
-                "Happy to. The new card lands on the first of October, and the old one stays "
-                    + "for anything already booked."
-            ),
-            (
-                20, LiveAudioSource.microphone, "Dana Holt",
-                "Does the surcharge move with it, or is that billed separately?"
-            ),
-            (
-                26, LiveAudioSource.system, "Others",
-                "It moves with the card. Same as last quarter, except the fuel index."
-            ),
-            (
-                34, LiveAudioSource.microphone, "Dana Holt",
-                "Good. I will send the mapping sheet after this and we can settle the last "
-                    + "column by Friday."
-            ),
-        ].map { start, source, speaker, text in
-            LiveTranscriptEntry(
-                startSeconds: Double(start),
-                source: source,
-                speaker: speaker,
-                endSeconds: Double(start) + 5,
-                text: text
-            )
-        }
-    }
 
     private func microphoneActivityChanged(_ isActive: Bool) {
         stopGraceTask?.cancel()
@@ -3009,164 +2615,6 @@ final class AppModel {
         }
     }
 
-    // MARK: - Live transcript
-
-    /// Builds the live path for a recording that is about to start.
-    ///
-    /// Everything it needs is decided here rather than read repeatedly later: which model file,
-    /// what the model should be told to spell, and who the two sides of the call are drawn as. The
-    /// server is looked for on every recording, so installing whisper.cpp while the app is running
-    /// makes the next call's live text work without a restart.
-    private func makeLiveSession(in directory: URL) -> LiveTranscriptSession {
-        let model = modelManager.models.first { $0.id == settings.selectedWhisperModelID }
-        let installed = model.flatMap {
-            modelManager.state(for: $0) == .installed ? modelManager.fileURL(for: $0) : nil
-        }
-        // The people already chosen for this call are not known until it is over, so the prompt
-        // carries the one name that is certain — the person recording — and the vocabulary. The
-        // far end's names arrive with the batch pass, which is the pass that can hear who is who.
-        let localParticipant = participants.first { $0.id == settings.localParticipantID }
-        let configuration = LiveTranscriptSession.Configuration(
-            callDirectory: directory,
-            whisperServer: ToolLocator.standard.locate("whisper-server"),
-            whisperModel: installed,
-            whisperModelName: model?.displayName ?? settings.selectedWhisperModelID,
-            prompt: PromptBuilder.whisperContext(
-                participants: [localParticipant].compactMap { $0 },
-                glossary: glossary,
-                usageCounts: glossaryUsage
-            ),
-            glossary: glossary,
-            localSpeaker: localParticipant?.name ?? "You",
-            remoteSpeaker: "Others",
-            chatRuntime: briefRuntime,
-            chatModel: briefModelFile,
-            // A Mac without the brief model gets no summary, the same way it gets no answer to a
-            // question: the loop is what decides, and it finds no writer and asks nothing.
-            summaryIntervalSeconds: settings.summarizesLiveCalls
-                ? settings.liveSummaryInterval.seconds
-                : nil
-        )
-        let token = UUID()
-        liveSessionToken = token
-        return LiveTranscriptSession(configuration: configuration) { [weak self] event in
-            Task { @MainActor [weak self] in self?.applyLive(event, token: token) }
-        }
-    }
-
-    /// Starts the live view a just-started recording asked for.
-    private func beginLiveSession(_ session: LiveTranscriptSession) {
-        liveTranscript = LiveTranscript(
-            localSpeaker: session.localSpeakerName,
-            remoteSpeaker: session.remoteSpeakerName
-        )
-        liveSummary = ""
-        liveSummaryUpdates = 0
-        liveStatus = .starting
-        liveChatAnswer = nil
-        liveChatFailure = nil
-        liveChatRunning = false
-        liveQuestion = ""
-        session.start()
-        // The window is opened by the menu bar, which owns windows: a model cannot open one, and
-        // the count is what tells it a new session has begun.
-        liveWindowToken += 1
-    }
-
-    /// Ends the live path, and leaves what it already drew on screen.
-    ///
-    /// The text stays because somebody may still be reading it: the window is theirs to close. What
-    /// goes is the memory behind it — amanu's design document is explicit about why the live model
-    /// is released before the finished call is transcribed rather than after.
-    private func finishLiveSession() async {
-        guard let liveSession else { return }
-        self.liveSession = nil
-        await liveSession.finish()
-        // A live path that ends before the capture does is this feature failing, and it fails
-        // quietly: the window holds the words it has, and the recording carries on without it. The
-        // 2026-09-22 13:18 call showed "Recording finished" for the rest of a call that was still
-        // recording, and nothing in the log said the live path had been released. The window says a
-        // problem is a problem instead of reading like the end of the call.
-        if recorderState.phase.holdsLiveTranscript {
-            Logger(subsystem: "local.callrecorder.app", category: "live").notice(
-                "the live path was released while the call was still being recorded"
-            )
-            liveStatus = .failed(
-                "The call is still being recorded. What was said is kept with the recording and "
-                    + "written up when the call ends."
-            )
-        } else {
-            liveStatus = .stopped
-        }
-        liveChatRunning = false
-    }
-
-    private func applyLive(_ event: LiveTranscriptSession.Event, token: UUID) {
-        guard token == liveSessionToken else { return }
-        switch event {
-        case .ready:
-            guard !liveStatus.isProblem, liveStatus != .stopped else { return }
-            liveStatus = .listening
-        case let .text(lines):
-            liveTranscript.append(lines)
-        case let .summary(text):
-            liveSummary = text
-            liveSummaryUpdates += 1
-        case let .backlog(seconds, droppedChunks):
-            liveTranscript.setDroppedChunks(droppedChunks)
-            guard !liveStatus.isProblem, liveStatus != .stopped else { return }
-            liveStatus = seconds >= Self.liveBehindThresholdSeconds
-                ? .behind(seconds: Int(seconds.rounded()))
-                : .listening
-        case let .failure(message):
-            liveStatus = .failed(message)
-        case let .answer(answer):
-            liveChatAnswer = answer
-            liveChatFailure = nil
-            liveChatRunning = false
-        case let .answerFailure(message):
-            liveChatFailure = message
-            liveChatRunning = false
-        }
-    }
-
-    /// How far behind the live text may fall before the window says so.
-    static let liveBehindThresholdSeconds: Double = 20
-
-    /// Asks the model a question about the call that is running.
-    func askLiveQuestion(_ question: String) {
-        let trimmed = question.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let refusal = LiveChat.refusal(question: trimmed, transcript: liveTranscript) {
-            liveChatFailure = refusal
-            return
-        }
-        guard let liveSession else {
-            liveChatFailure = "Live text is not running. It starts with a recording."
-            return
-        }
-        guard liveStatus.acceptsQuestions else {
-            liveChatFailure = "The recording has stopped, so there is nothing new to answer from."
-            return
-        }
-        if let missing = briefReadiness {
-            liveChatFailure = missing.errorDescription
-            return
-        }
-        liveChatFailure = nil
-        liveChatRunning = true
-        liveSession.ask(trimmed, transcript: liveTranscript)
-    }
-
-    func askLiveQuestion() {
-        askLiveQuestion(liveQuestion)
-    }
-
-    /// Clears the answer card, for a question the person has finished with.
-    func dismissLiveAnswer() {
-        liveChatAnswer = nil
-        liveChatFailure = nil
-    }
-
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
         guard let pipeline else {
@@ -3182,23 +2630,15 @@ final class AppModel {
         let dirName = CallRecorderFolderNameFormatter.string(from: startedAt)
         let directory = URL(filePath: settings.outputDirectory, directoryHint: .isDirectory)
             .appending(path: dirName, directoryHint: .isDirectory)
-        // The live path is built before the capture starts, because the tap that reads the audio
-        // has to be attached to the stream that delivers it. Nothing is copied until a buffer
-        // arrives, which cannot happen before the recording is running.
-        let liveSession = settings.showsLiveTranscript ? makeLiveSession(in: directory) : nil
         do {
             _ = try await captureSession.startSegment(
                 directory: directory,
                 index: 1,
                 microphoneDeviceID: settings.selectedMicrophoneID,
-                allowsMissingMicrophone: settings.recordsWithoutMicrophone,
-                liveTap: liveSession?.makeTap(offsetSeconds: 0)
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone
             )
             if automatic, !activityMonitor.externalMicrophoneActive {
                 _ = try await captureSession.finishSegment()
-                // A microphone that opened for a moment is not a call. Its live path is closed
-                // before it ever starts a model, and any audio it wrote goes with it.
-                await liveSession?.finish()
                 return
             }
             try await pipeline.start(callID: callID, startedAt: startedAt)
@@ -3213,10 +2653,6 @@ final class AppModel {
             if automatic { startRecordingLimits() }
             // A Mac that sleeps during a call is a recording that stops in the middle of one.
             startRecordingActivity()
-            if let liveSession {
-                self.liveSession = liveSession
-                beginLiveSession(liveSession)
-            }
             // A new call starts its own count, so nothing banked by the call before it is added on.
             recordedSecondsBeforePause = 0
             if automatic {
@@ -3231,7 +2667,6 @@ final class AppModel {
                 apply(.manualStart(sessionID: sessionID))
             }
         } catch {
-            await liveSession?.finish()
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
                 // The permission is a fact about the app rather than a capture that went wrong. The
                 // card above the recent list carries the instructions and the button, so this line
@@ -3331,10 +2766,7 @@ final class AppModel {
                 directory: activeSessionDirectory,
                 index: nextSegmentIndex,
                 microphoneDeviceID: settings.selectedMicrophoneID,
-                allowsMissingMicrophone: settings.recordsWithoutMicrophone,
-                // The live clock continues where the pause left it, so the words after a pause
-                // land after the words before it rather than at the start of the call.
-                liveTap: liveSession?.makeTap(offsetSeconds: recordedSecondsBeforePause)
+                allowsMissingMicrophone: settings.recordsWithoutMicrophone
             )
             nextSegmentIndex += 1
             // The next run starts counting from now rather than from the start of the call.
@@ -3378,10 +2810,6 @@ final class AppModel {
                     capturedSegments.append(try await captureSession.finishSegment())
                 } catch AudioCaptureError.notCapturing where !capturedSegments.isEmpty {}
             }
-            // The live path ends here, before the finished call is queued. The live server holds a
-            // copy of the same model the batch run is about to load, and the transcript that is
-            // kept is written from the recording rather than from anything the preview saw.
-            await finishLiveSession()
             guard
                 let activeCallID,
                 let activeSessionDirectory
@@ -3561,91 +2989,35 @@ final class AppModel {
         )
     }
 
-    /// The silence filter this transcription runs with, fetched once if it is not installed.
-    ///
-    /// The app downloads it at launch, so a transcription normally finds it ready. A call recorded
-    /// in the first minute after an update does not, and the wait here costs seconds against a
-    /// call that could not be transcribed at all. The wait is bounded, and a failed download ends
-    /// it, because a stage that never returns is worse than one that stops with a reason.
-    private func ensuredVADModel() async throws -> URL {
-        if let installed = try? Transcriber.resolvedVADModel(
-            applicationDirectory: applicationDirectory
-        ) {
-            return installed
-        }
-        guard
-            let vad = supportingManager.models.first(where: {
-                $0.id == SupportingModel.sileroVADID
-            })
-        else { throw TranscriberError.vadModelUnavailable }
-        supportingManager.downloadIfNeeded(vad)
-        let deadline = Date().addingTimeInterval(180)
-        while Date() < deadline {
-            if let installed = try? Transcriber.resolvedVADModel(
-                applicationDirectory: applicationDirectory
-            ) {
-                return installed
-            }
-            if supportingManager.failure(for: vad) != nil { break }
-            try await Task.sleep(for: .seconds(2))
-        }
-        throw TranscriberError.vadModelUnavailable
+    // MARK: - The transcription model
+
+    /// Whether the model and everything that runs it are in place.
+    var transcriptionModelIsReady: Bool {
+        speechRuntime.state.isReady && qwenModelIsInstalled
     }
 
-    // MARK: - Parakeet
-
-    /// Whether the Parakeet model is complete on disk.
-    var parakeetModelIsInstalled: Bool {
-        ParakeetModel.isComplete(in: applicationDirectory)
+    /// The model this app records with, as the Components card names it.
+    var transcriptionModel: SupportingModel? {
+        supportingManager.models.first { $0.id == SupportingModel.qwen3ASRID }
     }
 
-    /// What the Parakeet model takes on disk.
-    var parakeetModelBytes: Int64 {
-        ParakeetModel.installedBytes(in: applicationDirectory)
+    /// Whether the model's files are on disk and verified.
+    var qwenModelIsInstalled: Bool {
+        guard let model = transcriptionModel else { return false }
+        return supportingManager.state(for: model).isInstalled
     }
 
-    /// The engine a call would be read with right now.
-    ///
-    /// The setting can ask for Parakeet while the model is missing, or while the call is in a
-    /// language Parakeet was not trained for, and in both cases whisper.cpp is what reads. The
-    /// Models pane reports this answer rather than the setting, because this is the one that
-    /// decides what a recording sounds like when it comes back.
-    var activeSpeechEngine: SpeechEngine {
-        SpeechEngineChoice.engine(
-            requested: settings.speechEngine,
-            language: settings.transcriptionLanguage,
-            parakeetIsReady: parakeetModelIsInstalled
-        )
+    /// Fetches the model. The row shows the download's own progress.
+    func downloadTranscriptionModel() {
+        guard let model = transcriptionModel else { return }
+        speechRuntime.refresh()
+        supportingManager.download(model)
     }
 
-    /// Fetches the Parakeet model, reporting the fraction that has arrived.
-    ///
-    /// A half-downloaded model is worth nothing, so the fetch is not offered as something to stop
-    /// and start: it runs to the end, and a failure leaves the app reading with whisper.cpp until
-    /// it is asked for again.
-    func downloadParakeetModel() {
-        guard parakeetDownloadFraction == nil else { return }
-        parakeetDownloadError = nil
-        parakeetDownloadFraction = 0
-        Task { @MainActor in
-            do {
-                try await ParakeetModel.download(in: applicationDirectory) { fraction in
-                    Task { @MainActor in self.parakeetDownloadFraction = fraction }
-                }
-                self.parakeetDownloadFraction = nil
-            } catch {
-                self.parakeetDownloadFraction = nil
-                self.parakeetDownloadError = error.localizedDescription
-            }
-        }
-    }
-
-    /// Gives the space back. Calls fall to whisper.cpp until the model is fetched again.
-    func deleteParakeetModel() {
-        try? FileManager.default.removeItem(
-            at: ParakeetModel.repository(in: applicationDirectory)
-        )
-        Task { await parakeetEngine.forgetLoadedModels() }
+    /// Gives the space back. Nothing transcribes until the model is fetched again.
+    func deleteTranscriptionModel() {
+        guard let model = transcriptionModel else { return }
+        try? supportingManager.delete(model)
     }
 
     private func performProcessingStage(
@@ -3664,19 +3036,9 @@ final class AppModel {
                 let audioPath = call.audioPath,
                 Self.audioIsOnDisk(call)
             else { throw BackgroundProcessingError.audioUnavailable }
-            let whisperCLI = ToolLocator.standard.locate("whisper-cli")
-            // The whisper file is needed only by the engine that will read this call. A Mac that
-            // switched to Parakeet and gave the whisper files their space back still transcribes;
-            // one that kept the setting on whisper without a file is told so here, before the call
-            // is claimed for work that could not finish.
-            let whisperModel = modelManager.models.first {
-                $0.id == settings.selectedWhisperModelID
-                    && modelManager.state(for: $0) == .installed
-            }
-            if
-                activeSpeechEngine == .whisper,
-                whisperModel == nil || whisperCLI == nil
-            {
+            // The runtime and the model are checked before the call is claimed, so a Mac that is
+            // missing either is told what to fetch instead of holding a call that cannot finish.
+            guard speechRuntime.state.isReady, qwenModelIsInstalled else {
                 throw BackgroundProcessingError.modelUnavailable
             }
             let participants = try await store.participants(for: job.callID)
@@ -3685,23 +3047,17 @@ final class AppModel {
             _ = try await pipeline.transcribe(
                 callID: job.callID,
                 audio: audio,
-                modelID: whisperModel?.id ?? ParakeetModel.modelName,
-                modelFile: whisperModel.map { modelManager.fileURL(for: $0) },
+                modelID: Self.transcriptionModelName,
                 participantIDs: participants.map(\.id),
                 localParticipantID: settings.localParticipantID,
                 glossary: glossary,
                 directory: audio.deletingLastPathComponent(),
                 queueIndexing: false,
                 using: Transcriber(
-                    ffmpeg: pipeline.finalizer.ffmpeg,
-                    whisperCLI: whisperCLI,
-                    vadModel: try await ensuredVADModel(),
                     language: settings.transcriptionLanguage,
                     includeTimestamps: settings.transcriptTimestamps,
                     cancellation: cancellation,
-                    speechEngine: settings.speechEngine,
-                    parakeetRepository: ParakeetModel.repository(in: applicationDirectory),
-                    parakeet: parakeetEngine
+                    engine: qwenEngine
                 )
             )
             return .diarizing
@@ -3733,11 +3089,6 @@ final class AppModel {
             return .finalizingArtifacts
         case .finalizingArtifacts:
             try await promoteTranscript(for: job.callID, store: store)
-            await writeBriefAfterCall(
-                job.callID,
-                store: store,
-                cancellation: cancellation
-            )
             await writePlayableMixWhenAudioIsKept(job.callID, store: store)
             do {
                 _ = try await artifactRecovery.finalizeReadyCall(
@@ -4188,7 +3539,6 @@ final class AppModel {
         Logger(subsystem: "local.callrecorder.app", category: "speakers")
             .debug("speaker review candidates: \(callsWithPeople, privacy: .public) call(s) carry people, \(mostOnOneCall, privacy: .public) most")
         recentCalls = try await store.recentCalls(limit: 5)
-        briefs = try await store.summaries(for: recentCalls.map(\.id))
         processingJobs = try await store.processingJobs()
         processingCallSummaries = try await store.callSummaries(
             ids: processingJobs.map(\.callID)
@@ -4207,7 +3557,6 @@ final class AppModel {
     /// Hides the library from a render, so the first screen of a new install can be looked at.
     func clearLibraryForPreview() {
         recentCalls = []
-        briefs = [:]
         processingJobs = []
         processingCallSummaries = [:]
         unfinishableCallIDs = []
@@ -4591,35 +3940,6 @@ final class AppModel {
                 hasTranscript: true
             ),
         ]
-        // One of the invented calls has its brief, so a render shows what a call that has been
-        // written up looks like beside one that has not.
-        if let written = recentCalls.first {
-            briefs[written.id] = CallSummary(
-                callID: written.id,
-                text: """
-                    ## About
-                    Warehouse rates for the three Vietnam lanes, and a duplicated charge on the \
-                    July invoices.
-
-                    ## Decisions
-                    - The new rate card is applied from 1 October, agreed by Dana Holt.
-                    - The duplicate charge goes on the same ticket as the rate change.
-
-                    ## To do
-                    - Ilya Marsh applies the card and notes it on FS-20481.
-                    - Priya Raman sends the invoice numbers today.
-
-                    ## Open
-                    - The carrier has not answered about the damaged pallet.
-
-                    ## Numbers
-                    - FS-20481, 812 dollars, July invoices, 1 October.
-                    """,
-                modelID: CallBrief.modelID,
-                generatedAt: now,
-                coveredSeconds: 3_862
-            )
-        }
     }
 
     /// The people of the invented library, and the cast of the invented call the review window draws.
@@ -4825,7 +4145,7 @@ final class AppModel {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let normalizedJSON = try encoder.encode(updatedDocument)
-        let transcript = WhisperTranscript(language: document.language, segments: segments)
+        let transcript = SpeechTranscript(language: document.language, segments: segments)
         let revision = try transcriptRevisionManager.replace(
             callID: callID,
             markdownURL: markdownURL,
@@ -5054,7 +4374,7 @@ final class AppModel {
     /// Whether a call's saved text holds nothing a file should be written for.
     ///
     /// Two things disqualify a call, and the second was found by reading the library. Length
-    /// alone is not enough: Whisper answers silence and noise with a loop, and a loop can run
+    /// alone is not enough: a reader answers silence and noise with a loop, and a loop can run
     /// long. One call holds 694 characters of "VAT (VAT, VAT, VAT...)" across forty-two lines,
     /// which is comfortably past any length floor and is not speech. The validator that guards
     /// the normal capture path already recognises a transcript dominated by one repeated phrase,
@@ -5168,13 +4488,13 @@ final class AppModel {
     /// One segment per line, because the renderer joins segments with a blank line between them.
     /// Handing it the whole text as a single segment would collapse every paragraph into one,
     /// which is the difference between a transcript that reads and a wall of words.
-    static func transcript(fromStoredText body: String, language: String) -> WhisperTranscript {
+    static func transcript(fromStoredText body: String, language: String) -> SpeechTranscript {
         let segments = body
             .split(separator: "\n", omittingEmptySubsequences: true)
             .map { line in
                 TranscriptSegment(startMs: 0, endMs: 0, text: String(line))
             }
-        return WhisperTranscript(language: language, segments: segments)
+        return SpeechTranscript(language: language, segments: segments)
     }
 
     /// What the repair did, in the words the Recovery pane uses.
@@ -5231,7 +4551,7 @@ final class AppModel {
     ///
     /// This is the one repair that deletes rather than rewrites, so its reasoning is written out.
     ///
-    /// Whisper does not answer silence with silence. It answers with the phrases it was trained to
+    /// A reader does not answer silence with silence. It answers with the phrases it was trained to
     /// end videos with: "Thank you for watching.", "I hope you enjoyed this video.", "See you next
     /// time.", "1, 2, 3". Three files in this library hold nothing else, which was found by
     /// reading them rather than by a rule looking for them. Each is about 1.8 kilobytes, of which
@@ -5922,7 +5242,6 @@ enum BackgroundProcessingError: LocalizedError {
     case appUnavailable
     case pipelineUnavailable
     case audioUnavailable
-    case whisperUnavailable
     case modelUnavailable
     case indexerUnavailable
     case transcriptUnavailable
@@ -5933,8 +5252,7 @@ enum BackgroundProcessingError: LocalizedError {
         case .appUnavailable: "The app stopped before processing could continue."
         case .pipelineUnavailable: "The local processing pipeline is unavailable."
         case .audioUnavailable: "The source audio is missing."
-        case .whisperUnavailable: "whisper-cli is not installed."
-        case .modelUnavailable: "Download the selected Whisper model in Settings."
+        case .modelUnavailable: "Install the transcription model and its runtime in Settings, Models."
         case .indexerUnavailable: "The local transcript indexer is unavailable."
         case .transcriptUnavailable: "The completed transcript file is missing."
         case let .unexpectedStage(stage): "The processor cannot execute stage \(stage.rawValue)."

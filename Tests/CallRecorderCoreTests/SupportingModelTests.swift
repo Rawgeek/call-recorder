@@ -10,9 +10,9 @@ struct SupportingModelTests {
         $0.id == SupportingModel.embeddingGemmaID
     }!
 
-    /// The silence filter whisper.cpp is handed on a long call.
-    private static let silenceFilter = SupportingModel.catalog.first {
-        $0.id == SupportingModel.sileroVADID
+    /// The model every recording is read with.
+    private static let transcriptionModel = SupportingModel.catalog.first {
+        $0.id == SupportingModel.qwen3ASRID
     }!
 
     @Test func theEmbeddingModelIsPinnedFileByFile() {
@@ -24,9 +24,8 @@ struct SupportingModelTests {
         // quietly point these tests at a different model.
         #expect(
             models.map(\.id) == [
-                SupportingModel.sileroVADID,
+                SupportingModel.qwen3ASRID,
                 SupportingModel.embeddingGemmaID,
-                SupportingModel.callBriefID,
             ]
         )
         let model = Self.embeddingModel
@@ -39,18 +38,22 @@ struct SupportingModelTests {
         #expect(model.totalBytes > 200_000_000)
     }
 
-    @Test func theSilenceFilterIsPinnedToTheBytesWhisperLoads() {
+    @Test func theTranscriptionModelIsPinnedFileByFile() {
         // Given / When
-        let model = Self.silenceFilter
+        let model = Self.transcriptionModel
 
-        // Then it is one small file from the host that publishes the converted model, and the name
-        // is the one whisper.cpp is handed on the command line.
-        #expect(model.repository == "ggml-org/whisper-vad")
-        #expect(model.files.map(\.path) == [SupportingModel.sileroVADFileName])
-        #expect(model.totalBytes == SupportingModel.sileroVADBytes)
-        #expect(model.files[0].sha256 == SupportingModel.sileroVADSHA256)
+        // Then it is the eight-bit copy of the model, every file pinned to a hash this build
+        // checked against the host's own bytes, and the folder the script loads it from is the
+        // folder the download writes.
+        #expect(model.repository == "mlx-community/Qwen3-ASR-1.7B-8bit")
+        #expect(model.installPath == "models")
         #expect(model.revision.count == 40)
-        #expect(model.totalBytes < 1_000_000)
+        #expect(model.files.map(\.path).contains("model.safetensors"))
+        #expect(model.files.map(\.path).contains("config.json"))
+        #expect(model.files.allSatisfy { $0.sha256.count == 64 && $0.bytes > 0 })
+        // Two and a half gigabytes of weights, and the files a tokenizer reads beside them.
+        #expect(model.totalBytes > 2_000_000_000)
+        #expect(model.totalBytes < 3_000_000_000)
     }
 
     @Test func aFileIsFetchedFromThePinnedRevision() {

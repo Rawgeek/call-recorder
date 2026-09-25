@@ -171,12 +171,19 @@ is picked up by the next segment.
 
 ## Transcribing
 
-### Whisper answers silence with words
+### A reader answers silence with words
 
 Over music, a tone, or nothing at all, the model does not return nothing. It returns the phrases
 it was trained to see printed next to no speech: "Thank you for watching", "Продолжение следует",
 the word for music in brackets, and a count from one to ten. The library held 174 lines of prompt
 echo, 271 bracketed markers, and 383 lines of one repeated sentence before these were measured.
+
+How a reader behaves over silence is the reader's own property, so it is measured rather than
+assumed. Whisper's shapes above are the ones this library was built on. Qwen3-ASR, which reads a
+call from 0.1.33 on, was measured on 2026-09-26 against twenty seconds of digital silence and
+twenty seconds of pink noise: both came back with no words at all, so a quiet call is written no
+file rather than a hallucinated one. The rules below still run on every reading, because the next
+model's answer is not known until it is measured.
 
 **Rule:** judge a line by what it is, not by how often it appears. A prompt echo has the shape
 `TERM (also TERM)`, a marker is a bracket that fills a line, and a loop is a long line repeated
@@ -184,10 +191,11 @@ many times. See `TranscriptArtifacts`.
 
 ### The same sentence reaches the model twice
 
-Transcription runs in five-minute chunks that overlap, so the last words of one chunk are also the
-first words of the next, and a microphone that hears the speakers writes the meeting down a second
-time. One call in the library held 473 repeated runs; across four calls, 17.2% of the words were
-said twice.
+Transcription runs in pieces that overlap -- five-minute chunks when this was written, fifteen
+seconds from 0.1.33 on, each overlapping the next by about a second and a half -- so the last words
+of one piece are also the first words of the next, and a microphone that hears the speakers writes
+the meeting down a second time. One call in the library held 473 repeated runs; across four calls,
+17.2% of the words were said twice.
 
 **Rule:** remove a repeat only when it is the same words, at least five of them, close by, and
 keep the first copy. A word the model heard differently is left alone, because choosing between

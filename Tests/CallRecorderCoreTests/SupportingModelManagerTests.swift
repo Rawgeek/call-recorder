@@ -232,14 +232,14 @@ struct SupportingModelManagerTests {
 
     private func makeWorkspace(
         tamperingWith tampered: String? = nil,
-        ggufNamed gguf: String? = nil
+        weightsNamed weights: String? = nil
     ) -> Workspace {
         let revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         var payloads: [String: Data] = [
             "config.json": Data("{\"model\": \"sample\"}".utf8),
             "onnx/model_q4.onnx": Data(repeating: 7, count: 512),
         ]
-        if let gguf { payloads[gguf] = Data(repeating: 9, count: 256) }
+        if let weights { payloads[weights] = Data(repeating: 9, count: 256) }
         let files = payloads.keys.sorted().map { path in
             SupportingModelFile(
                 path: path,
@@ -282,7 +282,7 @@ struct SupportingModelManagerTests {
 
     @Test func anInstalledCopyIsFoundAfterTheCatalogRenamesIt() async throws {
         // Given a model whose weights were downloaded under one repository and one file name.
-        let workspace = makeWorkspace(ggufNamed: "old-name.gguf")
+        let workspace = makeWorkspace(weightsNamed: "old-name.weights")
         defer { workspace.cleanUp() }
         let manager = workspace.manager()
         manager.download(workspace.model)
@@ -300,37 +300,39 @@ struct SupportingModelManagerTests {
             versionLabel: workspace.model.versionLabel,
             files: [
                 SupportingModelFile(
-                    path: "new-name.gguf",
+                    path: "new-name.weights",
                     bytes: 256,
                     sha256: try #require(
-                        workspace.model.files.first { $0.path.hasSuffix(".gguf") }
+                        workspace.model.files.first { $0.path.hasSuffix(".weights") }
                     ).sha256
                 )
             ]
         )
 
-        // Then the installed copy is found where it was left, and its own file is the one named.
+        // Then the installed copy is found where it was left, and its own file names are the ones
+        // read: the catalog describes what is published, not what is here.
         let directory = try #require(manager.installedDirectory(for: renamed))
         #expect(directory.path.contains("sample-model"))
         #expect(!directory.path.contains("renamed"))
-        let file = try #require(manager.installedGGUFFile(for: renamed))
-        #expect(file.lastPathComponent == "old-name.gguf")
-        #expect(FileManager.default.fileExists(atPath: file.path))
         #expect(
             manager.installedFilePaths(of: renamed)
-                == ["config.json", "old-name.gguf", "onnx/model_q4.onnx"]
+                == ["config.json", "old-name.weights", "onnx/model_q4.onnx"]
+        )
+        #expect(
+            FileManager.default.fileExists(
+                atPath: directory.appending(path: "old-name.weights").path
+            )
         )
     }
 
-    @Test func aModelWithNothingInstalledNamesNoWeightsFile() {
+    @Test func aModelWithNothingInstalledNamesNoFiles() {
         // Given a manager whose library is empty.
-        let workspace = makeWorkspace(ggufNamed: "old-name.gguf")
+        let workspace = makeWorkspace(weightsNamed: "old-name.weights")
         defer { workspace.cleanUp() }
         let manager = workspace.manager()
 
         // Then there is no copy to read, and nothing to hand a runtime.
         #expect(manager.installedDirectory(for: workspace.model) == nil)
-        #expect(manager.installedGGUFFile(for: workspace.model) == nil)
         #expect(manager.installedFilePaths(of: workspace.model).count == 3)
         #expect(!manager.state(for: workspace.model).isInstalled)
     }

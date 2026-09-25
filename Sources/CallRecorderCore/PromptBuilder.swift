@@ -1,121 +1,66 @@
 import Foundation
 
 public enum PromptBuilder {
-    /// whisper.cpp keeps at most `n_text_ctx / 2` prompt tokens, which is 224 for the whisper
-    /// models this app uses. It keeps the last tokens and silently drops the front, so an
-    /// over-long prompt loses the participant names first. Measured with whisper-cli 1.9.1 and
-    /// ggml-medium: 385 characters tokenize to 147 tokens, 478 to 184, and 560 to 214. This
-    /// budget leaves room for names and aliases that tokenize worse than plain prose.
-    public static let whisperPromptCharacterBudget = 480
+    /// Most words the reader is given beside the audio.
+    ///
+    /// The list is a hint, and a call with forty participants and a vocabulary of hundreds would
+    /// hand the reader more words than it can weight. The words that matter most are the people on
+    /// the call and the vocabulary the user actually uses, and names are counted first, so a
+    /// crowded call keeps the people it was about.
+    public static let hotwordLimit = 60
 
-    /// Builds the prompt inside `characterBudget`.
+    /// The names and terms sent beside the audio, in the order they are sent.
     ///
-    /// Names are kept before terms, because a misheard name is the most visible error in a
-    /// transcript. When the glossary holds more terms than the prompt can carry, `usageCounts`
-    /// decides what is worth the space: terms the user already says, or already gets misheard.
-    ///
-    /// A long enough name list can consume the whole budget by itself, so the names are capped
-    /// too. Leaving it uncapped was worse than dropping a name: whisper keeps the tail of an
-    /// over-long prompt, so the front — every name, the reason the list exists — was discarded.
-    public static func whisperContext(
+    /// The reader takes a list rather than a prompt, so nothing here is trimmed to a token budget:
+    /// the names come first, then the terms, and the list stops at ``hotwordLimit``.
+    public static func hotwords(
         participants: [Participant],
         glossary: [GlossaryTerm],
-        usageCounts: [String: Int] = [:],
-        characterBudget: Int = whisperPromptCharacterBudget
-    ) -> String {
-        var context = participants.isEmpty
-            ? ""
-            : participantsPrompt(participants, characterBudget: characterBudget)
-        guard characterBudget > 0 else { return context }
-        let kept = selectedTerms(
-            glossary,
-            participants: participants,
-            usageCounts: usageCounts,
-            characterBudget: characterBudget,
-            reserved: context.count
-        ).map(formattedTerm)
-        if !kept.isEmpty {
-            let separator = context.isEmpty ? "" : " "
-            context += separator + "Domain terms: " + kept.joined(separator: "; ") + "."
-        }
-        return context
-    }
-
-    /// The terms that fit the prompt budget after `reserved` characters of other text. Terms
-    /// are taken in priority order. A term that is too long for the space left is skipped
-    /// instead of ending the list, because one long entry would otherwise cost every shorter
-    /// term behind it. Room only shrinks as terms are taken, so a skipped term never fits later.
-    static func selectedTerms(
-        _ glossary: [GlossaryTerm],
-        participants: [Participant],
-        usageCounts: [String: Int] = [:],
-        characterBudget: Int = whisperPromptCharacterBudget,
-        reserved: Int = 0
-    ) -> [GlossaryTerm] {
-        // The prompt closes the term list with a period, so that character is always spent.
-        var room = characterBudget - reserved - 1
-        var kept: [GlossaryTerm] = []
-        for term in prioritizedTerms(
-            glossary,
-            participants: participants,
-            usageCounts: usageCounts
-        ) {
-            let cost = formattedTerm(term).count
-                + (kept.isEmpty ? " Domain terms: ".count : "; ".count)
-            guard cost <= room else { continue }
-            room -= cost
-            kept.append(term)
-        }
-        return kept
-    }
-
-    /// The glossary terms that fit in the transcription prompt, in the order they are sent.
-    ///
-    /// Whisper keeps only the tail of a long prompt, so a glossary of any size is trimmed before
-    /// it reaches the model. The Vocabulary tab uses this to say which terms are actually in
-    /// force, instead of implying that every saved term is being sent.
-    public static func termsInPrompt(
-        participants: [Participant],
-        glossary: [GlossaryTerm],
-        usageCounts: [String: Int] = [:],
-        characterBudget: Int = whisperPromptCharacterBudget
-    ) -> [GlossaryTerm] {
-        let context = participants.isEmpty
-            ? ""
-            : participantsPrompt(participants, characterBudget: characterBudget)
-        return selectedTerms(
-            glossary,
-            participants: participants,
-            usageCounts: usageCounts,
-            characterBudget: characterBudget,
-            reserved: context.count
-        )
+        usageCounts: [String: Int] = [:]
+    ) -> [String] {
+        list(participants: participants, glossary: glossary, usageCounts: usageCounts).words
     }
 
     /// Names the terms that are sent, as identifiers, so a list can mark each row.
     public static func promptTermIDs(
         participants: [Participant],
         glossary: [GlossaryTerm],
-        usageCounts: [String: Int] = [:],
-        characterBudget: Int = whisperPromptCharacterBudget
+        usageCounts: [String: Int] = [:]
     ) -> Set<GlossaryTermID> {
-        Set(
-            termsInPrompt(
-                participants: participants,
-                glossary: glossary,
-                usageCounts: usageCounts,
-                characterBudget: characterBudget
-            ).map(\.id)
-        )
+        Set(list(participants: participants, glossary: glossary, usageCounts: usageCounts).terms.map(\.id))
     }
 
-    /// The prompt closes the term list with a period, so that character is always spent.
+    /// The list as the reader receives it, and the glossary entries inside it.
+    ///
+    /// One word is one hint however it was spelled, so a name that is also a saved term is sent
+    /// once. The first spelling wins, and names are added first, which keeps the name a person is
+    /// addressed by rather than the spelling a term happens to carry.
+    private static func list(
+        participants: [Participant],
+        glossary: [GlossaryTerm],
+        usageCounts: [String: Int]
+    ) -> (words: [String], terms: [GlossaryTerm]) {
+        let ranked = prioritizedTerms(glossary, participants: participants, usageCounts: usageCounts)
+        let entries: [(word: String, term: GlossaryTerm?)] =
+            participants.map { ($0.name, nil) } + ranked.map { ($0.preferred, $0) }
+        var words: [String] = []
+        var terms: [GlossaryTerm] = []
+        var seen = Set<String>()
+        for entry in entries {
+            let word = entry.word.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !word.isEmpty, seen.insert(word.lowercased()).inserted else { continue }
+            words.append(word)
+            if let term = entry.term { terms.append(term) }
+            if words.count == hotwordLimit { break }
+        }
+        return (words, terms)
+    }
 
     /// Terms that spell a participant name come first, because a misheard name is the most
     /// visible error in a meeting transcript. The remaining terms follow in the order of how
     /// often they already appear in saved transcripts, then alphabetically so the order is
     /// stable for terms that never appeared.
-    static func prioritizedTerms(
+    public static func prioritizedTerms(
         _ glossary: [GlossaryTerm],
         participants: [Participant],
         usageCounts: [String: Int] = [:]
@@ -125,59 +70,6 @@ public enum PromptBuilder {
             glossary.filter { term in !named.contains(term) },
             usageCounts: usageCounts
         )
-    }
-
-    /// The share of the prompt that participant names may take.
-    ///
-    /// Names come first because a misheard name is the most visible error, but they must not
-    /// take everything. Measured against the live data, a call with 46 saved people produced a
-    /// name list longer than the whole prompt, so the glossary never reached the model at all.
-    /// Capping names here leaves room for terms on even the most crowded call.
-    static let nameBudgetShare = 0.55
-
-    /// Names the people on the call, keeping only as many as the budget allows.
-    ///
-    /// The first name is always kept, even when it alone fills its share: a prompt naming the
-    /// owner of the Mac is still better than one naming nobody. Names are added in the order the
-    /// call stored them, so the result is stable for the same call.
-    static func participantsPrompt(_ participants: [Participant], characterBudget: Int) -> String {
-        guard !participants.isEmpty else { return "" }
-        let allNames = participants.map(\.name)
-        // Try the whole list first, which is the normal case for a real call.
-        let complete = sentence(for: allNames)
-        guard characterBudget > 0 else { return complete }
-        let share = Int(Double(characterBudget) * nameBudgetShare)
-        if complete.count <= share { return complete }
-        var kept: [String] = []
-        for name in allNames {
-            let candidate = sentence(for: kept + [name])
-            if candidate.count > share, !kept.isEmpty { break }
-            kept.append(name)
-            if candidate.count > share { break }
-        }
-        return sentence(for: kept)
-    }
-
-    /// Reads as a sentence rather than a list, because the model is being told a fact about the
-    /// recording, not handed data.
-    private static func sentence(for names: [String]) -> String {
-        let joined: String
-        switch names.count {
-        case 0: joined = ""
-        case 1: joined = names[0]
-        case 2: joined = "\(names[0]) and \(names[1])"
-        default:
-            let allButLast = names.dropLast().joined(separator: ", ")
-            joined = "\(allButLast), and \(names.last!)"
-        }
-        return "A conversation with \(joined)."
-    }
-
-    private static func formattedTerm(_ term: GlossaryTerm) -> String {
-        // The prompt shows the correct spelling only. A wrong spelling in the prompt biases the
-        // model toward that same wrong spelling, and the alias list costs most of the prompt.
-        // Aliases stay in the store, where they are used to detect and to rename mishearings.
-        term.preferred
     }
 
     // MARK: - Transcript header
@@ -197,9 +89,8 @@ public enum PromptBuilder {
     /// belong to, which is where the correction pass reads them from and how it repairs a
     /// mishearing in a file that is already written.
     ///
-    /// The prompt is untouched. `whisperContext` still carries the names and the highest-priority
-    /// terms inside whisper's own token budget, which is the only place a term can change what the
-    /// model hears.
+    /// The list beside the audio is untouched: the names and the highest-priority terms still go
+    /// to the reader with every track, which is the only place a term can change what it hears.
     public static func transcriptHeader(participants: [Participant]) -> String {
         let people = participants.map(\.name).joined(separator: ", ")
         return """
@@ -391,7 +282,7 @@ public enum TranscriptRenderer {
     /// - When one participant and no diarization: auto-attaches their name.
     /// - Otherwise: plain text.
     public static func markdown(
-        transcript: WhisperTranscript,
+        transcript: SpeechTranscript,
         participants: [Participant],
         timestamps: Bool = false
     ) -> String {
@@ -426,7 +317,7 @@ public enum TranscriptRenderer {
             """
     }
 
-    /// Strips Whisper filler tags and normalizes whitespace.
+    /// Strips filler tags a reader writes over silence and normalizes whitespace.
     public static func clean(_ text: String) -> String {
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         let stripped = fillerPattern.stringByReplacingMatches(

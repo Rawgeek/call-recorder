@@ -1,8 +1,8 @@
 import Foundation
 
-/// The three things a Whisper transcript can contain that are not speech.
+/// The three things a transcript can contain that are not speech.
 ///
-/// Whisper is a language model, and a language model that loses the audio does not stop: it
+/// A reader is a language model, and a language model that loses the audio does not stop: it
 /// repeats the last thing it was given. The library carries the result of that in four shapes, and
 /// every one of them was measured on the 80 saved transcripts before this type existed:
 ///
@@ -250,7 +250,7 @@ public enum TranscriptArtifacts {
 
     /// A bracketed run that fills a line. Anything with words around it is someone speaking.
     ///
-    /// Both bracket shapes count. Whisper writes `[музыка]` and it also writes `(Music)`, and the
+    /// Both bracket shapes count. The reader writes `[музыка]` and it also writes `(Music)`, and the
     /// library holds both: the round-bracket form was in one of the three recordings that turned
     /// out to hold nothing, so a rule that only knew the square one would have left that file in
     /// place with nothing in it but a marker and a hallucination.
@@ -515,9 +515,9 @@ public enum TranscriptArtifacts {
 
     // MARK: - A recording that holds no speech at all
 
-    /// The phrases Whisper answers silence with.
+    /// The phrases a reader answers silence with.
     ///
-    /// Whisper does not return nothing for silence. It returns what it was trained to see printed
+    /// A reader does not return nothing for silence. It returns what it was trained to see printed
     /// at the end of a video, because that is the text most often next to no speech. These are the
     /// phrases that cannot be said in a meeting: nobody asks a colleague to subscribe, and nobody
     /// thanks a warehouse operator for watching. Each is stored folded to lowercase, with its

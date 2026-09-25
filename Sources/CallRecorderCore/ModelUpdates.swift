@@ -21,7 +21,7 @@ public struct RemoteModelFile: Codable, Equatable, Sendable {
 /// What is on disk for one model, recorded when the file was last verified.
 ///
 /// The record exists so an update check never has to re-read a multi-gigabyte file. Hashing
-/// whisper's medium model takes seconds; comparing two short strings does not.
+/// A speech model is gigabytes; comparing two short strings does not.
 public struct InstalledModelRecord: Codable, Equatable, Sendable {
     public let modelID: String
     public let fileName: String

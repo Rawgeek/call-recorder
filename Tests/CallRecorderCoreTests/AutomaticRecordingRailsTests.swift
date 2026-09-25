@@ -209,7 +209,6 @@ struct AutomaticRecordingRailsTests {
         let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(legacy.utf8))
 
         // Then: the choices survive and the rails take their defaults.
-        #expect(decoded.selectedWhisperModelID == "small")
         #expect(decoded.outputDirectory == "/tmp/recordings")
         #expect(decoded.minimumAutomaticRecordingSeconds == 30)
         #expect(decoded.maximumAutomaticRecordingMinutes == 180)

@@ -1,10 +1,9 @@
 import Foundation
 
-/// Orders glossary terms by how much they help, and reports what the transcriber can carry.
+/// Orders glossary terms by how much they help, and reports which of them name a person.
 ///
-/// whisper.cpp accepts only about 224 prompt tokens, which is roughly 480 characters of
-/// glossary text. A working glossary is much larger than that, so the order decides which
-/// terms reach the model.
+/// A working glossary is larger than the list the reader is given beside the audio, so the order
+/// decides which terms reach it.
 public enum GlossaryUsage {
     /// Terms ordered by recent use, then alphabetically so the order never jumps around.
     /// `usageCounts` is keyed by the lowercased ``GlossaryTerm/preferred`` spelling.

@@ -4,160 +4,58 @@ import OSLog
 
 enum TranscriberError: LocalizedError {
     case outputAlreadyExists
-    case missingWhisperOutput
-    case vadModelUnavailable
     case repetitiveTranscript
-    case parakeetUnavailable
-    case missingWhisperModel
-    case missingWhisperTool
+    case engineUnavailable
 
     var errorDescription: String? {
         switch self {
         case .outputAlreadyExists:
             "Transcript files already exist for this recording."
-        case .missingWhisperOutput:
-            "Whisper did not create a transcript."
-        case .vadModelUnavailable:
-            "The Silero VAD model is not installed. Download it in Settings, Models, Components."
         case .repetitiveTranscript:
             "The transcript looks repetitive and was not saved."
-        case .parakeetUnavailable:
-            "The Parakeet model is not installed. Download it in Settings, Models, Components."
-        case .missingWhisperModel:
-            "The whisper model this Mac reads with is not installed. Download it in Settings, Models."
-        case .missingWhisperTool:
-            "whisper.cpp is not installed. Install it with: brew install whisper-cpp"
+        case .engineUnavailable:
+            "The speech runtime or the model it reads with is not installed. "
+                + "Install both in Settings, Models, Speech."
         }
     }
 }
 
 struct Transcriber: Sendable {
-    let ffmpeg: URL
-    /// The whisper.cpp build, when this Mac has one.
-    ///
-    /// Only the engine that will read the call needs it: a Mac that switched to Parakeet and never
-    /// installed the tool still transcribes, and the row that reports the tool says what is missing.
-    let whisperCLI: URL?
-    let vadModel: URL?
-    /// The language to decode, or "auto" to let the model decide per chunk.
+    /// The language to hold the decoder to, or "auto" to let it read the language as it goes.
     let language: String
     /// Whether the markdown this run writes prints the time each turn started.
     let includeTimestamps: Bool
     /// Set when this run may be stopped from the surface. Nil for a run nobody can stop.
     let cancellation: ProcessCancellation?
-    /// The engine the user chose for the calls it can read.
-    let speechEngine: SpeechEngine
-    /// Where the Parakeet model is read from, when the app has one on disk.
-    let parakeetRepository: URL?
-    /// The reader that runs it. Kept across calls, because the graphs take seconds to load.
-    let parakeet: ParakeetEngine?
+    /// The reader that turns a track into words. Kept across calls, so the same environment and
+    /// model are used for every track of a call.
+    let engine: (any SpeechReading)?
 
     init(
-        ffmpeg: URL,
-        whisperCLI: URL?,
-        vadModel: URL? = nil,
         language: String = "auto",
         includeTimestamps: Bool = false,
         cancellation: ProcessCancellation? = nil,
-        speechEngine: SpeechEngine = .whisper,
-        parakeetRepository: URL? = nil,
-        parakeet: ParakeetEngine? = nil
+        engine: (any SpeechReading)? = nil
     ) {
-        self.ffmpeg = ffmpeg
-        self.whisperCLI = whisperCLI
-        self.vadModel = vadModel
         self.language = language
         self.includeTimestamps = includeTimestamps
         self.cancellation = cancellation
-        self.speechEngine = speechEngine
-        self.parakeetRepository = parakeetRepository
-        self.parakeet = parakeet
-    }
-
-    /// The silence filter, at the revision the app last verified.
-    ///
-    /// The model is a download now, so the file is found the way any other downloaded model is:
-    /// the manifest names the revision, and the bytes are checked before whisper.cpp is handed the
-    /// path. A development checkout can still fall back to the copy in Resources, which is what a
-    /// test run uses.
-    ///
-    /// - Parameter applicationDirectory: The folder models are installed into, or nil to look only
-    ///   in the package.
-    static func resolvedVADModel(applicationDirectory: URL? = nil) throws -> URL {
-        if let applicationDirectory, let installed = installedVADModel(applicationDirectory: applicationDirectory) {
-            return installed
-        }
-        // Development candidate: the executable lives in .build/<triple>/<config>,
-        // so walking up four components from it reaches the package root. Computed
-        // at runtime so the packaged binary never embeds the workspace path.
-        let developmentRoot = Bundle.main.executableURL?
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-            .deletingLastPathComponent()
-        // A test run and a command-line pass run from the package, which is where the copy this
-        // checkout carries is. The same two places the indexer looks in, for the same reason.
-        let configuredRoot = ProcessInfo.processInfo.environment["CALL_RECORDER_SOURCE_ROOT"]
-            .map { URL(filePath: $0, directoryHint: .isDirectory) }
-        let sourceRoots = [configuredRoot, URL(filePath: FileManager.default.currentDirectoryPath)]
-            .compactMap { $0 }
-        let candidates: [URL?] = [
-            Bundle.main.url(forResource: "ggml-silero-v6.2.0", withExtension: "bin"),
-            developmentRoot?.appending(path: "Resources/ggml-silero-v6.2.0.bin"),
-        ] + sourceRoots.map { $0.appending(path: "Resources/ggml-silero-v6.2.0.bin") }
-        for candidate in candidates.compactMap({ $0 })
-            where FileManager.default.fileExists(atPath: candidate.path) {
-            if
-                try ModelFileVerifier.verify(
-                    fileAt: candidate,
-                    expectedBytes: SupportingModel.sileroVADBytes,
-                    sha256: SupportingModel.sileroVADSHA256
-                )
-            {
-                return candidate
-            }
-        }
-        throw TranscriberError.vadModelUnavailable
-    }
-
-    /// The installed copy, when the manifest names one and its bytes still match.
-    static func installedVADModel(applicationDirectory: URL) -> URL? {
-        guard
-            let model = SupportingModel.catalog.first(where: { $0.id == SupportingModel.sileroVADID }),
-            let file = model.files.first
-        else { return nil }
-        let manifest = SupportingModelManifest.load(
-            from: SupportingModelManifest.defaultURL(in: applicationDirectory)
-        )
-        guard let record = manifest.record(for: model.id) else { return nil }
-        let candidate = model
-            .directory(in: applicationDirectory, revision: record.revision)
-            .appending(path: file.path)
-        guard
-            (try? ModelFileVerifier.verify(
-                fileAt: candidate,
-                expectedBytes: file.bytes,
-                sha256: file.sha256
-            )) == true
-        else { return nil }
-        return candidate
+        self.engine = engine
     }
 
     func transcribe(
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL?,
         participants: [Participant],
         glossary: [GlossaryTerm],
-        glossaryUsage: [String: Int] = [:],
         directory: URL,
         localParticipant: Participant? = nil
     ) async throws -> TranscriptRecord {
         try await Task.detached {
             try await transcribeSynchronously(
-                callID: callID, audio: audio, modelID: modelID, modelFile: modelFile,
-                participants: participants, glossary: glossary, glossaryUsage: glossaryUsage,
+                callID: callID, audio: audio, modelID: modelID,
+                participants: participants, glossary: glossary,
                 directory: directory,
                 localParticipant: localParticipant,
                 cancellation: cancellation
@@ -169,10 +67,8 @@ struct Transcriber: Sendable {
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL?,
         participants: [Participant],
         glossary: [GlossaryTerm],
-        glossaryUsage: [String: Int],
         directory: URL,
         localParticipant: Participant?,
         cancellation: ProcessCancellation?
@@ -215,39 +111,24 @@ struct Transcriber: Sendable {
             }
         }
 
-        var transcript: WhisperTranscript
+        var transcript: SpeechTranscript
+        // The names and terms worth spelling right, in the order the vocabulary pane ranks them.
+        // The model takes them as a list rather than as a prompt, so a long call keeps the people
+        // on it and the words the app was told about, and everything else is read from the audio.
+        let hotwords = PromptBuilder.hotwords(
+            participants: allParticipants,
+            glossary: glossary
+        )
         let systemURL = directory.appending(path: "system.m4a")
         let microphoneURL = directory.appending(path: "microphone.m4a")
         let hasSystem = FileManager.default.fileExists(atPath: systemURL.path)
         let hasMicrophone = FileManager.default.fileExists(atPath: microphoneURL.path)
         if hasSystem || hasMicrophone {
             let system = try hasSystem
-                ? await transcribeSource(
-                    audio: systemURL,
-                    label: "system",
-                    token: token,
-                    modelFile: modelFile,
-                    participants: allParticipants,
-                    glossary: glossary,
-                    glossaryUsage: glossaryUsage,
-                    directory: directory,
-                    sourceChunkDurationSeconds: 300,
-                    cancellation: cancellation
-                )
+                ? await readTrack(audio: systemURL, hotwords: hotwords, cancellation: cancellation)
                 : nil
             let microphone = try hasMicrophone
-                ? await transcribeSource(
-                    audio: microphoneURL,
-                    label: "microphone",
-                    token: token,
-                    modelFile: modelFile,
-                    participants: allParticipants,
-                    glossary: glossary,
-                    glossaryUsage: glossaryUsage,
-                    directory: directory,
-                    sourceChunkDurationSeconds: 300,
-                    cancellation: cancellation
-                )
+                ? await readTrack(audio: microphoneURL, hotwords: hotwords, cancellation: cancellation)
                 : nil
             transcript = SourceTranscriptMerger.merge(
                 microphone: microphone,
@@ -255,16 +136,9 @@ struct Transcriber: Sendable {
                 localParticipant: localParticipant
             )
         } else {
-            transcript = try await transcribeSource(
+            transcript = try await readTrack(
                 audio: audio,
-                label: "mixed",
-                token: token,
-                modelFile: modelFile,
-                participants: allParticipants,
-                glossary: glossary,
-                glossaryUsage: glossaryUsage,
-                directory: directory,
-                sourceChunkDurationSeconds: 300,
+                hotwords: hotwords,
                 cancellation: cancellation
             )
         }
@@ -299,7 +173,7 @@ struct Transcriber: Sendable {
         // against a key this same transcript writes out in full, so the file is the evidence.
         let tickets = TicketKeyRepair.repairing(segments: transcript.segments)
         if tickets.repairs > 0 {
-            transcript = WhisperTranscript(language: transcript.language, segments: tickets.segments)
+            transcript = SpeechTranscript(language: transcript.language, segments: tickets.segments)
             Logger(subsystem: "local.callrecorder.app", category: "transcription")
                 .notice("wrote back \(tickets.repairs, privacy: .public) ticket numbers in full")
         }
@@ -313,7 +187,7 @@ struct Transcriber: Sendable {
         // Removing the artefacts first is what lets the guard judge the speech that is left.
         let artifacts = TranscriptArtifacts.filter(segments: transcript.segments)
         if artifacts.outcome.didChange {
-            transcript = WhisperTranscript(
+            transcript = SpeechTranscript(
                 language: transcript.language,
                 segments: artifacts.segments
             )
@@ -325,14 +199,14 @@ struct Transcriber: Sendable {
 
         // Then the speech the recorder wrote down twice.
         //
-        // The chunks overlap and the microphone hears the speakers, so a sentence can arrive at the
+        // The tracks overlap and the microphone hears the speakers, so a sentence can arrive at the
         // model more than once. Both copies were transcribed, and both were kept, which is how one
         // call in the library came to hold 473 repeated runs. Removing them here means the file
         // that is saved, the text the search index is built from, and every later reading of the
         // call are the same words once.
         let duplicates = TranscriptDeduplicator.deduplicate(segments: transcript.segments)
         if duplicates.didChange {
-            transcript = WhisperTranscript(
+            transcript = SpeechTranscript(
                 language: transcript.language,
                 segments: duplicates.segments
             )
@@ -386,137 +260,29 @@ struct Transcriber: Sendable {
         )
     }
 
-    private func transcribeSource(
-        audio: URL,
-        label: String,
-        token: String,
-        modelFile: URL?,
-        participants: [Participant],
-        glossary: [GlossaryTerm],
-        glossaryUsage: [String: Int] = [:],
-        directory: URL,
-        sourceChunkDurationSeconds: Int,
-        cancellation: ProcessCancellation? = nil
-    ) async throws -> WhisperTranscript {
-        // The engine is chosen for this track, here, where the language of the call and the state
-        // of the Parakeet model are both known. A track Parakeet cannot read, or a Mac whose
-        // Parakeet model was never downloaded, is read by whisper.cpp exactly as before.
-        if SpeechEngineChoice.engine(
-            requested: speechEngine,
-            language: language,
-            parakeetIsReady: parakeetRepository.map(ParakeetModel.isComplete(at:)) ?? false
-        ) == .parakeet {
-            return try await parakeetSource(audio: audio, cancellation: cancellation)
-        }
-        guard let modelFile else { throw TranscriberError.missingWhisperModel }
-        guard let whisperCLI else { throw TranscriberError.missingWhisperTool }
-        let waveURL = directory.appending(path: ".transcribing-\(label)-\(token).wav")
-        defer {
-            try? FileManager.default.removeItem(at: waveURL)
-        }
-        _ = try ProcessRunner.runChecked(
-            executable: ffmpeg,
-            arguments: [
-                "-v", "error", "-y", "-i", audio.path,
-                "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", waveURL.path,
-            ],
-            cancellation: cancellation
-        )
-        let vadModel = try self.vadModel ?? Self.resolvedVADModel()
-        let chunkDirectory = directory.appending(
-            path: ".transcribing-\(label)-\(token)-chunks",
-            directoryHint: .isDirectory
-        )
-        try FileManager.default.createDirectory(
-            at: chunkDirectory,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: chunkDirectory) }
-        _ = try ProcessRunner.runChecked(
-            executable: ffmpeg,
-            arguments: [
-                "-v", "error", "-y", "-i", waveURL.path,
-                "-f", "segment",
-                "-segment_time", "\(sourceChunkDurationSeconds)",
-                "-c", "copy",
-                chunkDirectory.appending(path: "chunk-%03d.wav").path,
-            ],
-            cancellation: cancellation
-        )
-        let chunkURLs = try FileManager.default.contentsOfDirectory(
-            at: chunkDirectory,
-            includingPropertiesForKeys: nil
-        ).filter { $0.pathExtension == "wav" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
-        guard !chunkURLs.isEmpty else { throw TranscriberError.missingWhisperOutput }
-        var chunks: [WhisperTranscript] = []
-        for (index, chunkURL) in chunkURLs.enumerated() {
-            // Asked once per chunk, so a stop does not start the next one only to end it.
-            try cancellation?.checkCancelled()
-            let chunkBase = chunkURL.deletingPathExtension()
-            let chunkJSON = URL(filePath: chunkBase.path + ".json")
-            _ = try ProcessRunner.runChecked(
-                executable: whisperCLI,
-                arguments: WhisperCommand.arguments(
-                    model: modelFile,
-                    audio: chunkURL,
-                    outputBase: chunkBase,
-                    prompt: PromptBuilder.whisperContext(
-                        participants: participants,
-                        glossary: glossary,
-                        usageCounts: glossaryUsage
-                    ),
-                    vadModel: vadModel,
-                    language: language
-                ),
-                cancellation: cancellation
-            )
-            guard FileManager.default.fileExists(atPath: chunkJSON.path) else {
-                throw TranscriberError.missingWhisperOutput
-            }
-            var raw = try WhisperTranscriptParser.parse(Data(contentsOf: chunkJSON))
-            let offset = index * sourceChunkDurationSeconds * 1000
-            raw = WhisperTranscript(
-                language: raw.language,
-                segments: raw.segments.map {
-                    TranscriptSegment(
-                        startMs: $0.startMs + offset,
-                        endMs: $0.endMs + offset,
-                        text: $0.text
-                    )
-                }
-            )
-            guard !TranscriptQualityValidator.isRepetitive(raw) else {
-                throw TranscriberError.repetitiveTranscript
-            }
-            chunks.append(raw)
-        }
-        let combined = WhisperTranscript(
-            language: chunks.first?.language ?? "unknown",
-            segments: chunks.flatMap(\.segments)
-        )
-        return combined
-    }
-
-    /// Reads one track with Parakeet.
+    /// Reads one track with the speech model.
     ///
-    /// Nothing is converted first: the model resamples to its own rate and mixes to one channel
-    /// itself, so the track the recorder wrote is handed over as it is and no wave file is written
-    /// beside it. A stop asked for before the read is honoured, and a reading that turns out to be
-    /// a loop is refused the same way a whisper reading is.
-    private func parakeetSource(
+    /// A stop asked for before the read is honoured, and a reading that turns out to be a loop is
+    /// refused before anything is written.
+    private func readTrack(
         audio: URL,
+        hotwords: [String],
         cancellation: ProcessCancellation?
-    ) async throws -> WhisperTranscript {
-        guard let parakeet else { throw TranscriberError.parakeetUnavailable }
+    ) async throws -> SpeechTranscript {
+        guard let engine else { throw TranscriberError.engineUnavailable }
         try cancellation?.checkCancelled()
-        let transcript = try await parakeet.transcribe(audio: audio, language: language)
+        let transcript = try await engine.transcribe(
+            audio: audio,
+            language: language,
+            hotwords: hotwords,
+            cancellation: cancellation
+        )
         try cancellation?.checkCancelled()
         guard !TranscriptQualityValidator.isRepetitive(transcript) else {
             throw TranscriberError.repetitiveTranscript
         }
         return transcript
     }
-
 }
 
 struct NormalizedTranscript: Codable, Sendable {

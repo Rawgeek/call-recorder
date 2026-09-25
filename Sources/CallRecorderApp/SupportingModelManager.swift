@@ -16,7 +16,7 @@ extension ModelHostClient: SupportingModelHost {}
 ///
 /// The embedding model is the reason this exists. It is larger than the app, so it cannot ship
 /// inside the bundle; it used to arrive as a side effect of the first search, downloaded by a
-/// runtime that verified nothing and told the app nothing. Here it lands the way a Whisper model
+/// runtime that verified nothing and told the app nothing. Here it lands the way a speech model
 /// does: fetched to a staging folder, checked against the bytes the host publishes, swapped in,
 /// and recorded. A failure at any point leaves the working copy alone.
 @MainActor
@@ -51,7 +51,7 @@ final class SupportingModelManager {
         downloadFile: @escaping @Sendable (URL) async throws -> URL = { url in
             let (temporary, response) = try await URLSession.shared.download(from: url)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode)
-            else { throw ModelManagerError.invalidResponse }
+            else { throw ModelDownloadError.invalidResponse }
             return temporary
         }
     ) {
@@ -89,6 +89,11 @@ final class SupportingModelManager {
         manifest.record(for: model.id)
     }
 
+    /// The installed record for a model named by id, for callers that hold only the name.
+    func record(forID id: String) -> InstalledSupportingModel? {
+        manifest.record(for: id)
+    }
+
     /// The folder the installed copy lives in, which is the revision the record names.
     ///
     /// The catalog's repository is tried first, and then the folders beside it are searched for the
@@ -113,14 +118,6 @@ final class SupportingModelManager {
     /// against an older copy reports a model that is installed as one that is not.
     func installedFilePaths(of model: SupportingModel) -> [String] {
         manifest.record(for: model.id)?.files.map(\.path) ?? model.files.map(\.path)
-    }
-
-    /// The file inside the installed copy that a GGUF runtime loads, or nil when there is none.
-    func installedGGUFFile(for model: SupportingModel) -> URL? {
-        guard let directory = installedDirectory(for: model) else { return nil }
-        let name = manifest.record(for: model.id)?.ggufFileName ?? model.ggufFileName
-        guard let name else { return nil }
-        return directory.appending(path: name)
     }
 
     /// A folder under the model's install path that holds the given revision, whichever repository
@@ -217,7 +214,7 @@ final class SupportingModelManager {
         guard downloads[model.id] == nil else { return }
         guard case .updateAvailable(let update) = decisions[model.id] else { return }
         guard !isBusy() else {
-            failingModels[model.id] = ModelManagerError.busy.localizedDescription
+            failingModels[model.id] = ModelDownloadError.busy.localizedDescription
             return
         }
         let installed = manifest.record(for: model.id)?.revision
@@ -358,7 +355,7 @@ final class SupportingModelManager {
                         blobID: file.blobID
                     )
                 }.value
-                guard verified else { throw ModelManagerError.verificationFailed }
+                guard verified else { throw ModelDownloadError.verificationFailed }
                 _ = try? manager.removeItem(at: target)
                 try manager.moveItem(at: downloaded, to: target)
                 completed += file.bytes
@@ -456,7 +453,7 @@ final class SupportingModelManager {
             for file in model.files {
                 let url = directory.appending(path: file.path)
                 guard let bytes = Self.fileSize(url) as Int64?, bytes > 0,
-                    let digest = await ModelManager.sha256(of: url)
+                    let digest = try? ModelFileVerifier.sha256(of: url)
                 else {
                     complete = false
                     break

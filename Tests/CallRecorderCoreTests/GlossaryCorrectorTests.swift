@@ -322,7 +322,7 @@ struct GlossaryCorrectorTests {
 
     @Test("every segment is corrected and the timing and speaker labels are kept")
     func correctsWholeTranscript() {
-        let transcript = WhisperTranscript(
+        let transcript = SpeechTranscript(
             language: "en",
             segments: [
                 TranscriptSegment(
@@ -353,7 +353,7 @@ struct GlossaryCorrectorTests {
 
     @Test("a transcript with nothing to correct is returned as it was")
     func leavesCleanTranscriptAlone() {
-        let transcript = WhisperTranscript(
+        let transcript = SpeechTranscript(
             language: "en",
             segments: [TranscriptSegment(startMs: 0, endMs: 500, text: "All good.")]
         )

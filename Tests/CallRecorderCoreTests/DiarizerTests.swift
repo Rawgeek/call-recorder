@@ -73,7 +73,7 @@ struct DiarizerTests {
     @Test("speaker overlap combines split turns and preserves the source track")
     func choosesCombinedSpeakerActivity() {
         let merged = SegmentMerger.merge(
-            whisperSegments: [TranscriptSegment(startMs: 0, endMs: 5_000, text: "Speech.", source: .system)],
+            speechSegments: [TranscriptSegment(startMs: 0, endMs: 5_000, text: "Speech.", source: .system)],
             diarization: [
                 DiarizationTurn(start: 0, end: 1.5, speakerLabel: "A"),
                 DiarizationTurn(start: 1.5, end: 3.5, speakerLabel: "B"),
@@ -265,7 +265,7 @@ struct DiarizerTests {
             DiarizationTurn(start: 1.8, end: 4.0, speakerLabel: "SPEAKER_09"),
         ]
 
-        let merged = SegmentMerger.merge(whisperSegments: segments, diarization: turns)
+        let merged = SegmentMerger.merge(speechSegments: segments, diarization: turns)
 
         // The third fragment is one second long and starts a second after the last turn ended. It
         // used to come out unlabelled, and the renderer turned that into a "Speaker 1" that no
@@ -284,7 +284,7 @@ struct DiarizerTests {
         ]
         let turns = [DiarizationTurn(start: 0, end: 11, speakerLabel: "SPEAKER_00")]
 
-        let merged = SegmentMerger.merge(whisperSegments: segments, diarization: turns)
+        let merged = SegmentMerger.merge(speechSegments: segments, diarization: turns)
 
         #expect(merged.map(\.speakerIndex) == [0, nil])
     }
@@ -313,7 +313,7 @@ struct DiarizerTests {
             DiarizationTurn(start: 30.95, end: 60.0, speakerLabel: "SPEAKER_01"),
         ]
 
-        let outcome = SegmentMerger.merging(whisperSegments: segments, diarization: turns)
+        let outcome = SegmentMerger.merging(speechSegments: segments, diarization: turns)
 
         // The voice already open on the line before keeps the fragment, because it was active in
         // most of it. The turn after the fragment is a real one and keeps its own voice.
@@ -335,7 +335,7 @@ struct DiarizerTests {
             DiarizationTurn(start: 20.9, end: 40.0, speakerLabel: "SPEAKER_00"),
         ]
 
-        let outcome = SegmentMerger.merging(whisperSegments: segments, diarization: turns)
+        let outcome = SegmentMerger.merging(speechSegments: segments, diarization: turns)
 
         #expect(outcome.segments.map(\.speakerIndex) == [0, 0, 0])
         #expect(outcome.absorbedRuns == 1)
@@ -359,7 +359,7 @@ struct DiarizerTests {
             DiarizationTurn(start: 12.2, end: 25.0, speakerLabel: "SPEAKER_01"),
         ]
 
-        let outcome = SegmentMerger.merging(whisperSegments: segments, diarization: turns)
+        let outcome = SegmentMerger.merging(speechSegments: segments, diarization: turns)
 
         #expect(outcome.segments.map(\.speakerIndex) == [0, 1])
         #expect(outcome.labelChanges == 1)
@@ -477,7 +477,7 @@ struct DiarizerTests {
     @Test func emptyDiarizationLeavesTranscriptUnchanged() {
         let segments = [TranscriptSegment(startMs: 0, endMs: 1_000, text: "Hello.")]
 
-        #expect(SegmentMerger.merge(whisperSegments: segments, diarization: []) == segments)
+        #expect(SegmentMerger.merge(speechSegments: segments, diarization: []) == segments)
     }
 
     @Test("large diarization output is drained before waiting for process exit", .enabled(if: TestEnvironment.canRunSpeakerScript))

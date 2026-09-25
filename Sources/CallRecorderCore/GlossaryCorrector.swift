@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// Rewrites the spellings Whisper got wrong, using the glossary the user already maintains.
+/// Rewrites the spellings the reader got wrong, using the glossary the user already maintains.
 ///
 /// The glossary reached the model as prompt context, and nothing else. A term the user added
 /// changed how future audio was decoded, but the text already on disk kept whatever the model
@@ -365,7 +365,7 @@ extension GlossaryCorrector {
         var ambiguous = Set<String>()
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         for (index, line) in lines.enumerated() {
-            // The line and the one before it. A sentence is often split across two whisper segments,
+            // The line and the one before it. A sentence is often split across two segments,
             // and a person reading the transcript has the line above in view when they decide what a
             // word is.
             let context = index > 0 ? lines[index - 1] + "\n" + line : line

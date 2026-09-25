@@ -58,14 +58,14 @@ above never changes, so an existing registration keeps working.
 
 | Tool | Purpose |
 | --- | --- |
-| `list_calls` | Recent calls with date, status, participants, and whether each one has a brief. |
+| `list_calls` | Recent calls with date, status, participants, and whether an earlier version wrote a brief for one. |
 | `search_calls` | Search transcript chunks with BM25, semantic, or hybrid ranking. Filters: participants, date range. |
-| `get_call` | One call: its participants, its transcript location, and its brief when the app has written one. The brief is the short written version of the call, so read it before the transcript. |
+| `get_call` | One call: its participants, its transcript location, and the brief an earlier version wrote, when there is one. Versions from 0.1.33 on write no brief, so read the transcript for those calls. |
 | `get_transcript` | A bounded page of transcript segments. |
 | `list_participants` | Saved people with role, company, and email. |
 | `upsert_participants` | Add or update reusable people. |
 | `list_glossary` | Current vocabulary terms and their alternatives. |
-| `upsert_glossary_terms` | Add terms and the spellings Whisper produces for them. |
+| `upsert_glossary_terms` | Add terms and the spellings the transcriber produces for them. |
 | `delete_glossary_terms` | Remove terms by spelling, reporting which were removed and which were not found. |
 | `merge_participants` | Fold a duplicate person into the one kept, moving call links and learned voices. |
 | `list_speaker_reviews` | Unresolved voices with participant suggestions, transcript samples, and audio availability. |
@@ -99,7 +99,7 @@ not part of any response.
   lines with their call dates."
 - "Which calls this week mention the vendor bill? Summarize each one."
 - "Add Dmytro Lysenko, Staff Engineer, to the participants."
-- "Add the term 'OpenBorders'; Whisper writes it as 'Open Border' and 'Openboarders'."
+- "Add the term 'OpenBorders'; the transcriber writes it as 'Open Border' and 'Openboarders'."
 - "Show me the unresolved speakers and play me the excerpts; suggest which participant each
   voice is, and confirm the ones you are sure of."
 

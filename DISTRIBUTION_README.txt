@@ -1,16 +1,19 @@
-Call Recorder 0.1.32
+Call Recorder 0.1.33
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
-- Install local audio tools: brew install ffmpeg whisper-cpp
+- Install local audio tools: brew install ffmpeg
+- Install Python 3.10 or newer (brew install python3, or python.org). The app uses it once to
+  build the environment the transcription model runs in, beside the app's own models.
 
 Setup
 1. Move Call Recorder.app to Applications.
 2. Right-click the app and choose Open on first launch. This internal build is locally signed, not Apple-notarized.
 3. Allow Microphone and Screen & System Audio Recording when macOS asks.
-4. Open Settings > Models and download a Whisper model. The silence filter, about 865 KB,
-   downloads on its own, and transcription waits for it. The indexer runtime, about 36 MB, is
-   fetched the same way and shows its own row with progress.
+4. Open Settings > Models. Under Speech, press Set Up beside the speech runtime, then download the
+   transcription model (Qwen3-ASR 1.7B, 2.3 GB). The runtime is a Python environment of about a
+   gigabyte, built from this Mac's Python; both halves run locally, and a call waits for whichever
+   half is missing. The indexer runtime, about 36 MB, is fetched the same way.
 5. Open Settings > General and choose the microphone to record.
 6. In Settings > Participants, choose the person speaking into that microphone. On a fresh
    install the app files your own voice under your macOS account name; change it there if
@@ -32,8 +35,10 @@ minutes. Settings > General turns each of those off, and a recording started by 
 all four.
 The same sentence reaches the model twice when chunks overlap or the microphone hears the
 speakers; the repeat is removed as the call is transcribed, so a transcript holds it once.
-Microphone and system audio are captured separately. Whisper transcribes each available
-source locally; a missing source does not discard the other one.
+Microphone and system audio are captured separately. Each available source is read locally by
+Qwen3-ASR, which handles a call that mixes Russian with English; a missing source does not discard
+the other one. A long call is read in pieces of fifteen seconds, so it is never cut short by a
+token budget.
 The menu shows the five latest calls; select a completed call to copy its transcript.
 The app fetches its own JavaScript runtime once and unpacks it into Application Support. That
 takes a minute on a slow line, happens once, and the archive is kept so it never happens twice.
@@ -51,10 +56,11 @@ Speaker identification
 
 Optional local speaker runtime
 Speaker separation uses Nemotron 3 Diarization with the pyannote.audio community-1 embedder,
-locally. If it is unavailable, transcription still finishes with anonymous labels. The app checks
-CALL_RECORDER_PYTHON first, then:
+locally. If it is unavailable, transcription still finishes with anonymous labels. Speaker
+separation and transcription share one Python environment: the app uses the one chosen in Speaker
+setup, or its own at
   ~/Library/Application Support/CallRecorder/python/bin/python3
-the migration development environment, and python3 on PATH.
+which it builds when the transcription model is set up.
 No call audio is uploaded. The environment needs pyannote.audio, libraries for the mel filter bank
 (librosa), and transformers 5.18, which is not on PyPI yet. Both models are downloaded once, after
 accepting the pyannote/speaker-diarization-community-1 license and signing in to Hugging Face.

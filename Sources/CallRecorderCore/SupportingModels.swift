@@ -24,9 +24,9 @@ public struct SupportingModelFile: Codable, Hashable, Sendable {
 
 /// A model Call Recorder needs but does not ask anyone to choose between.
 ///
-/// Whisper is a choice: the user picks it and can switch. The embedding model is not. It is a
-/// dependency of transcript search, and it cannot be shipped inside the app because it is larger
-/// than the app itself, so it is downloaded once and verified like everything else.
+/// The embedding model is a dependency of transcript search, and it cannot be shipped inside the
+/// app because it is larger than the app itself, so it is downloaded once and verified like
+/// everything else. The transcription model is downloaded the same way.
 ///
 /// Files are installed the way the runtime that reads them addresses them:
 /// installPath/repository/revision/path. The revision is part of the path, so installing a newer
@@ -72,17 +72,25 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
 
     public static let embeddingGemmaID = "embeddinggemma"
 
-    /// The model that writes the brief of a finished call.
+    /// The model every recording is read with.
     ///
-    /// It is not part of transcription and nothing in the pipeline needs it, so it is the one
-    /// component a person can leave undownloaded and never notice. The id is written where the app
-    /// asks what a brief was written by, so it is a name rather than a label: CallBrief.modelID.
-    public static let callBriefID = "call-brief"
+    /// Qwen3-ASR 1.7B at eight bits, run by MLX. Measured on this Mac on a seventy-minute Russian
+    /// call: 8,547 words over the whole recording in 6.3 minutes through the app's own path -- the
+    /// conversion to 16 kHz mono, then 359 pieces -- where the Neural Engine model that read it
+    /// before answered about eight thousand words and whisper.cpp six and a half thousand for the
+    /// same file, and where the library's own long-audio path lost the second half of the call to a
+    /// token budget. The eight-bit copy is the one whose answers held every participant name.
+    public static let qwen3ASRID = "qwen3-asr-1.7b-8bit"
 
-    /// The file inside the brief model's folder that the runtime loads.
-    public var ggufFileName: String? {
-        guard id == Self.callBriefID else { return nil }
-        return files.first { $0.path.hasSuffix(".gguf") }?.path
+    /// The folder the transcription model is read from.
+    ///
+    /// A revision is written into the path, so a model that was updated while a call was being
+    /// read does not pull the files out from under the run.
+    public static func qwenModel(in applicationDirectory: URL, revision: String? = nil) -> URL {
+        guard let model = catalog.first(where: { $0.id == qwen3ASRID }) else {
+            return applicationDirectory.appending(path: "models", directoryHint: .isDirectory)
+        }
+        return model.directory(in: applicationDirectory, revision: revision)
     }
 
     /// Names the revision that is installed, beside the model folders.
@@ -93,19 +101,7 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
     /// a message.
     public static let installedMarkerName = "installed.json"
 
-    /// The silence filter whisper.cpp runs when it is handed a long call.
-    ///
-    /// It used to travel inside the app. It is 865 KB and needs no setup, so bundling it looked
-    /// free, but every model the app downloads instead of carrying is a model that can be fixed
-    /// without a new build. The host publishes the same bytes it always did:
-    /// ggml-org/whisper-vad carries the converted 6.2.0 file, which is the one whisper.cpp loads.
-    public static let sileroVADID = "silero-vad"
-    public static let sileroVADFileName = "ggml-silero-v6.2.0.bin"
-    public static let sileroVADBytes: Int64 = 885_098
-    public static let sileroVADSHA256 =
-        "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
-
-    /// The models this build needs beyond Whisper.
+    /// The models this build needs beyond the transcription model.
     ///
     /// The hashes and the sizes are the bytes the host serves at the revision named here. The
     /// small files are hashed by this build rather than quoted from the host, because the host
@@ -113,20 +109,60 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
     /// here is the same guarantee: a substituted file is refused instead of installed.
     public static let catalog: [SupportingModel] = [
         SupportingModel(
-            id: sileroVADID,
-            displayName: "Silero VAD 6.2.0",
-            detail: "Filters silence so a long call transcribes in segments instead of one pass "
-                + "that can lose its place. Downloaded once, then used offline.",
-            repository: "ggml-org/whisper-vad",
-            revision: "9ffd54a1e1ee413ddf265af9913beaf518d1639b",
-            installPath: "models/vad",
-            versionLabel: "6.2.0, ggml",
+            id: qwen3ASRID,
+            displayName: "Qwen3-ASR 1.7B",
+            detail: "Reads a recording into words in Russian and English, including a call that "
+                + "mixes them, and names the language it found. Downloaded once, then used offline.",
+            repository: "mlx-community/Qwen3-ASR-1.7B-8bit",
+            revision: "a8379a2e2f9e313c9292cdf1af4055ab56d50d55",
+            installPath: "models",
+            versionLabel: "1.7B, 8-bit, MLX",
             files: [
                 SupportingModelFile(
-                    path: sileroVADFileName,
-                    bytes: sileroVADBytes,
-                    sha256: sileroVADSHA256
-                )
+                    path: "chat_template.json",
+                    bytes: 1161,
+                    sha256: "75a8cfca24f00de72d796fbfed6858fc9614ef3dabd8696684cc3bc03a9c58ff"
+                ),
+                SupportingModelFile(
+                    path: "config.json",
+                    bytes: 7188,
+                    sha256: "1b76b3b6c655fc54595da025f7a96474ad9fa86363303fbdd61a7d8483ccfaf7"
+                ),
+                SupportingModelFile(
+                    path: "generation_config.json",
+                    bytes: 142,
+                    sha256: "1da527824d81e07118facff437e03f2e24a23311e3bdeb2368973fe77e5f275c"
+                ),
+                SupportingModelFile(
+                    path: "merges.txt",
+                    bytes: 1671853,
+                    sha256: "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5"
+                ),
+                SupportingModelFile(
+                    path: "model.safetensors.index.json",
+                    bytes: 78968,
+                    sha256: "0a5d0ec11188602242ff81a9969883d0fdeb98cd5d85cd1413089d897c201af5"
+                ),
+                SupportingModelFile(
+                    path: "model.safetensors",
+                    bytes: 2463307541,
+                    sha256: "bf304b009cc7eca79283056f787b44c952d24ac22cec787b39732bba3c23c13c"
+                ),
+                SupportingModelFile(
+                    path: "preprocessor_config.json",
+                    bytes: 330,
+                    sha256: "45e120a4eda2c20c5d7f2ea9354e63536bf35e27aa573fb7cdf78017b378770d"
+                ),
+                SupportingModelFile(
+                    path: "tokenizer_config.json",
+                    bytes: 12487,
+                    sha256: "4942d005604266809309cabc9f4e9cb89ce855d59b14681fdc0e1cc62ea26c4c"
+                ),
+                SupportingModelFile(
+                    path: "vocab.json",
+                    bytes: 2776833,
+                    sha256: "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+                ),
             ]
         ),
         SupportingModel(
@@ -166,24 +202,6 @@ public struct SupportingModel: Codable, Hashable, Identifiable, Sendable {
                 ),
             ]
         ),
-        SupportingModel(
-            id: callBriefID,
-            displayName: "Qwen3.5 4B Instruct",
-            detail: "Writes the brief of a finished call: what it was about, what was agreed, who "
-                + "owes what. It is the one model here that reads, so it is the largest. "
-                + "Downloaded once, then used offline.",
-            repository: "unsloth/Qwen3.5-4B-GGUF",
-            revision: "e87f176479d0855a907a41277aca2f8ee7a09523",
-            installPath: "models/call-brief",
-            versionLabel: "4B, 4-bit Q4_K_M",
-            files: [
-                SupportingModelFile(
-                    path: "Qwen3.5-4B-Q4_K_M.gguf",
-                    bytes: 2_740_937_888,
-                    sha256: "00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
-                )
-            ]
-        )
     ]
 }
 

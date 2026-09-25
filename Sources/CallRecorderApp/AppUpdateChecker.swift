@@ -400,7 +400,7 @@ final class AppUpdateChecker {
         request.setValue("CallRecorder", forHTTPHeaderField: "User-Agent")
         let download = ModelFileDownload(destination: destination) { [weak self] received, expected in
             Task { @MainActor [weak self] in
-                self?.progress = ModelManager.fraction(received: received, expected: expected)
+                self?.progress = DownloadByteCount(received: received, expected: expected).fraction
             }
         }
         let response = try await download.run(request)
@@ -411,7 +411,7 @@ final class AppUpdateChecker {
         // The digest is the host's own promise about the file. A download that does not keep it is
         // thrown away, exactly as a model that fails its hash is.
         if let expected = asset.sha256 {
-            let actual = await ModelManager.sha256(of: destination)
+            let actual = try? ModelFileVerifier.sha256(of: destination)
             guard actual == expected else {
                 try? FileManager.default.removeItem(at: destination)
                 throw AppUpdateError.digestMismatch(expected: expected, found: actual ?? "nothing")

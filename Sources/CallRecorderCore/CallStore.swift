@@ -154,7 +154,7 @@ public actor CallStore {
     }
 
     /// How often each glossary term already appears in saved transcripts, keyed by the
-    /// lowercased preferred spelling. whisper.cpp accepts only about 224 prompt tokens, so the
+    /// lowercased preferred spelling. The reader is given a limited list of words, so the
     /// glossary is much larger than the prompt can carry. Terms the user already says, or
     /// already gets misheard, are the ones worth that space. Only the newest transcripts are
     /// read, because recent meetings predict the next one better than old ones do.
@@ -550,73 +550,6 @@ public actor CallStore {
             "SELECT text FROM transcripts WHERE call_id = ?",
             [callID.rawValue.uuidString]
         ).next().map { try $0.getString(0) }
-    }
-
-    /// The brief written for one call, or nil when none has been written.
-    public func summary(for callID: CallID) throws -> CallSummary? {
-        try connection.query(
-            "SELECT call_id, text, model_id, generated_at, covered_seconds "
-                + "FROM call_summaries WHERE call_id = ?",
-            [callID.rawValue.uuidString]
-        ).next().flatMap { try Self.summary(from: $0) }
-    }
-
-    /// The briefs written for the calls named, keyed by call.
-    ///
-    /// The menu bar and the Recovery pane both draw a list of calls, and asking one call at a time
-    /// would be a query per row for a field that is almost always nil.
-    public func summaries(for callIDs: [CallID]) throws -> [CallID: CallSummary] {
-        guard !callIDs.isEmpty else { return [:] }
-        let placeholders = Array(repeating: "?", count: callIDs.count).joined(separator: ", ")
-        var found: [CallID: CallSummary] = [:]
-        let rows = try connection.query(
-            "SELECT call_id, text, model_id, generated_at, covered_seconds FROM call_summaries "
-                + "WHERE call_id IN (" + placeholders + ")",
-            callIDs.map { $0.rawValue.uuidString }
-        )
-        while let row = rows.next() {
-            guard let summary = try Self.summary(from: row) else { continue }
-            found[summary.callID] = summary
-        }
-        return found
-    }
-
-    /// Writes a brief over any brief this call already had.
-    ///
-    /// A brief is a reading of a transcript rather than a record of the call, so the newest one
-    /// replaces the one before it: two briefs of one call would be two answers to one question,
-    /// and a reader would have to work out which to believe.
-    public func saveSummary(_ summary: CallSummary) async throws {
-        try await withWriteRetry {
-            guard try callExists(summary.callID) else {
-                throw CallStoreError.callNotFound(summary.callID)
-            }
-            _ = try connection.execute(
-                "INSERT INTO call_summaries (call_id, text, model_id, generated_at, "
-                    + "covered_seconds) VALUES (?, ?, ?, ?, ?) "
-                    + "ON CONFLICT(call_id) DO UPDATE SET text = excluded.text, "
-                    + "model_id = excluded.model_id, generated_at = excluded.generated_at, "
-                    + "covered_seconds = excluded.covered_seconds",
-                [
-                    summary.callID.rawValue.uuidString,
-                    summary.text,
-                    summary.modelID,
-                    summary.generatedAt.timeIntervalSince1970,
-                    summary.coveredSeconds,
-                ]
-            )
-        }
-    }
-
-    private static func summary(from row: Row) throws -> CallSummary? {
-        guard let id = UUID(uuidString: try row.getString(0)) else { return nil }
-        return CallSummary(
-            callID: CallID(rawValue: id),
-            text: try row.getString(1),
-            modelID: try row.getString(2),
-            generatedAt: Date(timeIntervalSince1970: try row.getDouble(3)),
-            coveredSeconds: try row.getDouble(4)
-        )
     }
 
     /// The same summary `recentCalls` returns, for calls named by id.
@@ -2607,12 +2540,13 @@ public actor CallStore {
         }
     }
 
-    /// Adds the table a brief of a call is written to.
+    /// Adds the table an earlier build wrote a call's brief to.
     ///
-    /// A brief belongs to a call and dies with it, which the foreign key states, so deleting a call
-    /// cannot leave a brief of it behind. The row is replaced rather than appended, and the model
-    /// that wrote it is kept beside it: a brief written by a model nobody chose any more is still
-    /// readable, but a reader is entitled to know what wrote it.
+    /// Nothing writes this table now: the app transcribes and stops there, and the brief model it
+    /// used to run is gone. The table stays, and the migration that creates it stays with it, so a
+    /// library that holds briefs keeps them and a fresh one has the same schema either way. Dropping
+    /// it would delete text somebody's calls were summarised into, for no gain: an empty table costs
+    /// nothing to carry.
     private func migrateCallSummarySchema() throws {
         let migrationConnection = try database.connect()
         try migrationConnection.executeBatch(Self.connectionPragmas)

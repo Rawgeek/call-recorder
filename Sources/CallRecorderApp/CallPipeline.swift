@@ -45,7 +45,6 @@ struct CallPipeline: Sendable {
         callID: CallID,
         audio: URL,
         modelID: String,
-        modelFile: URL?,
         participantIDs: [ParticipantID],
         localParticipantID: ParticipantID? = nil,
         glossary: [GlossaryTerm],
@@ -63,15 +62,12 @@ struct CallPipeline: Sendable {
         let selectedIDs = participantIDs + [localParticipant?.id].compactMap { $0 }
         try await store.setParticipants(Array(Set(selectedIDs)), for: callID)
         let selectedParticipants = try await store.participants(for: callID)
-        let glossaryUsage = try await store.glossaryUsageCounts()
         let transcript = try await transcriber.transcribe(
             callID: callID,
             audio: audio,
             modelID: modelID,
-            modelFile: modelFile,
             participants: selectedParticipants,
             glossary: glossary,
-            glossaryUsage: glossaryUsage,
             directory: directory,
             localParticipant: localParticipant
         )
@@ -79,7 +75,7 @@ struct CallPipeline: Sendable {
         return transcript
     }
 
-    /// Uses the saved text checkpoint. Retrying this stage never runs Whisper again.
+    /// Uses the saved text checkpoint. Retrying this stage never reads the audio again.
     func recognizeSpeakers(
         callID: CallID,
         audioDirectory: URL,
@@ -191,7 +187,7 @@ struct CallPipeline: Sendable {
         // are the evidence a later reading of a bad call needs: a merge that reports 257 label
         // changes in 277 turns is one whose input was the problem, and one that reports a low number
         // after the same input is the fix working.
-        let merged = SegmentMerger.merging(whisperSegments: remote, diarization: result.turns)
+        let merged = SegmentMerger.merging(speechSegments: remote, diarization: result.turns)
         Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
             .notice(
                 """
@@ -219,7 +215,7 @@ struct CallPipeline: Sendable {
             throw DiarizerError.noSpeakersDetected
         }
         let attributed = SourceTranscriptMerger.attributeSystem(
-            WhisperTranscript(language: document.language, segments: labelled), identities: identities
+            SpeechTranscript(language: document.language, segments: labelled), identities: identities
         )
         let segments = (attributed.segments + document.segments.filter { $0.source == .microphone })
             .sorted { $0.startMs < $1.startMs }
@@ -231,7 +227,7 @@ struct CallPipeline: Sendable {
             },
             glossary: document.glossary, segments: segments
         )
-        let transcript = WhisperTranscript(language: document.language, segments: segments)
+        let transcript = SpeechTranscript(language: document.language, segments: segments)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let revision = try revisionManager.replace(

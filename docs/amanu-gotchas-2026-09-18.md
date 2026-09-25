@@ -11,6 +11,11 @@ Every row below was re-checked against this repository, not copied. "Covered" me
 shape exists here and the check was read in the code; "open" means the failure can still
 happen, and the paragraph says what would close it.
 
+**Read this as of 2026-09-18.** The live transcript, the running summary, and the post-call brief
+were removed in 0.1.33, and calls are read by Qwen3-ASR on MLX rather than by whisper.cpp. Rows that
+rest on those engines describe the app as it was when this was written; the lessons do not depend on
+which engine was reading.
+
 ## Open items
 
 ### 1. Quitting or installing an update during a recording destroys the open segment

@@ -35,10 +35,10 @@ public struct TranscriptSegment: Codable, Equatable, Sendable {
 
 public enum SourceTranscriptMerger {
     public static func attributeSystem(
-        _ transcript: WhisperTranscript,
+        _ transcript: SpeechTranscript,
         identities: [Int: Participant]
-    ) -> WhisperTranscript {
-        WhisperTranscript(
+    ) -> SpeechTranscript {
+        SpeechTranscript(
             language: transcript.language,
             segments: transcript.segments.map { segment in
                 guard
@@ -59,10 +59,10 @@ public enum SourceTranscriptMerger {
     }
 
     public static func merge(
-        microphone: WhisperTranscript?,
-        system: WhisperTranscript?,
+        microphone: SpeechTranscript?,
+        system: SpeechTranscript?,
         localParticipant: Participant?
-    ) -> WhisperTranscript {
+    ) -> SpeechTranscript {
         let systemSegments = system?.segments.map { segment in
             TranscriptSegment(
                 startMs: segment.startMs,
@@ -91,14 +91,14 @@ public enum SourceTranscriptMerger {
             if $0.endMs != $1.endMs { return $0.endMs < $1.endMs }
             return ($0.source?.rawValue ?? "") < ($1.source?.rawValue ?? "")
         }
-        return WhisperTranscript(
+        return SpeechTranscript(
             language: system?.language ?? microphone?.language ?? "unknown",
             segments: segments
         )
     }
 }
 
-public struct WhisperTranscript: Codable, Equatable, Sendable {
+public struct SpeechTranscript: Codable, Equatable, Sendable {
     public let language: String
     public let segments: [TranscriptSegment]
 
@@ -118,7 +118,7 @@ public struct WhisperTranscript: Codable, Equatable, Sendable {
     /// on the spelling the user chose. Segment timing and speaker labels are untouched.
     public func applyingGlossary(
         _ matcher: GlossaryCorrector.Matcher
-    ) -> (transcript: WhisperTranscript, corrections: Int) {
+    ) -> (transcript: SpeechTranscript, corrections: Int) {
         guard !matcher.isEmpty else { return (self, 0) }
         var correctedSegments: [TranscriptSegment] = []
         correctedSegments.reserveCapacity(segments.count)
@@ -142,14 +142,14 @@ public struct WhisperTranscript: Codable, Equatable, Sendable {
                 )
             )
         }
-        return (WhisperTranscript(language: language, segments: correctedSegments), total)
+        return (SpeechTranscript(language: language, segments: correctedSegments), total)
     }
 
     /// Convenience for a single transcript. Prefer passing a prepared matcher when correcting
     /// more than one, because preparing a glossary costs more than using it.
     public func applyingGlossary(
         terms: [GlossaryTerm]
-    ) -> (transcript: WhisperTranscript, corrections: Int) {
+    ) -> (transcript: SpeechTranscript, corrections: Int) {
         let exact = applyingGlossary(GlossaryCorrector.matcher(for: terms))
         let invented = exact.transcript.applyingSuggestedGlossary(terms: terms)
         return (invented.transcript, exact.corrections + invented.corrections)
@@ -165,7 +165,7 @@ public struct WhisperTranscript: Codable, Equatable, Sendable {
     public func applyingSuggestedGlossary(
         terms: [GlossaryTerm]
     ) -> (
-        transcript: WhisperTranscript,
+        transcript: SpeechTranscript,
         corrections: Int,
         suggestions: [GlossaryCorrector.Suggestion]
     ) {
@@ -211,84 +211,17 @@ public struct WhisperTranscript: Codable, Equatable, Sendable {
             )
         }
         return (
-            WhisperTranscript(language: language, segments: correctedSegments),
+            SpeechTranscript(language: language, segments: correctedSegments),
             total,
             suggestions
         )
     }
 }
 
-public enum WhisperTranscriptError: Error {
-    case invalidSegment
-}
-
-public enum WhisperTranscriptParser {
-    public static func parse(_ data: Data) throws -> WhisperTranscript {
-        let output = try JSONDecoder().decode(WhisperOutput.self, from: data)
-        let segments = try output.transcription.compactMap { segment -> TranscriptSegment? in
-            let text = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { return nil }
-            guard segment.offsets.from >= 0, segment.offsets.to >= segment.offsets.from else {
-                throw WhisperTranscriptError.invalidSegment
-            }
-            return TranscriptSegment(
-                startMs: segment.offsets.from,
-                endMs: segment.offsets.to,
-                text: text
-            )
-        }
-        return WhisperTranscript(language: output.result.language, segments: segments)
-    }
-}
-
-public enum WhisperCommand {
-    public static func arguments(
-        model: URL,
-        audio: URL,
-        outputBase: URL,
-        prompt: String,
-        vadModel: URL? = nil,
-        language: String = "auto"
-    ) -> [String] {
-        var arguments = [
-            "--model", model.path,
-            "--file", audio.path,
-            // "auto" unless the user pinned the language of the call. A call that mixes one language
-            // with English product names is read as the foreign language throughout when the model
-            // chooses, which is how "Whisper" came back as "биспер" on the 2026-09-18 call.
-            "--language", language,
-            "--output-json",
-            "--output-file", outputBase.path,
-        ]
-        if let vadModel {
-            arguments.append(contentsOf: [
-                "--vad",
-                "--vad-model", vadModel.path,
-                "--vad-max-speech-duration-s", "300",
-            ])
-        }
-        // Hardening that has nothing to do with voice activity, so it is added whether or not a VAD
-        // model is configured. These three flags used to sit inside the branch above, which meant a
-        // run without a VAD model carried the model's own context from chunk to chunk. The
-        // 2026-09-18 call holds the result: "межми грешен был межми грешен межми грешен", the shape a
-        // decoder produces when it keeps re-reading its last output instead of the audio.
-        arguments.append(contentsOf: [
-            "--max-context", "0",
-            "--no-fallback",
-            "--temperature", "0",
-        ])
-        if !prompt.isEmpty {
-            arguments.append(contentsOf: ["--prompt", prompt])
-        }
-        arguments.append("--no-prints")
-        return arguments
-    }
-}
-
 public enum TranscriptQualityValidator {
     /// Rejects transcripts dominated by a repeated phrase, a long identical run,
     /// or a long run of single tokens. Ignores empty/non-speech markers.
-    public static func isRepetitive(_ transcript: WhisperTranscript) -> Bool {
+    public static func isRepetitive(_ transcript: SpeechTranscript) -> Bool {
         let phrases = transcript.segments
             .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter {
@@ -335,24 +268,5 @@ public enum TranscriptQualityValidator {
             previous = phrase
         }
         return false
-    }
-}
-
-private struct WhisperOutput: Decodable {
-    let result: Result
-    let transcription: [Segment]
-
-    struct Result: Decodable {
-        let language: String
-    }
-
-    struct Segment: Decodable {
-        let offsets: Offsets
-        let text: String
-    }
-
-    struct Offsets: Decodable {
-        let from: Int
-        let to: Int
     }
 }

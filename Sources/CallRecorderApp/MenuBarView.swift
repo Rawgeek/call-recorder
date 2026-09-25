@@ -136,19 +136,6 @@ struct MenuBarView: View {
             let isRecording = model.recorderState.phase == .recording
             VStack(alignment: .leading, spacing: CR.Space.item) {
                 timer
-                // The way back to a window that was hidden, and the way in for a call whose
-                // setting was only turned on afterwards. The window itself is drawn by the app,
-                // not here: this row only asks for it.
-                if model.settings.showsLiveTranscript || !model.liveTranscript.isEmpty {
-                    CRDisclosureRow(
-                        icon: "text.bubble",
-                        title: "Live transcript",
-                        detail: liveTranscriptDetail,
-                        tone: liveTranscriptTone
-                    ) {
-                        presentWindow("live-transcript")
-                    }
-                }
                 if confirmingDiscard {
                     discardConfirmation
                 } else {
@@ -562,27 +549,6 @@ struct MenuBarView: View {
 
     private var needsTime: Set<CallID> { Self.rowsNeedingTheTime(model.recentCalls) }
 
-    /// What the popover says about the live window.
-    ///
-    /// A count is the proof that it is working: a person who has just turned the feature on wants
-    /// to know that words are arriving, and "12 lines so far" answers that where "Live" does not.
-    private var liveTranscriptDetail: String {
-        if model.liveTranscript.isEmpty {
-            return model.liveStatus.detail ?? "The words appear as people speak"
-        }
-        let lines = model.liveTranscript.entries.count
-        return lines == 1 ? "1 line so far" : "\(lines) lines so far"
-    }
-
-    private var liveTranscriptTone: CR.Tone {
-        switch model.liveStatus {
-        case .listening: .ready
-        case .starting, .behind: .waiting
-        case .failed: .failed
-        case .idle, .stopped: .muted
-        }
-    }
-
     // MARK: - Footer
 
     private var footer: some View {
@@ -749,12 +715,6 @@ struct RecentCallRow: View {
                                 .font(CR.Font.caption)
                                 .foregroundStyle(CR.Ink.readable)
                         }
-                        // A brief is the part of a call somebody pastes somewhere else, so the row
-                        // says one is there. It is not a status: the call is finished either way.
-                        if model.briefs[call.id] != nil {
-                            CRStatusChip(tone: .ready, text: "Brief", compact: true)
-                                .help("A written brief of this call is ready.")
-                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -780,34 +740,6 @@ struct RecentCallRow: View {
                 model.copyTranscript(for: call)
             }
             .disabled(!transcriptReady)
-
-            if model.briefs[call.id] != nil {
-                CRIconButton(
-                    icon: model.copiedBriefCallID == call.id ? "checkmark" : "text.document",
-                    label: "Copy brief",
-                    tone: .ready,
-                    alwaysVisible: model.copiedBriefCallID == call.id,
-                    revealed: hovering,
-                    trailingAligned: true
-                ) {
-                    model.copyBrief(for: call)
-                }
-            }
-
-            // A call that has a transcript but no brief yet can be written up from here, which is
-            // what makes the feature useful for the calls that were recorded before it existed.
-            if model.writingBriefs.contains(call.id) {
-                ProgressView().controlSize(.small)
-            } else if model.canWriteBrief(for: call) {
-                CRIconButton(
-                    icon: "text.badge.plus",
-                    label: "Write brief",
-                    revealed: hovering,
-                    trailingAligned: true
-                ) {
-                    Task { await model.writeBriefNow(for: call.id) }
-                }
-            }
 
             // Work that is running gets a way to end it. The row is where this call's state is
             // read, so the control that stops the work sits with the stage it names.

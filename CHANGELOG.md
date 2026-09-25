@@ -4,6 +4,66 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.33] - 2026-09-26
+
+A call is read by Qwen3-ASR 1.7B on MLX, which reads a meeting that mixes Russian with English
+product names and keeps every name on a seventy-minute call. The live transcript, the running
+summary, and the post-call brief are gone, and with them the three engines and two models they
+needed.
+
+### Changed
+
+- **Calls are read by Qwen3-ASR 1.7B, at eight bits, on MLX.** Five ways of reading the same
+  seventy-minute call (4221 s of Russian with English product names) were measured on this Mac.
+  Parakeet on the Neural Engine read it in 48.7 s and answered about eight thousand words, with
+  English product names transliterated into Cyrillic; whisper.cpp large-v3-turbo read it in 234.1 s
+  and answered 6,515 words; the MLX build of Parakeet took 113.3 s and four gigabytes; and the
+  published Qwen3-ASR path answered well but stopped dead at the library's 8,192-token budget,
+  losing the second half of the call. Reading it in pieces of fifteen seconds with Qwen3-ASR
+  answered 8,559 words with the whole call covered, and through the app's own path it answered
+  8,547 words in 359 pieces, the last of them at the end of the recording. The engine is chosen for
+  the words rather than for the seconds: a transcript that loses a name or half a meeting is not
+  saved by being fast.
+- **The model and the runtime it needs are one card in Settings, Models.** The weights are
+  published for MLX, a Python library rather than something the app can link, so the app keeps a
+  Python environment beside its models, installs `mlx` and `mlx-audio` into it at pinned versions,
+  and reads a call with the model in it. Setting that environment up is a button: the app finds the
+  first Python on the Mac that is 3.10 or newer, makes the environment with it, and fetches the
+  packages. A Mac whose packages have been replaced since reports the versions it holds and offers
+  to put the pinned ones back, because the library's answer is what a transcript is built from.
+- **A recording is read in pieces of fifteen seconds.** The library spends its token budget on the
+  whole file and stops when it is gone, which is how a long call lost its second half; each piece
+  now gets its own budget and its own answer, and a piece that loops instead of speaking is read
+  again through a narrower window and dropped if it loops twice. Fifteen seconds is the measured
+  setting: 362 pieces in 247.7 s, against 14 pieces of about five minutes in 255.6 s, so shorter
+  pieces are not slower here, and the diarization is merged into the transcript by the overlap of a
+  piece, so a shorter piece places a speaker more closely.
+- **Vocabulary reaches the model as a list of words rather than as a prompt.** The reader takes
+  hotwords, so the names on the call and the terms the user actually uses are sent as a list of up
+  to sixty words instead of being trimmed to a character budget. The Vocabulary pane says how many
+  of the saved terms are sent with the audio, and the count now follows the words that are really
+  sent.
+
+### Removed
+
+- **The live transcript, the running summary, the quick chat, and the post-call brief.** Each was
+  a second reader of the same call, and the brief ran a four-gigabyte model server beside the app on
+  the user's own Mac. What a call leaves behind is the transcript, the search index, and the voices
+  to name.
+- **whisper.cpp, the Silero filter, the Parakeet engine, and the brief model.** The whisper
+  binaries, the speech filter and its 865 KB model, the Core ML Parakeet graphs, and the
+  `Qwen3.5 4B` brief model are no longer downloaded, checked, or looked for, and the app no longer
+  ends a `whisper-server` or a `llama-server` on quit, because it starts neither. The sweep that
+  ends a server left behind by an older build stays.
+
+### Fixed
+
+- **A run that could not read the audio is told apart from a call nobody spoke on.** The reader
+  answers silence with nothing, which is what the 2026-09-26 check measured: twenty seconds of
+  silence and twenty seconds of pink noise both came back with no words at all. A run whose every
+  piece failed or repeated, by contrast, now ends with a fault that names what happened instead of
+  writing an empty transcript, so a broken runtime cannot leave a call looking quiet.
+
 ## [0.1.32] - 2026-09-25
 
 A stage that another pass takes the call away from is written down as superseded instead of being

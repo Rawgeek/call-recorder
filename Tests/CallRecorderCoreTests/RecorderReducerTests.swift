@@ -25,41 +25,6 @@ struct RecorderReducerTests {
         #expect(state.automaticStartSuppressed)
     }
 
-    // The 2026-09-22 13:18 call: a manual start walks two events and both leave the phase idle, so a
-    // live path that ended whenever the reducer handed back `idle` was released at the start of the
-    // call. The window said "Recording finished" and no words ever reached it.
-    @Test("the events of a start do not end the live path")
-    func startLeavesLivePathAlone() {
-        let sessionID = SessionID(rawValue: UUID())
-        let carryingMicrophone = RecorderReducer.reduce(
-            state: .idle,
-            event: .externalMicrophoneChanged(isActive: true, newSessionID: nil)
-        )
-        let recording = RecorderReducer.reduce(
-            state: carryingMicrophone,
-            event: .manualStart(sessionID: sessionID)
-        )
-        #expect(carryingMicrophone.phase == .idle)
-        #expect(!RecordingPhase.endsLiveTranscript(from: .idle, to: carryingMicrophone.phase))
-        #expect(!RecordingPhase.endsLiveTranscript(from: carryingMicrophone.phase, to: recording.phase))
-    }
-
-    @Test("the live path outlives a pause and a resume")
-    func pauseAndResumeKeepLivePath() {
-        #expect(!RecordingPhase.endsLiveTranscript(from: .recording, to: .paused))
-        #expect(!RecordingPhase.endsLiveTranscript(from: .paused, to: .recording))
-    }
-
-    @Test("the live path ends when the call stops being captured")
-    func livePathEndsWithTheCapture() {
-        // `finalizing` is a capture that has closed: the live path reads the same audio the
-        // recording writes, so it has nothing left to read from there on.
-        #expect(RecordingPhase.endsLiveTranscript(from: .recording, to: .finalizing))
-        #expect(RecordingPhase.endsLiveTranscript(from: .recording, to: .idle))
-        #expect(RecordingPhase.endsLiveTranscript(from: .paused, to: .failed))
-        #expect(!RecordingPhase.endsLiveTranscript(from: .finalizing, to: .idle))
-    }
-
     @Test("a pending call resumes participant selection after relaunch")
     func restorePendingCallWhenIdle() {
         let sessionID = SessionID(rawValue: UUID())

@@ -417,7 +417,7 @@ enum SegmentMerger {
 
     /// How short a segment has to be before it cannot hold a turn of its own.
     ///
-    /// Two seconds, or five words. Whisper segments run about two seconds, and diarization turns
+    /// Two seconds, or five words. Segments run about two seconds, and diarization turns
     /// run for tens of seconds, so a short segment that lands on the other side of a turn boundary
     /// is the boundary being imprecise. A short segment in the middle of a long turn is the same
     /// problem seen from the other side.
@@ -431,14 +431,14 @@ enum SegmentMerger {
     /// half, the fragment is a real interjection and its own label stays.
     static let neighbourOverlapShare = 0.5
 
-    /// Merges diarization speaker labels into whisper segments by timestamp overlap.
+    /// Merges diarization speaker labels into transcript segments by timestamp overlap.
     /// Assigns speakerIndex by order of first appearance (0, 1, 2…).
     /// The renderer maps these to "Speaker 1", "Speaker 2", etc.
     static func merge(
-        whisperSegments: [TranscriptSegment],
+        speechSegments: [TranscriptSegment],
         diarization: [DiarizationTurn]
     ) -> [TranscriptSegment] {
-        merging(whisperSegments: whisperSegments, diarization: diarization).segments
+        merging(speechSegments: speechSegments, diarization: diarization).segments
     }
 
     /// The merge, with what it changed.
@@ -451,12 +451,12 @@ enum SegmentMerger {
     /// covers takes the voice of the turn beside it; and a short run of one voice between runs of
     /// another is folded into the run before it.
     static func merging(
-        whisperSegments: [TranscriptSegment],
+        speechSegments: [TranscriptSegment],
         diarization: [DiarizationTurn]
     ) -> Outcome {
         guard !diarization.isEmpty else {
             return Outcome(
-                segments: whisperSegments,
+                segments: speechSegments,
                 snappedSegments: 0,
                 absorbedRuns: 0,
                 labelChanges: 0
@@ -469,7 +469,7 @@ enum SegmentMerger {
         }
 
         // How much of each segment each voice covers, by label.
-        let coverage: [[String: Double]] = whisperSegments.map { segment in
+        let coverage: [[String: Double]] = speechSegments.map { segment in
             let segStart = Double(segment.startMs) / 1000.0
             let segEnd = Double(segment.endMs) / 1000.0
             var overlaps: [String: Double] = [:]
@@ -482,9 +482,9 @@ enum SegmentMerger {
 
         // Pass one: the greatest overlap wins, unless the fragment is too short to hold a turn and
         // the voice already open on the line before was nearly as active in it.
-        var labels = [String?](repeating: nil, count: whisperSegments.count)
+        var labels = [String?](repeating: nil, count: speechSegments.count)
         var snapped = 0
-        for index in whisperSegments.indices {
+        for index in speechSegments.indices {
             let overlaps = coverage[index]
             guard
                 let best = overlaps.max(by: { left, right in
@@ -495,7 +495,7 @@ enum SegmentMerger {
             else { continue }
             let openVoice: String? = index > 0 ? labels[index - 1] : nil
             guard
-                isShortFragment(whisperSegments[index]),
+                isShortFragment(speechSegments[index]),
                 let previous = openVoice,
                 previous != best.key,
                 let previousOverlap = overlaps[previous],
@@ -511,8 +511,8 @@ enum SegmentMerger {
         // Pass two: a short fragment no turn covers takes the voice of the turn beside it. One of
         // these is the six characters the 2026-09-18 library renders as "Speaker 1", a tag the
         // diarization never gave and the renderer invented.
-        for index in whisperSegments.indices where labels[index] == nil {
-            guard isShortFragment(whisperSegments[index]) else { continue }
+        for index in speechSegments.indices where labels[index] == nil {
+            guard isShortFragment(speechSegments[index]) else { continue }
             if index > 0, let previous = labels[index - 1] {
                 labels[index] = previous
                 snapped += 1
@@ -534,7 +534,7 @@ enum SegmentMerger {
             var last = index
             var seconds = 0.0
             while last < labels.count, labels[last] == label {
-                seconds += Double(whisperSegments[last].endMs - whisperSegments[last].startMs) / 1000
+                seconds += Double(speechSegments[last].endMs - speechSegments[last].startMs) / 1000
                 last += 1
             }
             if seconds <= shortFragmentSeconds, index > 0, let previous = labels[index - 1],
@@ -553,7 +553,7 @@ enum SegmentMerger {
             previousLabel = label
         }
 
-        let merged = zip(whisperSegments, labels).map { segment, label -> TranscriptSegment in
+        let merged = zip(speechSegments, labels).map { segment, label -> TranscriptSegment in
             guard let label, let idx = speakerIndexMap[label] else { return segment }
             return TranscriptSegment(
                 startMs: segment.startMs,

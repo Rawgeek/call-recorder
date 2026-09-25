@@ -2,7 +2,7 @@ import Foundation
 
 /// Puts back the ticket numbers the decoder clipped or split in two.
 ///
-/// A call is full of keys nobody can hear as words: FP-18286, FP-18167, FP-18313. Whisper writes
+/// A call is full of keys nobody can hear as words: FP-18286, FP-18167, FP-18313. A reader writes
 /// them the way they sounded to it -- "1867" for one, "313" for another, "182 86" when the seam
 /// between two segments fell inside the number -- and a transcript whose whole point is the keys
 /// then cannot be searched for them.
@@ -96,7 +96,7 @@ public enum TicketKeyRepair {
 
     /// The same repair over the segments of a call, including a number split between two of them.
     ///
-    /// A whisper segment ends where the decoder stopped, and the seam can fall inside a ticket
+    /// A segment ends where the decoder stopped, and the seam can fall inside a ticket
     /// number: the 2026-09-18 call has "182" ending one segment and "86" opening the next. The text
     /// of the two is read as one place for that reason, and the key is written into the first of
     /// them.

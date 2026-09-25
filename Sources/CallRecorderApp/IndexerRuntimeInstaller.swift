@@ -145,14 +145,14 @@ final class IndexerRuntimeInstaller {
         )
         let download = ModelFileDownload(destination: destination) { [weak self] received, expected in
             Task { @MainActor [weak self] in
-                self?.progress = ModelManager.fraction(received: received, expected: expected)
+                self?.progress = DownloadByteCount(received: received, expected: expected).fraction
             }
         }
         _ = try await download.run(request)
         // The hash is the acceptance test, exactly as it is for a model: a download that does not
         // match is deleted rather than unpacked, so a substituted archive cannot become the code
         // this app runs.
-        let actual = await ModelManager.sha256(of: destination)
+        let actual = try? ModelFileVerifier.sha256(of: destination)
         guard actual == expectedHash else {
             try? FileManager.default.removeItem(at: destination)
             throw IndexerRuntimeError.hashMismatch
@@ -166,7 +166,7 @@ final class IndexerRuntimeInstaller {
     /// copy is already there.
     nonisolated static func archive(_ archive: URL, matches expectedHash: String?) async -> Bool {
         guard let expectedHash else { return false }
-        return await ModelManager.sha256(of: archive) == expectedHash
+        return (try? ModelFileVerifier.sha256(of: archive)) == expectedHash
     }
 
     /// Hands the archive to the shim, which owns the unpacking and the lock that guards it.

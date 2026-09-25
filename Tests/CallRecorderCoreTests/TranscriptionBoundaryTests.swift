@@ -2,113 +2,11 @@ import Foundation
 import Testing
 @testable import CallRecorderCore
 
-struct TranscriptionBoundaryTests {
-    @Test func whisperArgumentsIncludeVerifiedVadAndHardeningFlags() {
-        // Given
-        let prompt = "Participants: Alice; rm -rf / — Иван."
-        let vadModel = URL(filePath: "/models/vad/ggml-silero-v6.2.0.bin")
-
-        // When
-        let arguments = WhisperCommand.arguments(
-            model: URL(filePath: "/models/ggml-small.bin"),
-            audio: URL(filePath: "/calls/input.wav"),
-            outputBase: URL(filePath: "/calls/transcript.partial"),
-            prompt: prompt,
-            vadModel: vadModel
-        )
-
-        // Then
-        #expect(arguments == [
-            "--model", "/models/ggml-small.bin",
-            "--file", "/calls/input.wav",
-            "--language", "auto",
-            "--output-json",
-            "--output-file", "/calls/transcript.partial",
-            "--vad",
-            "--vad-model", "/models/vad/ggml-silero-v6.2.0.bin",
-            "--vad-max-speech-duration-s", "300",
-            "--max-context", "0",
-            "--no-fallback",
-            "--temperature", "0",
-            "--prompt", prompt,
-            "--no-prints",
-        ])
-    }
-
-    @Test func whisperArgumentsKeepHardeningFlagsWithoutVad() {
-        // The three hardening flags used to travel with the VAD block, so a run without a VAD model
-        // carried the decoder's own context from chunk to chunk. The 2026-09-18 call holds the
-        // result of that: "межми грешен" three times in one segment. They are part of the command
-        // whether or not voice activity is configured.
-        let arguments = WhisperCommand.arguments(
-            model: URL(filePath: "/models/ggml-small.bin"),
-            audio: URL(filePath: "/calls/input.wav"),
-            outputBase: URL(filePath: "/calls/transcript.partial"),
-            prompt: "",
-            vadModel: nil
-        )
-
-        #expect(arguments.contains("--max-context"))
-        #expect(arguments.contains("--no-fallback"))
-        #expect(arguments.contains("--temperature"))
-        #expect(!arguments.contains("--vad"))
-    }
-
-    @Test func whisperArgumentsCarryThePinnedLanguage() {
-        // "auto" is the default and is what the app shipped with. A call that is in one language
-        // with English product names in it is decoded better when the language is pinned, so the
-        // choice the settings pane offers has to reach the command line.
-        let pinned = WhisperCommand.arguments(
-            model: URL(filePath: "/models/ggml-small.bin"),
-            audio: URL(filePath: "/calls/input.wav"),
-            outputBase: URL(filePath: "/calls/transcript.partial"),
-            prompt: "",
-            language: "ru"
-        )
-        let automatic = WhisperCommand.arguments(
-            model: URL(filePath: "/models/ggml-small.bin"),
-            audio: URL(filePath: "/calls/input.wav"),
-            outputBase: URL(filePath: "/calls/transcript.partial"),
-            prompt: ""
-        )
-
-        #expect(pinned.contains("ru"))
-        #expect(pinned.firstIndex(of: "--language").map { pinned[$0 + 1] } == "ru")
-        #expect(automatic.firstIndex(of: "--language").map { automatic[$0 + 1] } == "auto")
-    }
-
-    @Test func parsesCurrentWhisperJSONAcrossLanguages() throws {
-        // Given
-        let json = """
-            {
-              "result": { "language": "ru" },
-              "transcription": [
-                {
-                  "timestamps": { "from": "00:00:00,000", "to": "00:00:01,000" },
-                  "offsets": { "from": 0, "to": 1000 },
-                  "text": " Привет, Alice. "
-                }
-              ]
-            }
-            """
-
-        // When
-        let document = try WhisperTranscriptParser.parse(Data(json.utf8))
-
-        // Then
-        #expect(document.language == "ru")
-        #expect(document.text == "Привет, Alice.")
-        #expect(document.segments == [
-            TranscriptSegment(startMs: 0, endMs: 1000, text: "Привет, Alice.")
-        ])
-    }
-}
-
 @Suite("Transcript quality")
 struct TranscriptQualityValidatorTests {
     @Test func rejectsRepetitionButAcceptsNormalShortConversation() {
-        func transcript(_ texts: [String]) -> WhisperTranscript {
-            WhisperTranscript(
+        func transcript(_ texts: [String]) -> SpeechTranscript {
+            SpeechTranscript(
                 language: "en",
                 segments: texts.enumerated().map { index, text in
                     TranscriptSegment(
@@ -141,8 +39,8 @@ struct TranscriptQualityValidatorTests {
     }
 
     @Test func rejectsAPhraseLoopInsideOneSegment() {
-        func transcript(_ texts: [String]) -> WhisperTranscript {
-            WhisperTranscript(
+        func transcript(_ texts: [String]) -> SpeechTranscript {
+            SpeechTranscript(
                 language: "ru",
                 segments: texts.enumerated().map { index, text in
                     TranscriptSegment(
@@ -172,8 +70,8 @@ struct TranscriptQualityValidatorTests {
     }
 
     @Test func acceptsAPersonAgreeingSixTimesInOneLine() {
-        func transcript(_ texts: [String]) -> WhisperTranscript {
-            WhisperTranscript(
+        func transcript(_ texts: [String]) -> SpeechTranscript {
+            SpeechTranscript(
                 language: "ru",
                 segments: texts.enumerated().map { index, text in
                     TranscriptSegment(
@@ -215,11 +113,11 @@ struct SourceTranscriptMergerTests {
             id: ParticipantID(rawValue: UUID()),
             name: "Sam"
         )
-        let microphone = WhisperTranscript(
+        let microphone = SpeechTranscript(
             language: "en",
             segments: [TranscriptSegment(startMs: 100, endMs: 300, text: "Hello")]
         )
-        let system = WhisperTranscript(
+        let system = SpeechTranscript(
             language: "en",
             segments: [
                 TranscriptSegment(startMs: 400, endMs: 700, text: "Hi", speakerIndex: 0),
@@ -254,7 +152,7 @@ struct SourceTranscriptMergerTests {
     @Test("only safe identities replace anonymous system speakers")
     func attributesSafeSystemIdentity() {
         let dana = Participant(id: ParticipantID(rawValue: UUID()), name: "Dana")
-        let transcript = WhisperTranscript(
+        let transcript = SpeechTranscript(
             language: "en",
             segments: [
                 TranscriptSegment(startMs: 0, endMs: 500, text: "Hello", speakerIndex: 0),

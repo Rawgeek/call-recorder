@@ -169,10 +169,10 @@ struct ModelDownloadProgressTests {
 
     @Test("a size the server never named leaves the ring with nothing to fill")
     func unknownSizeHasNoFraction() {
-        #expect(ModelManager.fraction(received: 10, expected: 0) == nil)
-        #expect(ModelManager.fraction(received: 500, expected: 1000) == 0.5)
+        #expect(DownloadByteCount(received: 10, expected: 0).fraction == nil)
+        #expect(DownloadByteCount(received: 500, expected: 1000).fraction == 0.5)
         // A server that reports more than it promised must not push the ring past a full turn.
-        #expect(ModelManager.fraction(received: 1200, expected: 1000) == 1)
-        #expect(ModelManager.fraction(received: 0, expected: 1000) == 0)
+        #expect(DownloadByteCount(received: 1200, expected: 1000).fraction == 1)
+        #expect(DownloadByteCount(received: 0, expected: 1000).fraction == 0)
     }
 }

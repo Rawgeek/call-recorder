@@ -114,7 +114,7 @@ public enum ProcessRunner {
 
     /// Ends a process that has to stop, and gives it a moment to end on its own.
     ///
-    /// SIGTERM first: ffmpeg, whisper-cli, and the speaker script all end on it. A command that
+    /// SIGTERM first: ffmpeg, the reader script, and the speaker script all end on it. A command that
     /// ignores it is killed, because the point of the stop is that nothing is left running behind
     /// the surface the user pressed.
     public static func end(_ process: Process) {
