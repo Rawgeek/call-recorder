@@ -280,6 +280,39 @@ struct SupportingModelManagerTests {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    @Test func aRecordOfAModelThisBuildDoesNotHaveIsForgotten() async throws {
+        // Given a library whose manifest remembers a model that is no longer in the catalog: the
+        // 0.1.33 build dropped whisper, the speech filter, and the 4.9 GB brief model, and their
+        // records were written by the builds that had them.
+        let workspace = makeWorkspace()
+        defer { workspace.cleanUp() }
+        let manager = workspace.manager()
+        manager.download(workspace.model)
+        await waitForDownload(manager, workspace.model)
+
+        let url = SupportingModelManifest.defaultURL(in: workspace.root)
+        var manifest = SupportingModelManifest.load(from: url)
+        manifest.record(
+            InstalledSupportingModel(
+                modelID: "call-brief",
+                revision: "e87f176479d0855a907a41277aca2f8ee7a09523",
+                installedAt: Date(),
+                files: []
+            )
+        )
+        try manifest.write(to: url)
+
+        // When a later launch reconciles the manifest with what this build actually has. The
+        // manager reads the file once, at the start, which is the same thing a relaunch does.
+        let relaunched = workspace.manager()
+        await relaunched.bootstrapManifest()
+
+        // Then the model that is not in the catalog is forgotten, and the one that is stays.
+        let reloaded = SupportingModelManifest.load(from: url)
+        #expect(reloaded.record(for: "call-brief") == nil)
+        #expect(reloaded.record(for: workspace.model.id)?.revision == workspace.model.revision)
+    }
+
     @Test func anInstalledCopyIsFoundAfterTheCatalogRenamesIt() async throws {
         // Given a model whose weights were downloaded under one repository and one file name.
         let workspace = makeWorkspace(weightsNamed: "old-name.weights")

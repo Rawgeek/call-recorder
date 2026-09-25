@@ -444,6 +444,7 @@ final class SupportingModelManager {
     /// about a second, so it runs once, off the main thread, and every later check compares two
     /// short strings.
     func bootstrapManifest() async {
+        forgetModelsThisBuildDoesNotHave()
         for model in models where state(for: model).isInstalled {
             guard manifest.record(for: model.id) == nil else { continue }
             guard let directory = installedDirectory(for: model) else { continue }
@@ -483,6 +484,27 @@ final class SupportingModelManager {
             writeMarker(for: model, revision: revision, files: model.files.map(\.path))
             refresh()
         }
+    }
+
+    /// Drops the records of models this build no longer downloads.
+    ///
+    /// The catalog decides what the app fetches, and a record of something that is no longer in it
+    /// is a memory of a model the app cannot check, update, or offer again. 0.1.33 removed three:
+    /// the whisper models, the speech filter, and the brief model, whose 4.9 GB would otherwise go
+    /// on being listed as installed beside a copy nothing reads.
+    private func forgetModelsThisBuildDoesNotHave() {
+        let known = Set(models.map(\.id))
+        let forgotten = manifest.records.keys.filter { !known.contains($0) }.sorted()
+        guard !forgotten.isEmpty else { return }
+        var updated = manifest
+        for id in forgotten {
+            updated.remove(id)
+        }
+        try? updated.write(to: Self.manifestURL(applicationDirectory))
+        manifest = updated
+        logger.notice(
+            "forgot \(forgotten.joined(separator: ", "), privacy: .public): not in this build's catalog"
+        )
     }
 
     func checkForUpdates() async {
