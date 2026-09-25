@@ -4,6 +4,29 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.31] - 2026-09-25
+
+A voice the separation heard and the transcription wrote no word against is dropped instead of
+asked about, and the audio it held is let go with it.
+
+### Fixed
+
+- **A voice with no words is dropped, and is not a question.** The 2026-09-25 16:21 call carried a
+  voice of 52 seconds that the separation heard and the transcription wrote nothing against: its
+  card said "Transcript sample unavailable", and the only answers on it were a guess and Keep
+  Anonymous. The user answered it by hand and asked for voices like it to be dropped, and an
+  unanswered voice also holds the call's audio while it waits for an answer nobody can give. Each
+  pass now drops the voices of its own separation that no word of the call points at, which is read
+  from the labelled words of the same pass, and a voice that was named keeps what was learned from
+  it: the sample belongs to the person, and only the reference back to the dropped fragment goes.
+
+### Changed
+
+- **A pass that labelled no word at all drops its voices before it reports the fault.** The voices
+  are created before the words are attributed, so a pass that could not label one word used to leave
+  them behind for the review window to ask about. They are dropped now, and the fault is reported
+  the same way, so a retry starts from the voices it finds rather than from the ones it left.
+
 ## [0.1.30] - 2026-09-24
 
 The picture names a voice by what the user named it and by nothing else, and the person recording

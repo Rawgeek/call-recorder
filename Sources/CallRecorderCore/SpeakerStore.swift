@@ -322,6 +322,36 @@ public struct SpeakerStore: Sendable {
         try await store.speakerReviews(for: callID)
     }
 
+    /// Drops the voices of a call that no word of it is written against.
+    ///
+    /// A voice waits for a name so somebody can listen to it and say who it is. A voice with no
+    /// words has nothing to listen to, and its card offers a guess or Keep Anonymous, which is not a
+    /// question: the user met one on the 2026-09-25 16:21 call, answered it by hand, and asked for
+    /// voices like it to be dropped. Dropping it also lets go of the call's audio, which an
+    /// unanswered voice holds.
+    ///
+    /// - Parameter indexesWithWords: The voices the words of the call point at, which is what the
+    ///   transcript writes against each of its lines.
+    /// - Returns: How many voices were dropped.
+    @discardableResult
+    public func retireVoicesWithoutWords(
+        callID: CallID,
+        indexesWithWords: Set<Int>
+    ) async throws -> Int {
+        let voices = try await reviews(for: callID)
+        let wordless = SpeakerReviewList.voicesWithoutWords(
+            voices,
+            indexesWithWords: indexesWithWords
+        )
+        guard !wordless.isEmpty else { return 0 }
+        let dropped = Set(wordless.map(\.clusterID))
+        try await store.retireSpeakerClusters(
+            callID: callID,
+            keeping: voices.filter { !dropped.contains($0.clusterID) }.map(\.clusterID)
+        )
+        return wordless.count
+    }
+
     public func keepUnknown(
         clusterID: SpeakerClusterID,
         at date: Date = Date()

@@ -516,6 +516,30 @@ struct SpeakerTimelineTests {
         #expect(SpeakerVoiceCount.counting(segments).named == 3)
     }
 
+    @Test("a voice no word of the call is written against is not a voice to ask about")
+    func aVoiceWithNoWordsIsDropped() {
+        // The 2026-09-25 16:21 call carried a voice of 52 seconds that the separation heard and the
+        // transcription wrote nothing against. Its card said "Transcript sample unavailable", and
+        // the only answers on it were a guess and Keep Anonymous, which is not a question: the user
+        // answered it by hand and asked for the voice to be dropped instead.
+        let call = CallID(rawValue: UUID())
+        let worded = item(callID: call, voice: 0, state: .automatic)
+        let wordless = item(callID: call, voice: 1, state: .unknown)
+        let voices = [worded, wordless]
+
+        #expect(
+            SpeakerReviewList.voicesWithoutWords(voices, indexesWithWords: [0]).map(\.clusterID)
+                == [wordless.clusterID]
+        )
+        // A call whose words point at every voice of it drops nothing.
+        #expect(SpeakerReviewList.voicesWithoutWords(voices, indexesWithWords: [0, 1]).isEmpty)
+        // A call with no words at all has no voice to ask about, and every voice of it is dropped.
+        #expect(
+            SpeakerReviewList.voicesWithoutWords(voices, indexesWithWords: []).map(\.clusterID)
+                == voices.map(\.clusterID)
+        )
+    }
+
     @Test("the window loads samples for every voice it draws, not only the waiting ones")
     func theWindowIsReadyForEveryVoiceItDraws() {
         let callID = CallID(rawValue: UUID())

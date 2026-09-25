@@ -90,6 +90,20 @@ public enum SpeakerReviewList {
         guard let selected, selected.callID == callID else { return waiting }
         return [selected] + waiting.filter { $0.clusterID != selected.clusterID }
     }
+
+    /// The voices of a call that no word of it is written against.
+    ///
+    /// A separation hears a voice where the transcription wrote nothing: a sound that is not speech,
+    /// a side too quiet to read, or a voice whose few words the merge held to the voice before it.
+    /// Its card has no sample to listen to, so the only answers on it are a guess and Keep Anonymous,
+    /// which is not a question. The 2026-09-25 16:21 call carried one of 52 seconds, the user
+    /// answered it by hand, and asked for the voice to be dropped instead.
+    public static func voicesWithoutWords(
+        _ voices: [SpeakerReviewItem],
+        indexesWithWords: Set<Int>
+    ) -> [SpeakerReviewItem] {
+        voices.filter { !indexesWithWords.contains($0.speakerIndex) }
+    }
 }
 
 /// The order a person is offered in when a voice has to be named.

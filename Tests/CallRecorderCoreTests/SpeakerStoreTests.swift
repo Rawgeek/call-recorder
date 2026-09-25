@@ -5,6 +5,53 @@ import Testing
 
 @Suite("Speaker store")
 struct SpeakerStoreTests {
+    @Test("a voice no word of the call points at is dropped, and the audio is let go")
+    func dropsVoicesWithoutWords() async throws {
+        // A voice waits for a name because its card has samples to listen to. A voice with no words
+        // has nothing to listen to and nothing to answer: the user met one on the 2026-09-25 16:21
+        // call and answered it by hand, which is a question the app should never have asked. It also
+        // held the call's audio while it waited.
+        let harness = try await Harness()
+        let person = try await harness.store.upsertParticipant(name: "Dana")
+        let worded = harness.pending(createdAt: Date(), speakerIndex: 0)
+        let wordless = harness.pending(createdAt: Date(), speakerIndex: 1)
+        try await harness.speakers.savePending(worded)
+        try await harness.speakers.confirm(clusterID: worded.cluster.id, participantID: person.id)
+        try await harness.speakers.savePending(wordless)
+        // The wordless voice is the only question left on this call, and it holds the call's audio.
+        #expect(try await harness.store.hasUnresolvedSpeakerReviews(for: harness.callID))
+
+        let dropped = try await harness.speakers.retireVoicesWithoutWords(
+            callID: harness.callID,
+            indexesWithWords: [0]
+        )
+
+        #expect(dropped == 1)
+        #expect(
+            try await harness.speakers.reviews(for: harness.callID).map(\.clusterID)
+                == [worded.cluster.id]
+        )
+        #expect(try await harness.store.hasUnresolvedSpeakerReviews(for: harness.callID) == false)
+        #expect(try await harness.store.integrityReport().isHealthy)
+
+        // Dropping a voice that was named keeps what was learned from it: the sample belongs to the
+        // person, and the reference back to the fragment it came from is set to null.
+        let harness2 = try await Harness()
+        let namedPerson = try await harness2.store.upsertParticipant(name: "Dana")
+        let named = harness2.pending(createdAt: Date(), speakerIndex: 1)
+        try await harness2.speakers.savePending(named)
+        try await harness2.speakers.confirm(clusterID: named.cluster.id, participantID: namedPerson.id)
+
+        #expect(
+            try await harness2.speakers.retireVoicesWithoutWords(
+                callID: harness2.callID,
+                indexesWithWords: []
+            ) == 1
+        )
+        #expect(try await harness2.speakers.confirmedSampleCount(for: namedPerson.id) == 1)
+        #expect(try await harness2.store.integrityReport().isHealthy)
+    }
+
     @Test("confirmation is encrypted, idempotent, and preserves foreign keys")
     func confirmsOnceWithoutPlaintext() async throws {
         let harness = try await Harness()

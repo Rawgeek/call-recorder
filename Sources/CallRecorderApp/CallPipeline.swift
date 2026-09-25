@@ -201,6 +201,20 @@ struct CallPipeline: Sendable {
                 """
             )
         let labelled = merged.segments
+        // A voice no word of the call is written against is not a voice the user can name: its card
+        // has no sample to listen to, and the only answers on it are a guess and Keep Anonymous. It
+        // is dropped here, where the words of the call are known, and this also drops the voices of
+        // a pass that labelled nothing at all. The user met one of these on the 2026-09-25 16:21
+        // call, a voice of 52 seconds with no words, and answered it by hand.
+        let droppedVoices = try await speakerStore.retireVoicesWithoutWords(
+            callID: callID,
+            indexesWithWords: Set(labelled.compactMap(\.speakerIndex))
+        )
+        if droppedVoices > 0 {
+            let call = callID.rawValue.uuidString
+            Logger(subsystem: "local.callrecorder.app", category: "speaker-identity")
+                .notice("dropped \(droppedVoices) voice(s) with no words on \(call)")
+        }
         guard labelled.contains(where: { $0.speakerIndex != nil }) else {
             throw DiarizerError.noSpeakersDetected
         }
