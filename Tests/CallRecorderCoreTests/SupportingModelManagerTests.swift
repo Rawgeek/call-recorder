@@ -126,20 +126,62 @@ struct SupportingModelManagerTests {
     }
 
     @Test func aSecondCopyOutsideTheManagedFolderIsReportedWithItsSize() async throws {
-        // Given a stray copy where an earlier build cached one.
+        // Given a copy where an earlier build cached one: the model's own files, written into the
+        // folder the hub client was pointed at rather than under a revision inside it.
         let workspace = makeWorkspace()
         defer { workspace.cleanUp() }
-        let stray = workspace.root.appending(path: "models/example/sample-model")
-        try FileManager.default.createDirectory(at: stray, withIntermediateDirectories: true)
-        try Data(repeating: 3, count: 4_096).write(to: stray.appending(path: "leftover.bin"))
+        let cached = workspace.root.appending(path: "models/example/sample-model")
+        for (path, bytes) in workspace.payloads {
+            let file = cached.appending(path: path)
+            try FileManager.default.createDirectory(
+                at: file.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try bytes.write(to: file)
+        }
         let manager = workspace.manager()
 
         // When
         await manager.checkForUpdates()
 
-        // Then
-        #expect(manager.duplicateCopies(of: workspace.model).map(\.path) == [stray.path])
-        #expect(manager.reclaimableBytes(for: workspace.model) == 4_096)
+        // Then the files are reported with the space they take, and nothing else is.
+        #expect(
+            manager.cachedCopyFiles(of: workspace.model)
+                == workspace.model.files.map { cached.appending(path: $0.path) }
+        )
+        #expect(manager.reclaimableBytes(for: workspace.model) == workspace.model.totalBytes)
+
+        // When the copy is moved to the Trash
+        manager.reclaimDuplicates(of: workspace.model)
+
+        // Then its files are gone and the row has nothing left to offer.
+        #expect(manager.cachedCopyFiles(of: workspace.model).isEmpty)
+        #expect(manager.reclaimableBytes(for: workspace.model) == 0)
+    }
+
+    @Test func theFolderAModelIsInstalledUnderIsNotACachedCopy() async throws {
+        // Given a model the app installs under the models folder itself, which is the folder a hub
+        // client caches it in as well: today's copy is at `models/<owner>/<name>/<revision>`, and
+        // an earlier build's copy would be at `models/<owner>/<name>`. Reading the folder alone
+        // reported the copy being read from as a duplicate, sized it, and offered a button that
+        // would have moved the model itself to the Trash.
+        let workspace = makeWorkspace(installPath: "models")
+        defer { workspace.cleanUp() }
+        let manager = workspace.manager()
+        manager.download(workspace.model)
+        await waitForDownload(manager, workspace.model)
+
+        // Then the installed copy is not a cached copy, and there is nothing to reclaim.
+        #expect(manager.state(for: workspace.model).isInstalled)
+        #expect(manager.cachedCopyFiles(of: workspace.model).isEmpty)
+        #expect(manager.reclaimableBytes(for: workspace.model) == 0)
+
+        // And reclaiming leaves every file of the installed revision where it is.
+        manager.reclaimDuplicates(of: workspace.model)
+        let directory = workspace.model.directory(in: workspace.root)
+        for file in workspace.model.files {
+            #expect(FileManager.default.fileExists(atPath: directory.appending(path: file.path).path))
+        }
     }
 
     @Test func deletingRemovesEveryRevisionAndTheRecord() async throws {
@@ -232,7 +274,8 @@ struct SupportingModelManagerTests {
 
     private func makeWorkspace(
         tamperingWith tampered: String? = nil,
-        weightsNamed weights: String? = nil
+        weightsNamed weights: String? = nil,
+        installPath: String = "models/sample"
     ) -> Workspace {
         let revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         var payloads: [String: Data] = [
@@ -253,7 +296,7 @@ struct SupportingModelManagerTests {
             detail: "A model the tests own.",
             repository: "example/sample-model",
             revision: revision,
-            installPath: "models/sample",
+            installPath: installPath,
             versionLabel: "sample",
             files: files
         )

@@ -155,36 +155,78 @@ final class SupportingModelManager {
         return Self.directoryExists(model.directory(in: applicationDirectory, revision: previous))
     }
 
-    /// Copies of this model outside the folder Call Recorder manages.
+    /// The folder an earlier build cached this model under.
     ///
     /// A hub client caches files under whichever folder it was pointed at, and an earlier build
-    /// pointed it at the models folder itself, so this Mac can hold a complete second copy that
-    /// nothing reads. It is reported with its size; removing it is a decision, not a tidy-up.
-    func duplicateCopies(of model: SupportingModel) -> [URL] {
+    /// pointed it at the models folder itself, so that is where a second copy can be.
+    private func earlierCacheDirectory(of model: SupportingModel) -> URL? {
         let owner = String(model.repository.prefix { $0 != "/" })
-        guard !owner.isEmpty else { return [] }
+        guard !owner.isEmpty, owner.count < model.repository.count else { return nil }
         let name = String(model.repository.dropFirst(owner.count + 1))
-        let directory = applicationDirectory
+        return applicationDirectory
             .appending(path: "models", directoryHint: .isDirectory)
             .appending(path: owner, directoryHint: .isDirectory)
             .appending(path: name, directoryHint: .isDirectory)
-        return Self.directoryExists(directory) ? [directory] : []
+    }
+
+    /// The files of a cached copy that is really there, which is what an earlier build left.
+    ///
+    /// The folder alone does not prove a copy exists. The app installs today's copy at
+    /// `models/<repository>/<revision>`, so for the model whose install path is the models folder
+    /// the two paths are the same folder -- and a row that read the folder alone reported the copy
+    /// the app was reading with as a duplicate, sized it, and offered to move it to the Trash. The
+    /// files decide: a cached copy holds the model's files in the folder itself, and a copy the app
+    /// manages holds them one folder deeper, under the revision it was installed at.
+    func cachedCopyFiles(of model: SupportingModel) -> [URL] {
+        guard let directory = earlierCacheDirectory(of: model), Self.directoryExists(directory)
+        else { return [] }
+        let paths = Set(installedFilePaths(of: model) + model.files.map(\.path))
+        return paths.sorted()
+            .map { directory.appending(path: $0) }
+            .filter { Self.isRegularFile($0) }
     }
 
     func reclaimableBytes(for model: SupportingModel) -> Int64 {
         duplicateBytes[model.id] ?? 0
     }
 
-    /// Moves a stray copy to the Trash. Recoverable on purpose: Call Recorder did not write it.
+    /// Moves a cached copy's own files to the Trash. Recoverable on purpose: Call Recorder did not
+    /// write them.
+    ///
+    /// Only the files are moved, never the folder: for a model installed under the models folder
+    /// that folder is the app's own repository directory, and the copy inside it, under the
+    /// revision, is the one being read from.
     func reclaimDuplicates(of model: SupportingModel) {
-        for copy in duplicateCopies(of: model) {
+        let files = cachedCopyFiles(of: model)
+        guard !files.isEmpty else { return }
+        var moved = 0
+        for file in files {
             do {
-                try FileManager.default.trashItem(at: copy, resultingItemURL: nil)
-                duplicateBytes[model.id] = nil
-                statusMessage = "Moved the duplicate copy of " + model.displayName + " to the Trash."
+                try FileManager.default.trashItem(at: file, resultingItemURL: nil)
+                moved += 1
             } catch {
                 failingModels[model.id] = error.localizedDescription
             }
+        }
+        guard moved > 0 else { return }
+        duplicateBytes[model.id] = nil
+        removeEmptyDirectories(under: earlierCacheDirectory(of: model))
+        statusMessage = "Moved the cached copy of " + model.displayName + " to the Trash."
+    }
+
+    /// Removes the folders the move emptied, and keeps any that still hold something.
+    private func removeEmptyDirectories(under root: URL?) {
+        guard let root, Self.directoryExists(root) else { return }
+        guard
+            let enumerator = FileManager.default.enumerator(
+                at: root, includingPropertiesForKeys: [.isDirectoryKey]
+            )
+        else { return }
+        let directories = enumerator.compactMap { $0 as? URL }.filter(Self.directoryExists)
+        for directory in directories.sorted(by: { $0.path.count > $1.path.count }) {
+            let contents = (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? []
+            guard contents.isEmpty else { continue }
+            try? FileManager.default.removeItem(at: directory)
         }
     }
 
@@ -623,14 +665,12 @@ final class SupportingModelManager {
 
     private func measureDuplicates() {
         for model in models {
-            let copies = duplicateCopies(of: model)
-            guard !copies.isEmpty else {
+            let files = cachedCopyFiles(of: model)
+            guard !files.isEmpty else {
                 duplicateBytes[model.id] = nil
                 continue
             }
-            duplicateBytes[model.id] = copies.reduce(Int64(0)) { total, url in
-                total + Self.directorySize(url)
-            }
+            duplicateBytes[model.id] = files.reduce(Int64(0)) { $0 + Self.fileSize($1) }
         }
     }
 
@@ -645,19 +685,9 @@ final class SupportingModelManager {
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
     }
 
-    private static func directorySize(_ url: URL) -> Int64 {
-        guard
-            let enumerator = FileManager.default.enumerator(
-                at: url,
-                includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey]
-            )
-        else { return 0 }
-        var total: Int64 = 0
-        for case let file as URL in enumerator {
-            let values = try? file.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
-            guard values?.isRegularFile == true else { continue }
-            total += Int64(values?.fileSize ?? 0)
-        }
-        return total
+    private static func isRegularFile(_ url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        let exists = FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+        return exists && !isDirectory.boolValue
     }
 }

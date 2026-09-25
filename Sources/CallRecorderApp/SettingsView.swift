@@ -786,7 +786,7 @@ struct ModelSettingsView: View {
     var body: some View {
         SettingsPane(
             title: "Models",
-            subtitle: "The model that reads a call, the runtime it runs in, and the models search reads."
+            subtitle: "What reads a call, what searches it, and how each recording is read."
         ) {
             // Reading is one decision with two halves: the weights, and the environment that runs
             // them. They are one card, because a Mac missing either cannot transcribe, and the
@@ -805,7 +805,27 @@ struct ModelSettingsView: View {
                     CRSettingsDivider()
                 }
                 speechRuntimeRow
+            }
+
+            CRSettingsCard(
+                title: "Search",
+                info: "The embedding model finds passages by meaning, and the runtime builds the "
+                    + "index that search and Codex read. A download is accepted only when its "
+                    + "published hash matches the publisher's."
+            ) {
+                if let component = embeddingComponent {
+                    componentRow(component)
+                    componentNotes(component)
+                }
                 CRSettingsDivider()
+                indexerRuntimeRow
+            }
+
+            CRSettingsCard(
+                title: "Reading",
+                info: "How each recording is read: the language the model is held to, and whether a "
+                    + "saved transcript prints the time of each turn."
+            ) {
                 CRSettingsRow(
                     title: "Spoken language",
                     info: "The model decides the language of each recording unless it is told one. "
@@ -832,21 +852,6 @@ struct ModelSettingsView: View {
                     Toggle("", isOn: $model.settings.transcriptTimestamps)
                         .labelsHidden()
                 }
-            }
-
-            CRSettingsCard(
-                title: "Components",
-                info: "The models the app keeps beside the transcription model: the one that turns "
-                    + "text into vectors for search, and the runtime the indexer and the MCP server "
-                    + "run on. A download is accepted only when its published hash matches the "
-                    + "publisher's."
-            ) {
-                if let component = embeddingComponent {
-                    componentRow(component)
-                    componentNotes(component)
-                }
-                CRSettingsDivider()
-                indexerRuntimeRow
             }
         }
         .task {
@@ -1122,9 +1127,10 @@ struct ModelSettingsView: View {
         if manager.reclaimableBytes(for: component) > 0 {
             CRSettingsDivider()
             CRSettingsRow(
-                title: "A duplicate copy is taking up space",
-                detail: "An earlier build cached a second copy of this model that nothing reads. "
-                    + "Moving it to the Trash frees "
+                title: "A cached copy is taking up space",
+                detail: "An earlier build cached a second copy of this model's files. The app "
+                    + "reads its own copy at the revision it recorded, so moving these to the "
+                    + "Trash frees "
                     + ModelSizeLabel.file(bytes: manager.reclaimableBytes(for: component)) + ".",
                 warning: true
             ) {
