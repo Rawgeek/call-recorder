@@ -159,27 +159,36 @@ actor MeetingProcessor {
                     return
                 } catch {
                     let details = DiagnosticsReporter.redacted(error: String(reflecting: error))
+                    let errorType = String(describing: type(of: error))
                     // A stage whose claim is already gone is not this stage's failure to record: a
                     // pass that rewrote the transcript while it ran has queued the call again, and
                     // the queue holds it. Throwing out of here ended the drain over a call that was
                     // in the right state, so it is reported and the loop goes on.
+                    var failureWasRecorded = true
                     do {
                         _ = try await store.failProcessingJob(
                             callID: job.callID,
                             stage: job.stage,
                             summary: "Background processing failed.",
-                            errorType: String(describing: type(of: error)),
+                            errorType: errorType,
                             details: details
                         )
                     } catch CallStoreError.processingJobNotClaimed(let callID) {
+                        failureWasRecorded = false
+                        let position = await noteSupersededStage(job, errorType: errorType)
                         logger.notice(
                             """
-                            Call \(callID.rawValue.uuidString, privacy: .public) was queued again \
-                            while its stage failed; the queue keeps it
+                            Call \(callID.rawValue.uuidString, privacy: .public) was superseded while \
+                            its stage ran; \(position, privacy: .public), so the queue keeps it
                             """
                         )
                     }
                     await onChange?()
+                    // A failure the store refused to record is not reported as one. The call is back
+                    // in the queue, and an error line over a healthy call is what the fault watcher
+                    // woke on: the 2026-09-25 16:21 call was named a voice while its finalizing stage
+                    // ran and was ready four seconds later.
+                    guard failureWasRecorded else { continue }
                     logger.error("Call \(job.callID.rawValue.uuidString, privacy: .public) stage \(job.stage.rawValue, privacy: .public) failed: \(details, privacy: .public)")
                 }
             }
@@ -187,5 +196,34 @@ actor MeetingProcessor {
             let details = DiagnosticsReporter.redacted(error: String(reflecting: error))
             logger.error("Processor loop failed: \(details, privacy: .public)")
         }
+    }
+
+    /// Writes down a stage run that work elsewhere queued the call away from, and says where the
+    /// call went.
+    ///
+    /// A stage can lose its claim while it runs. Naming a voice rewrites the saved transcript, and
+    /// saving a transcript queues the call's indexing stage again and clears the claim this loop
+    /// holds, so the stage then fails over a call that is already back in the queue. The store
+    /// refuses that failure because the claim is gone, which also rolls the failure back: nothing
+    /// is left behind to say what happened to the run. On 2026-09-25 the 16:21 call was named a
+    /// voice while its finalizing stage ran, the stage threw ArtifactRecoveryError.callNotReady,
+    /// and the only trace of the call that finished four seconds later was an app error line, which
+    /// is what the fault watcher woke on. The run is written down as a warning that names the stage
+    /// and the stage the call moved to, so the next one is answered from the record instead of from
+    /// the log store, which had already forgotten the minutes around it.
+    private func noteSupersededStage(_ job: ProcessingJob, errorType: String?) async -> String {
+        let position: String
+        if let current = try? await store.processingJob(callID: job.callID) {
+            position = "the job is now \(current.stage.rawValue) (\(current.executionState.rawValue))"
+        } else {
+            position = "the call no longer has a job"
+        }
+        _ = try? await store.recordProcessingWarning(
+            callID: job.callID,
+            stage: job.stage,
+            summary: "The stage was superseded while it ran; \(position).",
+            errorType: errorType
+        )
+        return position
     }
 }

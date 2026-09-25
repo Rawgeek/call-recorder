@@ -190,6 +190,49 @@ struct MeetingProcessorTests {
         #expect(try await fixture.store.call(id: fixture.callID)?.status == .indexing)
     }
 
+    @Test("a stage that loses its claim while it fails is written down as superseded")
+    func aStageThatLosesItsClaimWhileItFailsIsSuperseded() async throws {
+        // Given a call at its last stage and a pass that names a voice while that stage runs. Saving
+        // the rewritten transcript queues the call's indexing stage again and clears the claim the
+        // drain holds, so the stage's own guard throws over a call that is already back in the
+        // queue: on 2026-09-25 the 16:21 call threw ArtifactRecoveryError.callNotReady here.
+        let fixture = try await processorFixture()
+        var stage = ProcessingStage.queued
+        for nextStage in [
+            ProcessingStage.transcribing, .diarizing, .attributing, .indexing, .finalizingArtifacts,
+        ] {
+            _ = try #require(try await fixture.store.claimNextProcessingJob(executableOnly: true))
+            _ = try await fixture.store.advanceProcessingJob(
+                callID: fixture.callID,
+                from: stage,
+                to: nextStage
+            )
+            stage = nextStage
+        }
+        let requeued = RequeueOnceDuringStage(store: fixture.store, callID: fixture.callID)
+        let processor = MeetingProcessor(store: fixture.store) { _ in
+            guard try await requeued.requeueOnFirstRun() else { throw CancellationError() }
+            throw ArtifactRecoveryError.callNotReady
+        }
+
+        // When
+        await processor.processNext()
+        await processor.waitUntilIdle()
+
+        // Then the run is kept as what it was: work that another pass took the call away from.
+        // Nothing is marked failed, and the record names the stage and where the call went.
+        let events = try await fixture.store.processingEvents(for: fixture.callID)
+        #expect(events.count == 1)
+        let event = try #require(events.first)
+        #expect(event.severity == .warning)
+        #expect(event.stage == .finalizingArtifacts)
+        #expect(event.errorType?.contains("ArtifactRecoveryError") == true)
+        #expect(event.summary.contains("indexing"))
+        let job = try #require(try await fixture.store.processingJobs().first)
+        #expect(job.stage == .indexing)
+        #expect(job.executionState == .pending)
+    }
+
     @Test("a stopped stage waits for the user, and the surface is told")
     func aStoppedStageWaitsForTheUser() async throws {
         // Given a call whose transcription is the stage that is running

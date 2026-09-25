@@ -4,6 +4,23 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.32] - 2026-09-25
+
+A stage that another pass takes the call away from is written down as superseded instead of being
+reported as a failure, so a call that finished keeps looking finished.
+
+### Fixed
+
+- **A stage that loses its claim is superseded, not failed.** Naming a voice rewrites the saved
+  transcript, and saving a transcript queues the call's indexing stage again and clears the claim
+  the processing loop holds. The stage that was running then fails over a call that is already back
+  in the queue: the 2026-09-25 16:21 call was named a voice while its finalizing stage ran, the
+  stage threw "ArtifactRecoveryError.callNotReady", and the store refused the failure because the
+  claim was gone, which rolled the record back with it. The only trace was an error line over a call
+  that was ready four seconds later, and that error line is what the fault watcher woke on. The run
+  is now written down as a warning that names the stage and the stage the call moved to, and a
+  failure the store refuses to record is no longer logged as one.
+
 ## [0.1.31] - 2026-09-25
 
 A voice the separation heard and the transcription wrote no word against is dropped instead of
