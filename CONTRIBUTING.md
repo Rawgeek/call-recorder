@@ -80,6 +80,12 @@ build, and signature.
 - `swift test` passes, and `bun test` plus `bun run typecheck` pass inside `mcp/`.
 - New behaviour has a test that fails without the change. Bug fixes get a test written from
   the failing case, not from the fixed one.
+- The two suites that read a real recording are the proof that the engine, the script, and the
+  pipeline still fit each other, and they are opt-in so a normal run reads nothing of anybody's:
+  `CALL_RECORDER_TRANSCRIBE_AUDIO=/path/to/track.m4a swift test --filter RealCallTests` measures one
+  reading, and `CALL_RECORDER_PIPELINE_AUDIO=/path/to/system.m4a swift test --filter RealPipelineTests`
+  takes a call through every stage and checks the transcript, the voices, and the row the library
+  answers with. Run the second one before releasing a change to what reads a call.
 - User-visible text is plain and specific: say what happened, what it means, and what the
   user can do next. Avoid jargon and unverifiable claims.
 - Keep the diff scoped. A change that also reformats or renames unrelated code makes the

@@ -58,6 +58,9 @@ needed.
 - **A model this build no longer carries is forgotten from the installed list.** The manifest kept
   a record of every model an earlier build installed, which for this Mac meant the 4.9 GB brief
   model and the speech filter going on being listed as components beside folders nothing reads.
+- **A brief an earlier version wrote stays readable.** The table those versions wrote to is kept, so
+  a library that holds briefs keeps them, and the MCP tools say which versions wrote one rather
+  than promising a brief on a call recorded since. An agent reads the transcript instead.
   The list is now reconciled with what this build actually has, and the copies themselves are left
   alone: removing a folder is the user's decision, not an app update's.
 
