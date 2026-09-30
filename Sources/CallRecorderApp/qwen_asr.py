@@ -12,13 +12,15 @@ a long meeting its second half:
   words of the letter "с".
 
 This script reads the call in overlapping pieces, gives every piece its own budget, and checks each
-answer before it is kept. A piece that repeats itself -- one token over and over, or one phrase
-three times -- is read again through a narrower window; one that loops twice is dropped and counted,
-and the app has its own rule for a transcript that lost too much.
+answer before it is kept. A piece the model does not keep -- it raised, it looped, or it said
+nothing at all -- is read again as both of its halves, front first, and each half keeps the times it
+has in the call; a half that loops is dropped and counted, and the app has its own rule for a
+transcript that lost too much.
 
 Usage:
   python3 qwen_asr.py --model <folder> --audio <wav> --output <json> [--language ru] [--hotwords a,b]
   python3 qwen_asr.py --self-check
+  python3 qwen_asr.py --retry-check
 
 The audio must already be 16 kHz mono, which the app converts it to before calling this script.
 """
@@ -30,6 +32,8 @@ import json
 import os
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass
 
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -92,6 +96,11 @@ def parse_args() -> argparse.Namespace:
         "--self-check",
         action="store_true",
         help="Answer the loop question for the built-in examples, without a model",
+    )
+    parser.add_argument(
+        "--retry-check",
+        action="store_true",
+        help="Answer the retry question for the built-in scenarios, without a model",
     )
     return parser.parse_args()
 
@@ -231,15 +240,177 @@ def split_audio(
     return pieces
 
 
+@dataclass
+class PieceReading:
+    """What one piece of the call answered with, over every window it was read in."""
+
+    segments: list[dict[str, object]]
+    tokens: int = 0
+    unreadable: int = 0
+    failed_attempts: int = 0
+    detected: str = ""
+
+
+def read_piece(
+    decoder: Callable[[float, float], object],
+    start: float,
+    end: float,
+    *,
+    index: int,
+) -> PieceReading:
+    """Reads one piece of the call, halving it when the whole of it cannot be kept.
+
+    A piece the model raises on, loops on, or says nothing about is offered again as both of its
+    halves, front first. Reading the front half alone is what the retry used to do, and it left the
+    back half of every piece it could not keep out of the transcript without a word. Each half is
+    placed by the times it has in the call, so a piece costs the words the model could not read and
+    nothing else. The loop question is asked of every window the model answers, the whole piece
+    included, and a window that loops is dropped and counted rather than kept.
+    """
+    reading = PieceReading(segments=[])
+
+    def attempt(window_start: float, window_end: float, number: int) -> str | None:
+        """One read of one window: its words when they can be kept, and None when they cannot."""
+        try:
+            result = decoder(window_start, window_end)
+        except Exception as error:  # noqa: BLE001 - reported, not swallowed
+            print(f"piece {index} attempt {number} failed: {error}", file=sys.stderr)
+            reading.failed_attempts += 1
+            return None
+        reading.tokens += int(getattr(result, "generation_tokens", 0) or 0)
+        if not reading.detected:
+            reading.detected = language_code(getattr(result, "language", None))
+        text = (result.text or "").strip()
+        if is_looping(text):
+            print(f"piece {index} attempt {number} looped", file=sys.stderr)
+            reading.unreadable += 1
+            return None
+        return text or None
+
+    text = attempt(start, end, 0)
+    if text is not None:
+        reading.segments.append({"start": start, "end": end, "text": text})
+        return reading
+
+    middle = start + (end - start) / 2
+    for number, (half_start, half_end) in enumerate(((start, middle), (middle, end)), start=1):
+        half = attempt(half_start, half_end, number)
+        if half is not None:
+            reading.segments.append({"start": half_start, "end": half_end, "text": half})
+    return reading
+
+
+class ScriptedAnswer:
+    """What the model answered with, for a check that reads no audio."""
+
+    def __init__(self, text: str, language: str = "ru") -> None:
+        self.text = text
+        self.language = language
+        self.generation_tokens = len(text.split())
+
+
+class ScriptedDecoder:
+    """A model that answers by window, and records every window it was asked about.
+
+    A scenario names the answer every window has, so the check drives the same helper a call drives
+    and reads back what that helper asked about and what it kept.
+    """
+
+    def __init__(self, answers: dict[tuple[float, float], object]) -> None:
+        self.answers = answers
+        self.calls: list[tuple[float, float]] = []
+
+    def __call__(self, start: float, end: float) -> object:
+        self.calls.append((start, end))
+        answer = self.answers.get((start, end))
+        if isinstance(answer, Exception):
+            raise answer
+        if answer is None:
+            raise LookupError(f"a window no scenario named: {start}-{end}")
+        return answer
+
+
+def retry_check() -> int:
+    """Answer the retry question for the built-in scenarios, so the rule reads without a model.
+
+    Every scenario reads one fifteen-second piece -- the length a call is read in -- with the
+    shipping helper, driven by a model that answers by window. The shapes are the ones a piece of a
+    call can answer with: the model answered the whole of it, looped on it, raised on it, raised on
+    one half of it, and said nothing at all. Each scenario carries what the helper should have read
+    and kept, and a scenario that answers differently makes this check fail.
+    """
+    piece = (0.0, 15.0)
+    whole = ScriptedAnswer("the whole piece answers")
+    looped = ScriptedAnswer("Thank you. Thank you. Thank you.")
+    silent = ScriptedAnswer("")
+    failed = RuntimeError("the decoder fell over")
+    first = ScriptedAnswer("the first half of the piece")
+    second = ScriptedAnswer("the second half of the piece")
+    # A scenario is its name, the answer every window has, and what the check expects back: the
+    # windows the helper read, the windows it kept, the loops it dropped, and the failures it met.
+    scenarios = [
+        (
+            "a whole piece that answers is read once",
+            {piece: whole},
+            ([(0.0, 15.0)], [(0.0, 15.0)], 0, 0),
+        ),
+        (
+            "a whole piece that loops is read as both halves",
+            {piece: looped, (0.0, 7.5): first, (7.5, 15.0): second},
+            ([(0.0, 15.0), (0.0, 7.5), (7.5, 15.0)], [(0.0, 7.5), (7.5, 15.0)], 1, 0),
+        ),
+        (
+            "a whole piece that failed is read as both halves",
+            {piece: failed, (0.0, 7.5): first, (7.5, 15.0): second},
+            ([(0.0, 15.0), (0.0, 7.5), (7.5, 15.0)], [(0.0, 7.5), (7.5, 15.0)], 0, 1),
+        ),
+        (
+            "a half that failed keeps the half that answered",
+            {piece: failed, (0.0, 7.5): failed, (7.5, 15.0): second},
+            ([(0.0, 15.0), (0.0, 7.5), (7.5, 15.0)], [(7.5, 15.0)], 0, 2),
+        ),
+        (
+            "a whole piece that said nothing is read as both halves",
+            {piece: silent, (0.0, 7.5): silent, (7.5, 15.0): silent},
+            ([(0.0, 15.0), (0.0, 7.5), (7.5, 15.0)], [], 0, 0),
+        ),
+    ]
+    answered: dict[str, dict[str, object]] = {}
+    for name, answers, expected in scenarios:
+        decoder = ScriptedDecoder(answers)
+        reading = read_piece(decoder, piece[0], piece[1], index=0)
+        observed = (
+            [(call[0], call[1]) for call in decoder.calls],
+            [(segment["start"], segment["end"]) for segment in reading.segments],
+            reading.unreadable,
+            reading.failed_attempts,
+        )
+        # A piece that kept nothing is the dropped piece the run reports, which is also the count
+        # the exit code reads: a piece of silence is a quiet call, and not a runtime that failed.
+        answered[name] = {
+            "calls": [list(window) for window in observed[0]],
+            "segments": [list(window) for window in observed[1]],
+            "texts": [segment["text"] for segment in reading.segments],
+            "unreadable": reading.unreadable,
+            "failedAttempts": reading.failed_attempts,
+            "dropped": 0 if reading.segments else 1,
+            "kept": observed == expected,
+        }
+    print(json.dumps(answered, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if all(answer["kept"] for answer in answered.values()) else 1
+
+
 def main() -> int:
     args = parse_args()
     started = time.time()
 
     if args.self_check:
         return self_check()
+    if args.retry_check:
+        return retry_check()
     if args.model is None or args.audio is None or args.output is None:
         print(
-            "--model, --audio and --output are required unless --self-check is used",
+            "--model, --audio and --output are required unless a check is used",
             file=sys.stderr,
         )
         return 2
@@ -280,40 +451,30 @@ def main() -> int:
     failed_attempts = 0
     tokens = 0
     detected = ""
+
+    def decode(from_seconds: float, to_seconds: float) -> object:
+        """Reads one window of the converted track with the model."""
+        return model.generate(
+            audio[int(from_seconds * rate):int(to_seconds * rate)],
+            max_tokens=args.max_tokens,
+            language=language,
+            hotwords=hotwords or None,
+        )
+
     for index, (start, end) in enumerate(pieces):
-        answer = None
-        for attempt, (piece_start, piece_end) in enumerate(
-            [(start, end), (start, min(end, start + (end - start) / 2))]
-        ):
-            try:
-                result = model.generate(
-                    audio[int(piece_start * rate):int(piece_end * rate)],
-                    max_tokens=args.max_tokens,
-                    language=language,
-                    hotwords=hotwords or None,
-                )
-            except Exception as error:  # noqa: BLE001 - reported, not swallowed
-                print(f"piece {index} attempt {attempt} failed: {error}", file=sys.stderr)
-                failed_attempts += 1
-                continue
-            tokens += int(getattr(result, "generation_tokens", 0) or 0)
-            if not detected:
-                detected = language_code(getattr(result, "language", None))
-            text = (result.text or "").strip()
-            if is_looping(text):
-                print(f"piece {index} attempt {attempt} looped", file=sys.stderr)
-                unreadable += 1
-                continue
-            if text:
-                answer = {"start": piece_start, "end": piece_end, "text": text}
-                break
+        reading = read_piece(decode, start, end, index=index)
         # Every piece releases its buffers, including one that was thrown away: a loop holds the
         # cache of the whole decode, which is what turns a stuck piece into a growing process.
         mx.clear_cache()
-        if answer is None:
+        tokens += reading.tokens
+        if not detected:
+            detected = reading.detected
+        if reading.segments:
+            segments.extend(reading.segments)
+        else:
             dropped += 1
-            continue
-        segments.append(answer)
+        unreadable += reading.unreadable
+        failed_attempts += reading.failed_attempts
 
     payload = {
         "language": args.language,

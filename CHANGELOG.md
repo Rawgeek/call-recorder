@@ -4,6 +4,14 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.35] - 2026-09-30
+
+### Fixed
+
+- A transcription chunk that fails or repeats now retries both halves. Previously, only its first
+  half was retried, which could omit speech in the second half. Each recovered half keeps its own
+  timestamp. An unreadable half does not prevent the other half from being recovered.
+
 ## [0.1.34] - 2026-09-30
 
 A call keeps its transcript when the reader repeats itself inside one piece of it, a screen that is

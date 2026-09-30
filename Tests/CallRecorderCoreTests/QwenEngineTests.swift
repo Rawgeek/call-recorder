@@ -88,6 +88,112 @@ struct QwenLoopRuleTests {
     }
 }
 
+/// What the reader does with a piece of a call it could not keep.
+///
+/// A piece the model raised on, looped on, or said nothing about is read again as both of its
+/// halves, front first, and each half keeps the times it has in the call. The retry used to read the
+/// front half alone, which left the back half of a fumbled piece out of the transcript without
+/// saying so: a log line that the piece had been read again, and nothing in the reading for what was
+/// in its second half. The scenarios are answered by the shipping script, which needs no model.
+@Suite("Transcription retry rule")
+struct QwenRetryRuleTests {
+    /// One scenario as the script reports it: what it read, what it kept, and its counts.
+    struct Scenario: Decodable {
+        let calls: [[Double]]
+        let segments: [[Double]]
+        let texts: [String]
+        let unreadable: Int
+        let failedAttempts: Int
+        let dropped: Int
+        let kept: Bool
+    }
+
+    /// The scenarios, answered by the shipping script.
+    private func scenarios() throws -> [String: Scenario] {
+        let script = TestEnvironment.packageRoot
+            .appending(path: "Sources/CallRecorderApp/qwen_asr.py")
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/python3")
+        process.arguments = [script.path, "--retry-check"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        // The script answers with its own verdict as well as with what it read and kept.
+        #expect(process.terminationStatus == 0)
+        return try JSONDecoder().decode([String: Scenario].self, from: data)
+    }
+
+    @Test("a piece that answers is read once, as the piece it is")
+    func readsAWholePieceOnce() throws {
+        let scenario = try #require(try scenarios()["a whole piece that answers is read once"])
+        #expect(scenario.calls == [[0, 15]])
+        #expect(scenario.segments == [[0, 15]])
+        #expect(scenario.dropped == 0)
+    }
+
+    @Test("a piece that failed or looped is read as both halves, in the call's own time")
+    func readsBothHalves() throws {
+        let answered = try scenarios()
+        for name in [
+            "a whole piece that failed is read as both halves",
+            "a whole piece that loops is read as both halves",
+        ] {
+            let scenario = try #require(answered[name], "\(name)")
+            // The whole piece was read first, and the retry is both halves: the half the model
+            // fumbled is read rather than left out.
+            #expect(scenario.calls == [[0, 15], [0, 7.5], [7.5, 15]], "\(name)")
+            // Both halves are kept, each with the time it has in the call rather than the time it
+            // has in the half.
+            #expect(scenario.segments == [[0, 7.5], [7.5, 15]], "\(name)")
+            let starts = scenario.segments.map { $0[0] }
+            #expect(starts == starts.sorted(), "\(name)")
+        }
+        #expect(answered["a whole piece that failed is read as both halves"]?.failedAttempts == 1)
+        #expect(answered["a whole piece that loops is read as both halves"]?.unreadable == 1)
+    }
+
+    @Test("a half that failed keeps the half that answered")
+    func keepsTheHalfThatAnswered() throws {
+        let scenario = try #require(
+            try scenarios()["a half that failed keeps the half that answered"]
+        )
+        #expect(scenario.calls == [[0, 15], [0, 7.5], [7.5, 15]])
+        // The half the model read is kept where it belongs in the call rather than being dropped
+        // with the half that failed, and the failures are still counted.
+        #expect(scenario.segments == [[7.5, 15]])
+        #expect(scenario.texts == ["the second half of the piece"])
+        #expect(scenario.failedAttempts == 2)
+        #expect(scenario.dropped == 0)
+    }
+
+    @Test("a piece that said nothing is dropped rather than read as a fault")
+    func keepsTheEmptyAnswer() throws {
+        let scenario = try #require(
+            try scenarios()["a whole piece that said nothing is read as both halves"]
+        )
+        #expect(scenario.calls == [[0, 15], [0, 7.5], [7.5, 15]])
+        // Both halves were asked about and answered nothing, so the piece is dropped and neither
+        // count moves: a quiet recording is still read rather than reported as a failed runtime.
+        #expect(scenario.segments.isEmpty)
+        #expect(scenario.unreadable == 0)
+        #expect(scenario.failedAttempts == 0)
+        #expect(scenario.dropped == 1)
+    }
+
+    @Test("every scenario answers the way the script says it should")
+    func passesItsOwnCheck() throws {
+        let answered = try scenarios()
+        #expect(answered.count == 5)
+        for (name, scenario) in answered {
+            #expect(scenario.kept, "\(name)")
+        }
+    }
+}
+
 /// The engine, driven against the real model on audio this test makes.
 ///
 /// A stub reader covers the transcriber's own work; this covers the other half of the contract:
