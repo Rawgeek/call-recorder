@@ -7,17 +7,26 @@ struct Diarizer: Sendable {
     let script: URL
     let ffmpeg: URL?
     let timeout: TimeInterval
+    /// Variables the script is given on top of the environment the app runs in.
+    ///
+    /// Empty for every run a call makes: the script reads the Hugging Face cache its own client
+    /// already uses, and the app has no reason to move it. The seam exists so a test can ask the
+    /// shipping script with a cache that holds nothing, which is the state 2026-09-30 was left in
+    /// and the one the answer is written for.
+    let environment: [String: String]
 
     init(
         python: URL,
         script: URL,
         ffmpeg: URL? = nil,
-        timeout: TimeInterval = 90 * 60
+        timeout: TimeInterval = 90 * 60,
+        environment: [String: String] = [:]
     ) {
         self.python = python
         self.script = script
         self.ffmpeg = ffmpeg
         self.timeout = timeout
+        self.environment = environment
     }
 
     /// Runs diarization on a 16kHz mono WAV.
@@ -48,8 +57,10 @@ struct Diarizer: Sendable {
         let process = Process()
         process.executableURL = python
         process.arguments = [script.path] + arguments
+        var base = ProcessInfo.processInfo.environment
+        for (name, value) in environment { base[name] = value }
         process.environment = Self.runtimeEnvironment(
-            base: ProcessInfo.processInfo.environment,
+            base: base,
             ffmpeg: ffmpegOverride ?? ffmpeg
         )
         let errorURL = FileManager.default.temporaryDirectory.appending(
@@ -102,7 +113,10 @@ struct Diarizer: Sendable {
         }
         let data = (try? Data(contentsOf: outputURL)) ?? Data()
         if let raw = try? JSONDecoder().decode(DiarizerRawOutput.self, from: data), let error = raw.error {
-            throw DiarizerError.scriptFailed(DiagnosticsReporter.redacted(error: error))
+            throw DiarizerError.scriptFailure(
+                code: raw.errorCode,
+                detail: DiagnosticsReporter.redacted(error: error)
+            )
         }
         guard process.terminationStatus == 0 else {
             let stderr = try String(contentsOf: errorURL, encoding: .utf8)
@@ -172,7 +186,9 @@ struct Diarizer: Sendable {
 
     static func decode(_ data: Data) throws -> DiarizationResult {
         let raw = try JSONDecoder().decode(DiarizerRawOutput.self, from: data)
-        if let error = raw.error { throw DiarizerError.scriptFailed(error) }
+        if let error = raw.error {
+            throw DiarizerError.scriptFailure(code: raw.errorCode, detail: error)
+        }
         return try result(from: raw)
     }
 
@@ -214,20 +230,31 @@ struct Diarizer: Sendable {
 
     struct DiarizerRawOutput: Decodable {
         let error: String?
+        /// The name the script gave its own failure, when it gave one.
+        ///
+        /// Absent from the answers an older copy of the script writes, which is a script failure
+        /// and nothing else: the code is what tells the four faults the app already knows apart
+        /// from a run that broke some other way.
+        let errorCode: String?
         let model: String?
         let segments: [Segment]?
         let speakers: [Speaker]?
+
+        /// What the script calls a run whose models are not in the local cache.
+        static let modelsNotCachedCode = "modelsNotCached"
 
         init(from decoder: Decoder) throws {
             let container = try decoder.singleValueContainer()
             if let array = try? container.decode([Segment].self) {
                 error = nil
+                errorCode = nil
                 model = nil
                 segments = array
                 speakers = nil
             } else {
                 let obj = try container.decode(ObjectOutput.self)
                 error = obj.error
+                errorCode = obj.errorCode
                 model = obj.model
                 segments = obj.segments
                 speakers = obj.speakers
@@ -247,6 +274,7 @@ struct Diarizer: Sendable {
 
         private struct ObjectOutput: Decodable {
             let error: String?
+            let errorCode: String?
             let model: String?
             let segments: [Segment]?
             let speakers: [Speaker]?
@@ -380,15 +408,30 @@ enum DiarizationVoiceMerge {
 enum DiarizerError: LocalizedError, Equatable {
     case emptyOutput
     case scriptFailed(String)
+    case modelsNotCached(String)
     case invalidEmbedding
     case timedOut
     case runtimeUnavailable
     case noSpeakersDetected
 
+    /// The error for one failure the script named, so every caller reads the same answer.
+    ///
+    /// A cache the run cannot read is a state of this Mac rather than a fault in the script, and it
+    /// is answered with what to attach. Everything else stays the script's own sentence.
+    static func scriptFailure(code: String?, detail: String) -> DiarizerError {
+        code == Diarizer.DiarizerRawOutput.modelsNotCachedCode
+            ? .modelsNotCached(detail)
+            : .scriptFailed(detail)
+    }
+
     var errorDescription: String? {
         switch self {
         case .emptyOutput: "Diarization produced no output."
         case .scriptFailed(let msg): "Diarization failed: \(msg)"
+        case .modelsNotCached(let detail):
+            "The speaker models are not in the local Hugging Face cache, so the voices of this call "
+                + "cannot be separated. Attach the disk that holds the cache, or download both "
+                + "models again, then retry. Your audio and transcript are safe. (\(detail))"
         case .invalidEmbedding: "Diarization produced an invalid speaker embedding."
         case .timedOut: "Diarization timed out and was stopped. Retry it from Recovery."
         case .runtimeUnavailable:

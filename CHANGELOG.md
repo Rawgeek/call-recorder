@@ -4,6 +4,44 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.34] - 2026-09-30
+
+A call keeps its transcript when the reader repeats itself inside one piece of it, a screen that is
+asleep no longer costs a recording, and a speaker cache that is not there is named instead of
+raised.
+
+### Fixed
+
+- **A piece the reader fills with one repeated phrase costs a piece, not the call.** The app refuses
+  a recording whose transcript is one phrase said over and over, and it is right to: that is a
+  decoder reading its own output. The reader's own check, which reads a piece again through a
+  narrower window and drops it when it loops twice, only asked about answers of eighty tokens or
+  more, and a fifteen-second piece answers with far fewer. A phrase repeated inside one of those
+  was passed through, and the app's guard then refused the whole recording for it. On 2026-09-29 the
+  nineteen-minute lesson that ran from 11:15 and the thirty-eight-minute one from 14:03 were each
+  read twice, and neither transcript was written at all. The reader now asks the app's own question,
+  a phrase of two words or more in three copies that hold half the answer, and answers it the way it
+  answers every other loop: the piece is read again through a narrower window, and dropped when it
+  loops twice.
+- **An automatic recording no longer gives up because the screen is asleep.** ScreenCaptureKit
+  answers with no display at all while the display is off, and a capture cannot start without one,
+  so a start that met an empty display list was refused: on 2026-09-28 at 17:04 an automatic
+  recording failed with `noDisplay` beside a call that was running. The start now asks the system
+  for the screen the way a key press does, and looks again up to five more times a second apart,
+  which is what a screen that is coming back needs. A Mac that has no display answers nothing and is
+  refused as before, with a sentence that names the screen and what to do about it.
+- **A speaker cache that is not there is named rather than raised.** Nemotron 3 and the pyannote
+  embedder are read from the Hugging Face cache this Mac's client shares, and that cache can sit on
+  a disk that is not attached. Asked for a model it does not hold, the client raised from inside
+  transformers, and the app answered with that traceback: on 2026-09-30 the 13:04 call was left at
+  the speaker stage with three attempts behind it, and nothing was said about the volume that had
+  gone away. The speaker script now reads the cache first and answers with the folder and both model
+  names, in the check and in a separation alike; the app turns that answer into what to attach or to
+  download again.
+- **A refused transcript says what happened to the recording.** "The transcript looks repetitive and
+  was not saved" described the verdict rather than the call. It now says that the audio is kept and
+  that the recording can be read again from Recovery.
+
 ## [0.1.33] - 2026-09-26
 
 A call is read by Qwen3-ASR 1.7B on MLX, which reads a meeting that mixes Russian with English

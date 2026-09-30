@@ -99,6 +99,77 @@ struct DiarizerTests {
         }
     }
 
+    @Test("an answer that names the cache is answered with what to attach")
+    func readsAMissingCacheAsAStateOfThisMac() throws {
+        // 2026-09-30: the models live in a Hugging Face cache on a volume that was not attached,
+        // and the run answered with a traceback from inside transformers. The script names the
+        // cache now, and the app has to read that name rather than repeat the traceback.
+        let data = try JSONSerialization.data(withJSONObject: [
+            "error": "the speaker models are not in the local Hugging Face cache at "
+                + "/Volumes/Media/huggingface-cache/hub: nvidia/Nemotron-3-Diarization@a435e98",
+            "errorCode": "modelsNotCached",
+        ])
+
+        do {
+            _ = try Diarizer.decode(data)
+            Issue.record("an answer that carries an error is not a separation")
+        } catch let error as DiarizerError {
+            guard case .modelsNotCached = error else {
+                Issue.record("expected the cache answer, got \(error)")
+                return
+            }
+            let said = try #require(error.errorDescription)
+            #expect(said.contains("Hugging Face cache"))
+            #expect(said.contains("Attach the disk"))
+            #expect(said.contains("Your audio and transcript are safe"))
+        }
+    }
+
+    @Test("an answer with no code stays the script's own failure")
+    func readsAnUnnamedFailureAsAScriptFailure() throws {
+        // A copy of the script from before the code existed, and every failure it does not name,
+        // are answered as what they are rather than as a cache that is not there.
+        let data = try JSONSerialization.data(withJSONObject: ["error": "Exit 1: the wave was not found"])
+
+        #expect(throws: DiarizerError.scriptFailed("Exit 1: the wave was not found")) {
+            try Diarizer.decode(data)
+        }
+    }
+
+    @Test(
+        "a cache that holds nothing is named by the real script, not raised from the library",
+        .enabled(if: TestEnvironment.canRunSpeakerScript)
+    )
+    func theScriptNamesACacheThatHoldsNothing() throws {
+        guard let python = TestEnvironment.speakerRuntimePython,
+              let script = TestEnvironment.diarizationScript
+        else { return }
+        let empty = FileManager.default.temporaryDirectory
+            .appending(path: "empty-cache-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: empty, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: empty) }
+
+        // The shipping script, run the way a call runs it, with a cache that holds no model at all.
+        // This is the state the 2026-09-30 call was left in, and the answer has to name both models
+        // and the folder they were looked for in.
+        do {
+            try Diarizer(
+                python: python,
+                script: script,
+                environment: ["HF_HUB_CACHE": empty.path]
+            ).check()
+            Issue.record("a cache that holds nothing cannot answer that the runtime is ready")
+        } catch let error as DiarizerError {
+            guard case .modelsNotCached(let detail) = error else {
+                Issue.record("expected the cache answer, got \(error)")
+                return
+            }
+            #expect(detail.contains(empty.path))
+            #expect(detail.contains("nvidia/Nemotron-3-Diarization@"))
+            #expect(detail.contains("pyannote/speaker-diarization-community-1@"))
+        }
+    }
+
     @Test("decodes diarization turns and normalized 256-value speaker centroids")
     func decodesSpeakerCentroids() throws {
         var embedding = Array(repeating: 0.0, count: 256)

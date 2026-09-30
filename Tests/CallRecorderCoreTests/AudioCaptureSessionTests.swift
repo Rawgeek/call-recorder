@@ -3,8 +3,100 @@ import ScreenCaptureKit
 import Testing
 @testable import CallRecorderApp
 
+/// A count the display-wait tests read after the loop has run.
+private final class CallCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return count
+    }
+
+    @discardableResult
+    func countOne() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
+    }
+}
+
 @Suite("Audio capture session")
 struct AudioCaptureSessionTests {
+    @Test("a start that finds no display asks the screen back and looks again")
+    func looksAgainUntilADisplayIsThere() async throws {
+        // ScreenCaptureKit answers with no display while the screen is asleep, and the 2026-09-28
+        // 17:04 automatic recording was refused on the first such answer. The start asks for the
+        // screen and looks again instead of giving the call up.
+        let looks = CallCounter()
+        let wakes = CallCounter()
+
+        let content = try await AudioCaptureSession.waitingForADisplay(
+            attempts: 4,
+            pause: .milliseconds(1),
+            look: { () -> [String] in looks.countOne() < 3 ? [] : ["display"] },
+            hasDisplay: { !$0.isEmpty },
+            wake: { wakes.countOne(); return 1 },
+            release: { _ in },
+            sleep: { _ in }
+        )
+
+        #expect(content == ["display"])
+        #expect(looks.value == 3)
+        #expect(wakes.value == 2)
+    }
+
+    @Test("a display that is already there is answered without a look for another")
+    func doesNotLookTwiceWhenThereIsADisplay() async throws {
+        let looks = CallCounter()
+        let wakes = CallCounter()
+
+        let content = try await AudioCaptureSession.waitingForADisplay(
+            attempts: 4,
+            pause: .milliseconds(1),
+            look: { () -> [String] in looks.countOne(); return ["display"] },
+            hasDisplay: { !$0.isEmpty },
+            wake: { wakes.countOne(); return 1 },
+            release: { _ in },
+            sleep: { _ in }
+        )
+
+        #expect(content == ["display"])
+        #expect(looks.value == 1)
+        #expect(wakes.value == 0)
+    }
+
+    @Test("a Mac that never answers a display stops looking and says what it saw")
+    func givesUpAfterTheLastLook() async throws {
+        // A Mac with no display at all answers nothing however long the app waits, so the start has
+        // to end and report the refusal rather than look forever.
+        let looks = CallCounter()
+        let wakes = CallCounter()
+
+        let content = try await AudioCaptureSession.waitingForADisplay(
+            attempts: 5,
+            pause: .milliseconds(1),
+            look: { () -> [String] in looks.countOne(); return [] },
+            hasDisplay: { !$0.isEmpty },
+            wake: { wakes.countOne(); return 1 },
+            release: { _ in },
+            sleep: { _ in }
+        )
+
+        #expect(content.isEmpty)
+        #expect(looks.value == 5)
+        #expect(wakes.value == 4)
+    }
+
+    @Test("the refusal a screen that never comes back produces names the screen")
+    func theRefusalNamesTheScreen() {
+        let said = AudioCaptureError.noDisplay.errorDescription ?? ""
+        #expect(said.contains("asleep"))
+        #expect(said.contains("wake it"))
+    }
+
     @Test("an already-stopped ScreenCaptureKit stream is an idempotent stop")
     func recognizesAlreadyStoppedStream() {
         let error = NSError(domain: SCStreamErrorDomain, code: -3_808)

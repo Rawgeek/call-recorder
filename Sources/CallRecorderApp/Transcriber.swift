@@ -12,7 +12,8 @@ enum TranscriberError: LocalizedError {
         case .outputAlreadyExists:
             "Transcript files already exist for this recording."
         case .repetitiveTranscript:
-            "The transcript looks repetitive and was not saved."
+            "The reader repeated itself instead of reading this recording, so no transcript was "
+                + "saved. The audio is kept; read it again from Recovery."
         case .engineUnavailable:
             "The speech runtime or the model it reads with is not installed. "
                 + "Install both in Settings, Models, Speech."

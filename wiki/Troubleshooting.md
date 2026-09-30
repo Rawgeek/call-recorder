@@ -7,6 +7,8 @@
 | The speech runtime offers Reinstall | The `mlx` packages on this Mac are not the versions this build reads with. Press Reinstall to put the pinned ones back. |
 | Transcript saved, speakers unnamed | Speaker detection is not set up or failed. Open Review Speakers and retry; the audio is kept until speakers are reviewed. |
 | Speaker detection keeps failing | Review Speakers -> Speaker setup -> Check Speaker Setup, and re-select the Python environment. |
+| Speaker detection says the models are not in the Hugging Face cache | The cache folder the message names is gone or empty. Attach the disk that holds it, or sign in again with `hf auth login` and download both models as in Installation, Speaker separation. Then press Check Speaker Setup. |
+| A transcript was refused as repetitive | The reader repeated itself on that recording, so no transcript was saved and the audio is kept. Read the recording again from Settings -> Recovery. |
 | Nothing recorded from the other side | System Settings -> Privacy & Security -> Screen & System Audio Recording: enable Call Recorder, then restart the app. |
 | A row says "One side only" | System audio was not captured for that call. Check the permission above. |
 | `codex mcp list` shows no server | Re-run `codex mcp add` with the exact quoted paths, then restart Codex. |
@@ -17,4 +19,3 @@
 Every error surface in the app has **Copy Error Details**, and Settings -> Recovery can export
 a redacted diagnostics bundle. Include one of them in an issue; both exclude audio, transcript
 text, and voiceprints.
-

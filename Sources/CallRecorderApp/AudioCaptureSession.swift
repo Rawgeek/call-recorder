@@ -2,6 +2,7 @@ import AVFoundation
 import CoreAudio
 import CoreMedia
 import Foundation
+import IOKit.pwr_mgt
 import OSLog
 import ScreenCaptureKit
 
@@ -91,7 +92,8 @@ extension AudioCaptureError: LocalizedError {
         case .notCapturing:
             "No recording is running."
         case .noDisplay:
-            "No display was found to capture the call's audio through."
+            "No display was found to capture the call's audio through, so the recording did not "
+                + "start. A screen that is asleep answers this way; wake it and try again."
         case .noMicrophone:
             "No microphone is connected. Turn on Settings, General, Record when there is no "
                 + "microphone to record the other side without one."
@@ -104,6 +106,47 @@ extension AudioCaptureError: LocalizedError {
 @MainActor
 final class AudioCaptureSession {
     nonisolated private static let builtInMicrophoneID = "BuiltInMicrophoneDevice"
+
+    /// How many times a start looks for a display, and how long it waits between the looks.
+    ///
+    /// A screen that is waking answers within a few seconds, and a Mac that has no display at all
+    /// answers nothing however long the app waits: six looks a second apart tell the two states
+    /// apart in a few seconds, which is short enough to sit inside a recording start.
+    nonisolated static let displayLookAttempts = 6
+    nonisolated static let displayLookPause: Duration = .seconds(1)
+
+    /// Looks for a shareable display, asking the screen to come back when there is none.
+    ///
+    /// ScreenCaptureKit answers with an empty display list while the screen is asleep or off, and
+    /// the capture was refused on the first empty answer: the 2026-09-28 17:04 recording never
+    /// started for that reason, and the call it was for was not recorded. The screen is asked back
+    /// between the looks, because nothing else brings a sleeping display back, and the last answer
+    /// is returned either way so the caller reports what it saw rather than what it hoped for.
+    ///
+    /// The content is whatever the caller reads a display out of, and the two closures that answer
+    /// it are injected, so the loop can be checked without a Mac whose screen sleeps.
+    nonisolated static func waitingForADisplay<Content>(
+        attempts: Int = AudioCaptureSession.displayLookAttempts,
+        pause: Duration = AudioCaptureSession.displayLookPause,
+        look: @Sendable () async throws -> Content,
+        hasDisplay: @Sendable (Content) -> Bool,
+        wake: @Sendable () -> IOPMAssertionID? = DisplayWake.declareUserActivity,
+        release: @Sendable (IOPMAssertionID?) -> Void = DisplayWake.release,
+        sleep: @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+    ) async throws -> Content {
+        var content = try await look()
+        var lookNumber = 1
+        while !hasDisplay(content), lookNumber < max(1, attempts) {
+            // Held for the pause and released after it, so the screen has the second it needs to
+            // come back and the app leaves no assertion behind when it does not.
+            let declaration = wake()
+            try await sleep(pause)
+            release(declaration)
+            content = try await look()
+            lookNumber += 1
+        }
+        return content
+    }
 
     /// The choice that follows the microphone macOS is set to use.
     ///
@@ -293,7 +336,10 @@ final class AudioCaptureSession {
         // count as quiet.
         levels.reset()
 
-        let content = try await SCShareableContent.currentProcess
+        let content = try await Self.waitingForADisplay(
+            look: { try await SCShareableContent.currentProcess },
+            hasDisplay: { !$0.displays.isEmpty }
+        )
         guard let display = content.displays.first else { throw AudioCaptureError.noDisplay }
         let ownApplication = content.applications.filter {
             $0.processID == ProcessInfo.processInfo.processIdentifier

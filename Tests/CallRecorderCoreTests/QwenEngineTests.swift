@@ -48,6 +48,46 @@ struct QwenTranscriptDecodingTests {
     }
 }
 
+/// The rule the reader uses to decide that a piece of an answer is a loop.
+///
+/// A piece this calls a loop is read again through a narrower window and dropped when it loops a
+/// second time, so the line this rule draws is the line between a piece a call keeps and a piece it
+/// loses. On 2026-09-29 two lessons were read twice each and neither transcript was written at all:
+/// the answers repeated a phrase and the app's own guard refused the whole recording for it. The
+/// examples are answered by the shipping script, which needs no model for that.
+@Suite("Transcription loop rule")
+struct QwenLoopRuleTests {
+    @Test("a phrase said three times is a loop, and a person repeating words is not")
+    func answersTheBuiltInExamples() throws {
+        let script = TestEnvironment.packageRoot
+            .appending(path: "Sources/CallRecorderApp/qwen_asr.py")
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/python3")
+        process.arguments = [script.path, "--self-check"]
+        let output = Pipe()
+        process.standardOutput = output
+        process.standardError = Pipe()
+        try process.run()
+        let data = output.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        // The script answers with its own exit code, and with what it answered for each example.
+        #expect(process.terminationStatus == 0)
+        let answered = try #require(
+            try JSONSerialization.jsonObject(with: data) as? [String: [String: Any]]
+        )
+        for (example, answer) in answered {
+            #expect(answer["looping"] as? Bool == answer["expected"] as? Bool, "\(example)")
+        }
+        // The two sides of the line, named: the shape that cost the two lessons is a loop, and the
+        // shape the guard was narrowed for on 2026-09-23 is a person.
+        #expect(answered["a phrase three times and nothing else"]?["looping"] as? Bool == true)
+        #expect(
+            answered["a person agreeing six times in one breath"]?["looping"] as? Bool == false
+        )
+    }
+}
+
 /// The engine, driven against the real model on audio this test makes.
 ///
 /// A stub reader covers the transcriber's own work; this covers the other half of the contract:

@@ -54,6 +54,16 @@ TURN_MODEL: Final = "nvidia/Nemotron-3-Diarization@a435e9867d79e789e90053f9b6d68
 TURN_MODEL_ID: Final = "nvidia/Nemotron-3-Diarization"
 TURN_MODEL_REVISION: Final = "a435e9867d79e789e90053f9b6d6834053af564a"
 
+#: What the app reads when a model the run needs is not in the local cache.
+#:
+#: The cache is not the app's: it is the one every Hugging Face client on this Mac shares, and on
+#: this Mac it can sit on a disk that is not attached. Asked for a model it does not hold, the
+#: client raises from deep inside transformers, and the run answered with a traceback that named
+#: neither the models nor the cache: on 2026-09-30 the 13:04 call was left at this stage with three
+#: attempts behind it and nothing said about the volume that had gone away. The app now reads this
+#: code and answers with the disk rather than with the library.
+MODELS_NOT_CACHED_CODE: Final = "modelsNotCached"
+
 SAMPLING_RATE: Final = 16000
 EMBEDDING_DIMENSION: Final = 256
 FRAME_SECONDS: Final = 0.01
@@ -231,6 +241,63 @@ def load_turn_model():
     )
     model.eval()
     return processor, model
+
+
+def cache_directory() -> str:
+    """Where the models are looked for, as the client on this Mac resolves it."""
+    from huggingface_hub import constants
+
+    return str(constants.HF_HUB_CACHE)
+
+
+def missing_cached_models() -> list[str]:
+    """The models the local cache does not hold, named the way the cache addresses them.
+
+    A cached model costs one directory listing, and nothing here reads a weight. A missing one is
+    named rather than loaded, because loading it raises from inside the library with nothing said
+    about the cache that is not there.
+    """
+    from huggingface_hub import snapshot_download
+
+    missing: list[str] = []
+    for repository, revision in (
+        (TURN_MODEL_ID, TURN_MODEL_REVISION),
+        (EMBEDDING_PIPELINE, EMBEDDING_REVISION),
+    ):
+        try:
+            snapshot_download(repository, revision=revision, local_files_only=True)
+        except Exception:  # noqa: BLE001 - one that cannot be read here is not here
+            missing.append(f"{repository}@{revision[:7]}")
+    return missing
+
+
+def not_cached_sentence(missing: list[str]) -> str:
+    """One sentence naming the cache and the models it does not hold."""
+    return (
+        f"the speaker models are not in the local Hugging Face cache at {cache_directory()}: "
+        + ", ".join(missing)
+    )
+
+
+def is_missing_from_cache(error: BaseException) -> bool:
+    """Whether an error is the client answering that a model is not in the local cache.
+
+    The type is read by name rather than by class, so a question about the cache does not depend on
+    which version of the client is installed.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in ("LocalEntryNotFoundError", "OfflineModeIsEnabled"):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def emit_not_cached(missing: list[str]) -> None:
+    """Answer with the cache rather than with a traceback, and say the run could not start."""
+    emit({"error": not_cached_sentence(missing), "errorCode": MODELS_NOT_CACHED_CODE})
 
 
 def load_embedder():
@@ -593,7 +660,7 @@ def separate_into_count(audio: Path, count: int) -> OutputPayload:
     }
 
 
-def main() -> None:
+def main() -> int:
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", type=Path, nargs="?", help="16kHz mono WAV file")
@@ -606,9 +673,16 @@ def main() -> None:
 
     if args.self_check:
         self_check()
-        return
+        return 0
 
     if args.check:
+        # The cache answers first, because it is the cheapest question and the one whose answer a
+        # person can act on: a missing volume is named in a second, where loading the model it
+        # cannot find would take the library's own time to say less.
+        missing = missing_cached_models()
+        if missing:
+            emit_not_cached(missing)
+            return 3
         check_audio_decoder()
         load_turn_model()
         load_embedder()
@@ -619,21 +693,30 @@ def main() -> None:
             "speakers": [],
         }
         emit(payload)
-        return
+        return 0
     if args.audio is None:
         parser.error("audio is required unless --check or --self-check is used")
 
-    if args.num_speakers > 0:
-        payload = separate_into_count(args.audio, args.num_speakers)
-    else:
-        payload = separate_by_detector(args.audio)
+    try:
+        if args.num_speakers > 0:
+            payload = separate_into_count(args.audio, args.num_speakers)
+        else:
+            payload = separate_by_detector(args.audio)
+    except Exception as error:  # noqa: BLE001 - a cache that is not there is a report, not a crash
+        if not is_missing_from_cache(error):
+            raise
+        emit_not_cached(missing_cached_models())
+        return 3
     emit(payload)
+    return 0
 
 
 if __name__ == "__main__":
     silence_library_output()
     try:
-        main()
+        # The code main answers with is the run's: a cache that is not there is exit 3, and the
+        # payload says the same thing, so a caller that reads either one gets the same answer.
+        sys.exit(main())
     except Exception as error:  # noqa: BROAD_EXCEPT_OK
         import traceback
         emit({"error": traceback.format_exc()})

@@ -12,12 +12,13 @@ a long meeting its second half:
   words of the letter "с".
 
 This script reads the call in overlapping pieces, gives every piece its own budget, and checks each
-answer before it is kept. A piece whose words are mostly one repeated token is read again through a
-narrower window; one that loops twice is dropped and counted, and the app has its own rule for a
-transcript that lost too much.
+answer before it is kept. A piece that repeats itself -- one token over and over, or one phrase
+three times -- is read again through a narrower window; one that loops twice is dropped and counted,
+and the app has its own rule for a transcript that lost too much.
 
 Usage:
   python3 qwen_asr.py --model <folder> --audio <wav> --output <json> [--language ru] [--hotwords a,b]
+  python3 qwen_asr.py --self-check
 
 The audio must already be 16 kHz mono, which the app converts it to before calling this script.
 """
@@ -56,12 +57,28 @@ REPEAT_SHARE_LIMIT = 0.25
 #: A loop is a long answer with no variety, so the check is only worth running past this length.
 REPEAT_COUNT_FLOOR = 40
 
+#: Copies of one phrase inside an answer that are a decoder loop rather than emphasis.
+#:
+#: The rule above needs eighty tokens before it looks, and a fifteen-second piece mostly answers
+#: with fewer: an answer that says one phrase three times was passed through to the transcript, and
+#: the app's own quality guard then refused the whole recording rather than the piece. On
+#: 2026-09-29 the nineteen-minute lesson that ran from 11:15 and the thirty-eight-minute one from
+#: 14:03 were read twice each and neither transcript was written at all. The numbers are the app's,
+#: so the two agree on what a loop is; the answer here is the one every other loop in this script
+#: already gets, which is to read the piece again through a narrower window and drop it if it loops
+#: twice. A single word is left alone on purpose: a person does say "no no no", which is why the
+#: app looks for a phrase of two words or more.
+PHRASE_COPY_FLOOR = 3
+PHRASE_MINIMUM_WORDS = 2
+PHRASE_MAXIMUM_WORDS = 8
+PHRASE_SHARE_LIMIT = 0.5
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Read a recording with Qwen3-ASR.")
-    parser.add_argument("--model", required=True, help="Folder holding the MLX model.")
-    parser.add_argument("--audio", required=True, help="16 kHz mono wave to read.")
-    parser.add_argument("--output", required=True, help="Where the JSON goes.")
+    parser.add_argument("--model", help="Folder holding the MLX model.")
+    parser.add_argument("--audio", help="16 kHz mono wave to read.")
+    parser.add_argument("--output", help="Where the JSON goes.")
     parser.add_argument("--language", default="auto", help="Language code, or auto.")
     # Fifteen seconds, measured on the 2026-09-24 call (4221 s of Russian and English): 362 pieces
     # in 247.7 s, against 14 pieces of about five minutes in 255.6 s. Shorter pieces are not slower
@@ -71,6 +88,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--overlap-seconds", type=float, default=1.5)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--hotwords", default="", help="Comma-separated names and terms.")
+    parser.add_argument(
+        "--self-check",
+        action="store_true",
+        help="Answer the loop question for the built-in examples, without a model",
+    )
     return parser.parse_args()
 
 
@@ -81,12 +103,85 @@ def spoken_words(text: str) -> list[str]:
 def is_looping(text: str) -> bool:
     """Whether an answer is a decoder loop rather than speech."""
     tokens = spoken_words(text)
-    if len(tokens) < REPEAT_COUNT_FLOOR * 2:
-        return False
-    counts: dict[str, int] = {}
-    for token in tokens:
-        counts[token] = counts.get(token, 0) + 1
-    return max(counts.values()) / len(tokens) >= REPEAT_SHARE_LIMIT
+    if len(tokens) >= REPEAT_COUNT_FLOOR * 2:
+        counts: dict[str, int] = {}
+        for token in tokens:
+            counts[token] = counts.get(token, 0) + 1
+        if max(counts.values()) / len(tokens) >= REPEAT_SHARE_LIMIT:
+            return True
+    return repeated_phrase_copies(tokens) >= PHRASE_COPY_FLOOR
+
+
+def non_overlapping_copies(phrase: tuple[str, ...], tokens: list[str]) -> int:
+    """How many copies of one phrase sit end to end, the way the app's cleaning pass takes them."""
+    count = 0
+    index = 0
+    length = len(phrase)
+    while index + length <= len(tokens):
+        if tuple(tokens[index:index + length]) == phrase:
+            count += 1
+            index += length
+        else:
+            index += 1
+    return count
+
+
+def repeated_phrase_copies(tokens: list[str]) -> int:
+    """The copies the longest repeated phrase makes up, when they are most of the answer.
+
+    Overlapping runs are not counted, for the reason the app counts them the same way: six words
+    that hold three copies of a two-word phrase are three copies and not four, and a person
+    agreeing six times in one breath has said nothing twice.
+    """
+    if len(tokens) < PHRASE_MINIMUM_WORDS * PHRASE_COPY_FLOOR:
+        return 0
+    longest = min(PHRASE_MAXIMUM_WORDS, len(tokens) // PHRASE_COPY_FLOOR)
+    for length in range(longest, PHRASE_MINIMUM_WORDS - 1, -1):
+        checked: set[tuple[str, ...]] = set()
+        for start in range(0, len(tokens) - length + 1):
+            phrase = tuple(tokens[start:start + length])
+            if phrase in checked:
+                continue
+            checked.add(phrase)
+            copies = non_overlapping_copies(phrase, tokens)
+            if copies < PHRASE_COPY_FLOOR:
+                continue
+            if (copies - 1) * length / len(tokens) >= PHRASE_SHARE_LIMIT:
+                return copies
+    return 0
+
+
+def self_check() -> int:
+    """Answer the loop question for the built-in examples, so the rule can be read without a model.
+
+    Every example is a shape a call in this library has produced. An answer this calls a loop is
+    read again through a narrower window, and dropped when it loops twice, so the line between the
+    two answers below is the line between a piece a call keeps and a piece it loses.
+    """
+    examples = [
+        ("a phrase three times and nothing else", True, "Thank you. Thank you. Thank you."),
+        ("a phrase twice is a person", False, "Thank you. Thank you."),
+        (
+            "a person agreeing six times in one breath",
+            False,
+            "да да да да да да просто действительно столько стоит конечно лучше казаться они а может быть",
+        ),
+        ("one word said eighteen times", True, " ".join(["да"] * 18)),
+        ("a short answer with one word repeated", False, "Yes, yes, that is right."),
+        (
+            "ordinary speech",
+            False,
+            "The warehouse will ship it on Friday and I will check the numbers.",
+        ),
+        ("a language written without spaces", False, "ใช่ค่ะแต่ว่าเมื่อก่อนปกติเวลาที่คุณครูใส่ไปในกูเกิล"),
+        ("a long answer that repeats one word", True, " ".join(["hello"] * 120)),
+    ]
+    answers = {
+        name: {"looping": is_looping(text), "expected": expected}
+        for name, expected, text in examples
+    }
+    print(json.dumps(answers, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if all(answer["looping"] == answer["expected"] for answer in answers.values()) else 1
 
 
 def language_code(value: object) -> str:
@@ -139,6 +234,15 @@ def split_audio(
 def main() -> int:
     args = parse_args()
     started = time.time()
+
+    if args.self_check:
+        return self_check()
+    if args.model is None or args.audio is None or args.output is None:
+        print(
+            "--model, --audio and --output are required unless --self-check is used",
+            file=sys.stderr,
+        )
+        return 2
 
     if RUNTIME_IMPORT_ERROR is not None:
         print(f"the speech runtime cannot read audio: {RUNTIME_IMPORT_ERROR}", file=sys.stderr)
