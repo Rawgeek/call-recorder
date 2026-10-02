@@ -4,6 +4,19 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.36] - 2026-10-02
+
+### Fixed
+
+- **An already-named voice no longer comes back to Review by itself.** The check that compares
+  every named voice with the voice print of the person on it ran at every launch. A voice named
+  days earlier could sit below the check's bar -- the bar moves as profiles learn -- and the
+  launch run handed it back to be named again: on 2026-10-02 three voices from calls closed on
+  the 29th and 30th returned as "to name" cards whose audio had already been given up, and one
+  of them held lines its reader had moved onto other people by hand. The check now runs only when
+  Fix Speaker Names is pressed in Settings -> Recovery. A name stays on a voice until the person
+  changes it.
+
 ## [0.1.35] - 2026-09-30
 
 ### Fixed

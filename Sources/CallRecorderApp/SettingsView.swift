@@ -530,7 +530,8 @@ struct RecoverySettingsView: View {
                 CRSettingsDivider()
                 CRSettingsRow(
                     title: "Check every name against its voice",
-                    detail: "A fragment that does not sound like the person returns to review once."
+                    detail: "A fragment that does not sound like the person returns to review once. "
+                        + "The check runs only when you ask for it."
                 ) {
                     CRButton(title: "Fix Speaker Names", icon: "person.wave.2") {
                         model.reconcileSharedSpeakers()

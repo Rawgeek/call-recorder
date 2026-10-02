@@ -258,10 +258,11 @@ public enum VoiceIdentityState: Equatable, Sendable {
 /// What one run of the speaker repair did, in words a person can read.
 ///
 /// The repair looks for calls where one name landed on several voices that do not sound alike,
-/// which is what a transcription over-split leaves behind. It ran by itself at launch and said
-/// nothing either way, so a call still showing one person on four voices looked identical whether
-/// the repair had never run, had run and failed, or had run and decided those voices really are
-/// that person. This is the answer to that question.
+/// which is what a transcription over-split leaves behind. It says nothing either way, so a call
+/// still showing one person on four voices looked identical whether the repair had never run,
+/// had run and failed, or had run and decided those voices really are that person. This is the
+/// answer to that question. The check runs when the person asks for it from Settings, not by
+/// itself at launch.
 public struct SpeakerReconcileSummary: Equatable, Sendable {
     /// When the run finished.
     public let finishedAt: Date

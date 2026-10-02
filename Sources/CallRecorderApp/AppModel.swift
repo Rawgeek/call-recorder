@@ -188,10 +188,11 @@ final class AppModel {
 
     /// What the last speaker repair did, kept so the Repair card can say it ran and what it found.
     ///
-    /// The repair runs by itself at launch, and it acted silently whether it changed anything or
-    /// not. Someone looking at a call that still shows one person on several voices could not tell
-    /// whether the repair had run at all, or had run and decided those voices really are one
-    /// person. Both are answers; only the second one means there is nothing left to fix.
+    /// The repair runs when the person asks for it from Settings, and it acted silently whether it
+    /// changed anything or not. Someone looking at a call that still shows one person on several
+    /// voices can press the button and read whether the check had run at all, or had run and
+    /// decided those voices really are one person. Both are answers; only the second one means
+    /// there is nothing left to fix.
     private(set) var lastSpeakerReconcile: SpeakerReconcileSummary?
     private(set) var voiceIdentityError: String?
 
@@ -3439,7 +3440,12 @@ final class AppModel {
         }
         await refreshSpeakerReviews()
         await refreshSpeakerReviewEvidence()
-        await reconcileSharedSpeakersNow(announceWhenClean: false)
+        // The speaker-name check deliberately does not run here. Handing a named voice back to
+        // Review is a question only the person can answer, and asking it unprompted at launch put
+        // voices they had already named on finished calls back into the queue: on 2026-10-02 three
+        // voices from calls closed days earlier came back this way, their audio already given up,
+        // and one of them carried lines its reader had moved onto a person by hand. The check
+        // stays in Settings, where it runs only when the person asks for it.
         await finishCallsWaitingForVoiceIdentity()
     }
 
