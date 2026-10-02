@@ -4,6 +4,22 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.37] - 2026-10-02
+
+### Fixed
+
+- **The panel follows its content up as well as down, so a card that arrives stays inside it.** The
+  fit only ever made the popover's window shorter. The height the system gave was trusted to grow
+  again on its own, and it does not grow once the app has set the frame. The popover's content is
+  much shorter since the live features came out, so the window is fitted to a call list without a
+  card above it. On 2026-10-02 the Review Speakers card arrived with eleven voices on top of that
+  list, and the content became about fifty points taller than the window it sat in: 439 against
+  389. SwiftUI centres content that does not fit, so both ends were cut off -- the Ready header
+  left the top of the panel and the footer's icons left the bottom, which reads as the text moving
+  up and the icons moving down. The fit now sets the window's height from the content's own
+  measurement in both directions, and never past the room between the menu bar and the bottom of
+  the screen.
+
 ## [0.1.36] - 2026-10-02
 
 ### Fixed

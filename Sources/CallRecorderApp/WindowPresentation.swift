@@ -77,10 +77,15 @@ enum WindowPresentation {
     /// a transparent header. The strip is removed by putting the top edge back under the menu bar
     /// every time the window is moved or resized.
     ///
-    /// The measurement is only ever used to make the window shorter. A window drawn by the system
-    /// is the authority on how tall it should be, and a number larger than the window would be a
-    /// measurement of something else. When no measurement was passed in, the content view is asked,
-    /// which answers zero on the panel and the content's height in a test.
+    /// The measurement is what the window's height is set to, in both directions. A window taller
+    /// than its content keeps the room the content does not fill. A window shorter than its content
+    /// is the worse of the two: the content is centred in it, so both ends are cut off, and the
+    /// header leaves the top of the panel while the footer leaves the bottom. That is the state
+    /// this rule exists to end, and a measurement larger than the window is the answer to it, not a
+    /// mistake: the content reports the height it holds even when the window cannot show it. The
+    /// window is never grown past the room between the menu bar and the bottom of the screen. When
+    /// no measurement was passed in, the content view is asked, which answers zero on the panel and
+    /// the content's height in a test.
     static func fitMenuBarPanel(_ window: NSWindow, contentHeight: CGFloat? = nil) {
         // Measuring a hosting view lays it out, and laying it out can size or move the window,
         // which is another change to correct. Without this the measurement calls straight back
@@ -93,8 +98,10 @@ enum WindowPresentation {
         guard let content = window.contentView, let screen = window.screen ?? NSScreen.main else { return }
         var frame = window.frame
         let wanted = contentHeight ?? content.fittingSize.height
-        if wanted > 0, wanted < frame.height - 0.5 { frame.size.height = wanted }
-        frame.origin.y = menuBarBottom(of: screen) - frame.height
+        let barBottom = menuBarBottom(of: screen)
+        let room = barBottom - screen.frame.minY
+        if wanted > 0, room > 0 { frame.size.height = min(wanted, room) }
+        frame.origin.y = barBottom - frame.height
         guard
             abs(frame.height - window.frame.height) > 0.5
                 || abs(frame.origin.y - window.frame.origin.y) > 0.5

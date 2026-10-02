@@ -143,14 +143,37 @@ struct MenuBarPanelFitTests {
         #expect(loose.frame == looseBefore)
     }
 
-    @Test("a panel shorter than its content is placed, never grown")
-    func aShortPanelIsNotGrown() {
+    @Test("a panel shorter than its content is given the room it holds")
+    func aShortPanelIsGrownToItsContent() {
+        // This window used to be left where it was, on the reading that a number larger than the
+        // window was a measurement of something else. It is the content's own height: the content
+        // reports what it holds even when the window cannot show it, and a window that stays short
+        // cuts off both ends. On 2026-10-02 the Review Speakers card arrived after the panel had
+        // been fitted to a shorter state, the content was centred in a window a band short, and the
+        // header left the top of the panel while the footer left the bottom -- read as the text
+        // moving up and the icons moving down.
         let window = panel(height: 120, contentHeight: 400)
-        PanelWindow.report(window)
-        defer { PanelWindow.report(nil) }
-        #expect(window.frame.height == 120)
+
+        // When
+        WindowPresentation.fitMenuBarPanel(window)
+
+        // Then the window holds what the content holds, with its top edge under the menu bar.
+        #expect(window.frame.height == 400)
         guard let screen = fitScreen(of: window) else { return }
         #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
+    }
+
+    @Test("a panel is never grown past the bottom of the screen")
+    func aPanelIsNeverGrownPastTheScreen() {
+        let window = panel(height: 200, contentHeight: 200)
+        guard let screen = fitScreen(of: window) else { return }
+        let room = WindowPresentation.menuBarBottom(of: screen) - screen.frame.minY
+
+        // A content taller than the screen asks for more room than there is.
+        WindowPresentation.fitMenuBarPanel(window, contentHeight: room + 400)
+
+        #expect(abs(window.frame.height - room) <= 0.5)
+        #expect(window.frame.minY >= screen.frame.minY - 0.5)
     }
 
     @Test("a menu bar that hides itself is still a menu bar")
@@ -230,6 +253,35 @@ struct MenuBarPanelFitTests {
 
         // The notice is gone and the panel is the height of what is left, against the menu bar.
         #expect(window.frame.height < tall)
+        #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
+    }
+
+    @Test("the panel takes the height of a card that arrives")
+    func thePanelTakesTheHeightOfACardThatArrives() async throws {
+        // The other direction of the same rule, through a real hosting view: the panel is fitted
+        // while the popover is short, and the content grows under it. The window has to follow, or
+        // the content is centred in a window that cannot hold it and both ends are cut off.
+        let content = PanelNoticeModel(showsNotice: false)
+        let window = panel(height: 320, contentHeight: 120)
+        window.contentView = NSHostingView(rootView: GrowingPanelContent(model: content))
+        window.contentView?.layoutSubtreeIfNeeded()
+        guard let screen = fitScreen(of: window) else { return }
+        PanelWindow.report(window)
+        defer { PanelWindow.report(nil) }
+        try await Task.sleep(for: .milliseconds(700))
+        let short = window.frame.height
+        #expect(short < 130)
+
+        // The card arrives.
+        content.showsNotice = true
+        for _ in 0..<20 {
+            window.contentView?.layoutSubtreeIfNeeded()
+            try await Task.sleep(for: .milliseconds(25))
+            if window.frame.height > short + 1 { break }
+        }
+
+        // The window holds the taller content, and its top edge has not moved down the screen.
+        #expect(window.frame.height >= 195)
         #expect(abs(window.frame.maxY - WindowPresentation.menuBarBottom(of: screen)) <= 0.5)
     }
 }
