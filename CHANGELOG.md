@@ -4,6 +4,20 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.38] - 2026-10-02
+
+### Fixed
+
+- **Discard works while a recording is still running.** The trash control beside Stop opens a
+  confirm that asks "Discard this recording?", and its Discard button did nothing at all. The
+  request only ever took the path for a recording that had already stopped, and a running capture
+  is the one state the state machine refuses to discard -- rightly, because the audio is still
+  being written and a recording that is discarded mid-capture would leave a half-written file
+  behind. The live case is the case the control exists for, so it now stops the capture the way
+  Stop stops it and gives up what it holds instead of finalizing it: the audio goes to Recently
+  Deleted for 24 hours, no transcript is written, and the panel says where it went. The path for
+  a recording that has already stopped is unchanged.
+
 ## [0.1.37] - 2026-10-02
 
 ### Fixed

@@ -944,8 +944,24 @@ final class AppModel {
         recordingPausedAt = nil
     }
 
+    /// Gives up the recording the popover is showing, whichever state it is in.
+    ///
+    /// The trash control is drawn beside Stop, while the recording is still running, so the
+    /// request has to stop the capture before anything can be given up: a running capture is
+    /// still being written, and the state machine refuses to discard one. What the request means
+    /// per state is `RecordingDiscard.intent(for:)`, and the live case is the one that used to
+    /// fall through and leave the confirm's Discard button doing nothing at all.
     func discard() {
-        Task { await discardCurrentCall() }
+        switch RecordingDiscard.intent(for: recorderState.phase) {
+        case .stopThenDiscard:
+            captureQueue.enqueue { [weak self] in
+                await self?.stopRecording(automatic: false, discarding: true)
+            }
+        case .discardHeld:
+            Task { await discardCurrentCall() }
+        case .nothing:
+            break
+        }
     }
 
     /// Starts the popover's clock on the message just written, and stops it again on its own.
@@ -2789,7 +2805,12 @@ final class AppModel {
         }
     }
 
-    private func stopRecording(automatic: Bool) async {
+    /// Stops the capture that is running and settles what it holds.
+    ///
+    /// The discarding flag is the person's answer to the confirm's Discard: the capture is
+    /// stopped the same way Stop stops it, and the audio it holds is given up instead of being
+    /// finalized and queued. The stopping work is the same either way, so it is the same path.
+    private func stopRecording(automatic: Bool, discarding: Bool = false) async {
         guard recorderState.phase == .recording || recorderState.phase == .paused else { return }
         guard !captureOperationInFlight else { return }
         stopGraceTask?.cancel()
@@ -2825,9 +2846,16 @@ final class AppModel {
                 at: Date()
             )
             let minimum = settings.minimumAutomaticRecordingSeconds
-            if automatic,
-               AutomaticRecordingRails.isTooShort(recordedSeconds: recorded, minimumSeconds: minimum)
-            {
+            // A recording the person gave up and a recording the app started by itself and found
+            // too short go to the same place for the same reason: neither is kept, and both are
+            // held in Recently Deleted for a day rather than deleted outright.
+            let tooShortToKeep =
+                automatic
+                && AutomaticRecordingRails.isTooShort(
+                    recordedSeconds: recorded,
+                    minimumSeconds: minimum
+                )
+            if discarding || tooShortToKeep {
                 _ = try artifactRecovery.discardCall(
                     activeCallID,
                     sourceDirectory: activeSessionDirectory
@@ -2835,13 +2863,21 @@ final class AppModel {
                 clearRecordingContext()
                 apply(.audioFinalizedAndQueued)
                 recoverableArtifacts = (try? artifactRecovery.items()) ?? recoverableArtifacts
-                recoveryMessage = "A recording of " + String(Int(recorded.rounded()))
-                    + " s was shorter than the " + String(Int(minimum))
-                    + " s minimum, so it was discarded."
-                Logger(subsystem: "local.callrecorder.app", category: "capture")
-                    .notice(
-                        "discarded an automatic recording of \(Int(recorded.rounded()), privacy: .public) seconds"
-                    )
+                if discarding {
+                    recoveryMessage = "Recording moved to Recently Deleted for 24 hours."
+                    Logger(subsystem: "local.callrecorder.app", category: "capture")
+                        .notice(
+                            "discarded a recording of \(Int(recorded.rounded()), privacy: .public) seconds at the person's request"
+                        )
+                } else {
+                    recoveryMessage = "A recording of " + String(Int(recorded.rounded()))
+                        + " s was shorter than the " + String(Int(minimum))
+                        + " s minimum, so it was discarded."
+                    Logger(subsystem: "local.callrecorder.app", category: "capture")
+                        .notice(
+                            "discarded an automatic recording of \(Int(recorded.rounded()), privacy: .public) seconds"
+                        )
+                }
                 return
             }
             let snapshot = PendingBackgroundCall(
@@ -2907,9 +2943,7 @@ final class AppModel {
     }
 
     private func discardCurrentCall() async {
-        guard recorderState.phase == .awaitingParticipants || recorderState.phase == .failed else {
-            return
-        }
+        guard RecordingDiscard.intent(for: recorderState.phase) == .discardHeld else { return }
         guard
             let callID = activeCallID,
             let source = activeSessionDirectory
