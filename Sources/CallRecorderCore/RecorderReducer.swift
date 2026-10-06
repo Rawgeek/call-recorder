@@ -52,6 +52,17 @@ public enum RecorderReducer {
             guard state.phase == .recording, !state.externalMicrophoneActive else { return state }
             return state.replacing(phase: .finalizing)
 
+        case .limitStop:
+            // A rail's stop: the ceiling, or ten minutes of silence. Both ask while the call's app
+            // may still hold the microphone -- that is the state they exist for -- so this cannot
+            // take the answer .automaticStopGraceElapsed takes. That event is refused whenever the
+            // external microphone is still active, and on 2026-10-06 the refusal left the 17:29
+            // automatic recording in .recording: no segment was finished, the call row stayed at
+            // "recording", the save answered "no audio segments", and the audio files were left
+            // open. The rail's own event stops the recording whatever the microphone is doing.
+            guard state.phase == .recording || state.phase == .paused else { return state }
+            return state.replacing(phase: .finalizing, automaticStartSuppressed: true)
+
         case .audioFinalizedAndQueued:
             guard state.phase == .finalizing else { return state }
             return RecordingState(

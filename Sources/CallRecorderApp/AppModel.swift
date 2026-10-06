@@ -810,7 +810,7 @@ final class AppModel {
     }
 
     func stop() {
-        captureQueue.enqueue { [weak self] in await self?.stopRecording(automatic: false) }
+        captureQueue.enqueue { [weak self] in await self?.stopRecording(.person) }
     }
 
     /// Saves the participants shown in the Participants window and says what happened.
@@ -955,7 +955,7 @@ final class AppModel {
         switch RecordingDiscard.intent(for: recorderState.phase) {
         case .stopThenDiscard:
             captureQueue.enqueue { [weak self] in
-                await self?.stopRecording(automatic: false, discarding: true)
+                await self?.stopRecording(.person, discarding: true)
             }
         case .discardHeld:
             Task { await discardCurrentCall() }
@@ -2549,7 +2549,7 @@ final class AppModel {
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
             self?.captureQueue.enqueue {
-                await self?.stopRecording(automatic: true)
+                await self?.stopRecording(.microphoneReleased)
             }
         }
     }
@@ -2628,7 +2628,7 @@ final class AppModel {
     /// Asks for the stop both limits use, on the queue that owns capture work.
     private func stopForLimit() {
         _ = captureQueue.enqueue { [weak self] in
-            await self?.stopRecording(automatic: true)
+            await self?.stopRecording(.rail)
         }
     }
 
@@ -2805,12 +2805,28 @@ final class AppModel {
         }
     }
 
+    /// The reason a stop was asked for, which is the event the reducer is given.
+    ///
+    /// A person's stop and a rail's stop are not the same request. The microphone-release grace
+    /// is the answer to a caller letting the microphone go, and the reducer refuses it while the
+    /// microphone is still held -- correctly, because a microphone that came back must not end
+    /// the recording. The rails stop for their own reasons, and the call's app is usually still
+    /// holding the microphone when they fire.
+    private enum StopReason {
+        /// Stop pressed, or the discard confirmed.
+        case person
+        /// The calling app released the microphone and the grace has run out.
+        case microphoneReleased
+        /// The ceiling, or ten minutes of silence.
+        case rail
+    }
+
     /// Stops the capture that is running and settles what it holds.
     ///
     /// The discarding flag is the person's answer to the confirm's Discard: the capture is
     /// stopped the same way Stop stops it, and the audio it holds is given up instead of being
     /// finalized and queued. The stopping work is the same either way, so it is the same path.
-    private func stopRecording(automatic: Bool, discarding: Bool = false) async {
+    private func stopRecording(_ reason: StopReason, discarding: Bool = false) async {
         guard recorderState.phase == .recording || recorderState.phase == .paused else { return }
         guard !captureOperationInFlight else { return }
         stopGraceTask?.cancel()
@@ -2819,11 +2835,12 @@ final class AppModel {
         captureOperationInFlight = true
         defer { captureOperationInFlight = false }
         defer { finishRecordingActivity() }
-        if automatic {
-            apply(.automaticStopGraceElapsed)
-        } else {
-            apply(.manualStop)
+        switch reason {
+        case .person: apply(.manualStop)
+        case .microphoneReleased: apply(.automaticStopGraceElapsed)
+        case .rail: apply(.limitStop)
         }
+        let automatic = reason != .person
         do {
             if recorderState.phase == .finalizing, !capturedSegments.contains(where: {
                 $0.index == nextSegmentIndex - 1

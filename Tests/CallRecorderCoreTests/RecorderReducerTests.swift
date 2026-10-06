@@ -95,6 +95,30 @@ struct RecorderReducerTests {
         #expect(!state.automaticStartSuppressed)
     }
 
+    @Test("a rail's stop reaches finalizing while the microphone is still held")
+    func railStopLeavesRecordingWithTheMicrophoneHeld() {
+        // The state both rails exist for: the app started a recording by itself, and the call's
+        // app keeps holding the microphone after the room went quiet. The microphone-release
+        // grace is refused here -- it is the answer to a release -- and a rail that asked with
+        // it was left in .recording on 2026-10-06: no segment was finished, the call row stayed
+        // at "recording", the save answered "The recording contained no audio segments.", and
+        // both audio files stayed open.
+        let recording = RecordingState.recording(
+            sessionID: SessionID(rawValue: UUID()),
+            externalMicrophoneActive: true
+        )
+        let refused = RecorderReducer.reduce(state: recording, event: .automaticStopGraceElapsed)
+        #expect(refused.phase == .recording)
+
+        let stopped = RecorderReducer.reduce(state: recording, event: .limitStop)
+        #expect(stopped.phase == .finalizing)
+        #expect(stopped.automaticStartSuppressed)
+
+        // And the stop settles the way every other one does.
+        let idle = RecorderReducer.reduce(state: stopped, event: .audioFinalizedAndQueued)
+        #expect(idle.phase == .idle)
+    }
+
     @Test("a second start cannot replace an active session")
     func overlappingStartIsIgnored() {
         let original = SessionID(rawValue: UUID())

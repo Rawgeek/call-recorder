@@ -4,6 +4,20 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.39] - 2026-10-06
+
+### Fixed
+
+- **A rail's stop ends the recording even while the call's app still holds the microphone.** The
+  ceiling and the silence rail exist for exactly that state, and both asked for the stop with the
+  event the microphone-release grace uses, which the state machine refuses whenever the external
+  microphone is still active. On 2026-10-06 at 17:29 an automatic recording started from a phantom
+  two-way signal, the quiet rail fired at 17:39 after ten silent minutes, and the refusal left the
+  app in Recording with both audio files still open: no segment was finished, the call row stayed
+  at "recording", and the save answered "The recording contained no audio segments." The rails now
+  state their own reason, so the stop reaches finalizing like every other one, the segment is
+  finished, and the call is saved as an ordinary automatic stop would be.
+
 ## [0.1.38] - 2026-10-02
 
 ### Fixed

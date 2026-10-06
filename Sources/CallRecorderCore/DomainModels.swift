@@ -540,6 +540,7 @@ public enum RecorderEvent: Equatable, Sendable {
     case manualStop
     case externalMicrophoneChanged(isActive: Bool, newSessionID: SessionID?)
     case automaticStopGraceElapsed
+    case limitStop
     case audioFinalizedAndQueued
     case processingQueued
     case participantsSaved
