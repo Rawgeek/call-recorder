@@ -123,6 +123,10 @@ struct GeneralSettingsView: View {
                 CRSettingsRow(
                     title: "Microphone",
                     detail: microphoneHint,
+                    info: "Only microphones appear in this menu. Speakers, screens and AirPlay "
+                        + "devices play sound and cannot record it, so they are not offered here, "
+                        + "and macOS offers a microphone only while it is connected. Connect a "
+                        + "headset and it joins the menu on its own.",
                     warning: microphoneHintIsWarning
                 ) {
                     Picker("", selection: $model.selectedMicrophoneID) {
