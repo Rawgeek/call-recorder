@@ -306,15 +306,45 @@ struct MenuBarView: View {
         // framework sentence naming no permission and no way to grant one, which reads as the app
         // being broken. The card names the permission, says what a recording without it actually
         // holds, and opens the pane that carries the switch.
-        if let notice = ScreenRecordingPermission.notice(granted: model.screenRecordingGranted) {
+        if let notice = ScreenRecordingPermission.notice(
+            granted: model.screenRecordingGranted,
+            askedAgain: model.screenRecordingAskedAgain
+        ) {
             CRCallout(
                 icon: "rectangle.on.rectangle.slash",
                 title: notice.title,
                 message: notice.message,
                 tone: .failed
             ) {
-                CRButton(title: "Open System Settings", icon: "gearshape", kind: .primary) {
-                    model.openScreenRecordingSettings()
+                // Two steps rather than one: the pane is how the grant is given, and clearing the
+                // record is the repair for the state where the pane's switch is already on but
+                // belongs to a copy of the app that is gone. They are stacked rather than set
+                // side by side because the two titles together are wider than the card.
+                VStack(alignment: .leading, spacing: CR.Space.snug) {
+                    CRButton(title: "Open System Settings", icon: "gearshape", kind: .primary) {
+                        model.openScreenRecordingSettings()
+                    }
+                    // Once the record has been cleared, what is left is the restart: the grant is
+                    // read when a process starts, and the switch that was just turned on is this
+                    // copy's.
+                    if model.screenRecordingAskedAgain {
+                        // The restart is what reads the grant, and it is the one thing a call
+                        // being recorded cannot survive, so it waits for the call to end.
+                        CRButton(
+                            title: "Restart",
+                            icon: "arrow.clockwise",
+                            help: "Quits and opens Call Recorder again, which is when macOS "
+                                + "reads the permission."
+                        ) { model.restart() }
+                        .disabled(
+                            model.recorderState.phase == .recording
+                                || model.recorderState.phase == .paused
+                        )
+                    } else {
+                        CRButton(title: "Reset Permission") {
+                            model.resetScreenRecordingPermission()
+                        }
+                    }
                 }
             }
         }

@@ -214,6 +214,14 @@ final class AppModel {
     /// rather than after one has failed.
     private(set) var screenRecordingGranted = AppModel.initialScreenRecordingGranted
 
+    /// Whether the Screen Recording record was cleared so the grant could be asked for again.
+    ///
+    /// macOS keeps the grant for the exact copy of the app that asked, and this app replaces
+    /// itself when it updates, so a switch can be on in System Settings while the copy that runs
+    /// is refused. Clearing that record is the repair, and the card has to say what is left to do
+    /// afterwards: turn on the switch, which is this copy's now, and restart.
+    private(set) var screenRecordingAskedAgain = false
+
     /// Lets a render show the card a missing Screen Recording grant draws.
     ///
     ///     CALL_RECORDER_SCREEN_PERMISSION=denied scripts/preview.sh
@@ -399,6 +407,12 @@ final class AppModel {
         })
     }()
     private let activityMonitor = AudioActivityMonitor()
+    /// The microphones macOS offers, kept current while the app runs.
+    ///
+    /// The Settings row that offers a choice reads this rather than asking the audio system at the
+    /// moment it draws, so plugging a headset in while the window is open is answered by the menu
+    /// itself instead of after a restart.
+    let audioDevices = AudioDeviceWatcher()
     /// True when the app was started only to look at its windows.
     ///
     /// Reviewing a layout change should not require packaging, signing, and installing the app,
@@ -740,7 +754,7 @@ final class AppModel {
     }
 
     var availableMicrophones: [AudioInputDevice] {
-        AudioCaptureSession.availableMicrophones()
+        audioDevices.microphones
     }
 
     /// The microphone choices the settings menu offers.
@@ -748,16 +762,10 @@ final class AppModel {
     /// The system's own choice comes first and is named for the device it points at today, so a
     /// person can see what following the system means before choosing it.
     var microphoneChoices: [AudioInputDevice] {
-        let devices = availableMicrophones
-        return [
-            AudioInputDevice(
-                id: AudioCaptureSession.systemMicrophoneID,
-                name: AudioCaptureSession.systemChoiceName(
-                    systemDefaultID: AudioCaptureSession.systemDefaultMicrophoneID(),
-                    devices: devices
-                )
-            )
-        ] + devices
+        AudioCaptureSession.microphoneChoices(
+            systemDefaultID: audioDevices.systemDefaultID,
+            devices: availableMicrophones
+        )
     }
 
     var selectedMicrophoneID: String {
@@ -1325,6 +1333,77 @@ final class AppModel {
     func openScreenRecordingSettings() {
         guard let url = URL(string: ScreenRecordingPermission.settingsURL) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    /// Clears the Screen Recording record this app's identifier holds, then asks again.
+    ///
+    /// macOS ties the grant to the exact copy that asked for it, and this app replaces itself when
+    /// it updates. The copy that asked is then gone: the switch in System Settings stays on, and
+    /// the copy that is running is refused with "the user declined TCCs". That is the state in
+    /// which the card's instructions lead nowhere, and the record is the thing that has to go.
+    /// Asking again is what lists the running copy in the pane with a switch of its own; the grant
+    /// itself is read when the app next starts, which is why the card offers a restart with it.
+    func resetScreenRecordingPermission() {
+        guard let identifier = Bundle.main.bundleIdentifier else {
+            errorMessage = "Call Recorder cannot read its own identifier, so the permission "
+                + "record cannot be cleared. Turn it off and on again in System Settings instead."
+            return
+        }
+        do {
+            let result = try ProcessRunner.runChecked(
+                executable: ScreenRecordingPermission.resetExecutable,
+                arguments: ScreenRecordingPermission.resetArguments(bundleIdentifier: identifier)
+            )
+            Logger(subsystem: "local.callrecorder.app", category: "capture")
+                .notice(
+                    "the Screen Recording record was cleared: \(result.standardOutput, privacy: .public)"
+                )
+        } catch {
+            report(error, context: "Screen Recording reset", category: .capture)
+            errorMessage = "The permission record could not be cleared. "
+                + error.localizedDescription
+            return
+        }
+        screenRecordingAskedAgain = true
+        // The request is what puts this copy in the pane: macOS keeps a record for the app that
+        // asked, and the one that was just removed is no longer it.
+        screenRecordingGranted = CGRequestScreenCaptureAccess()
+    }
+
+    /// Quits the app and opens it again.
+    ///
+    /// The grant is read when a process starts, so a permission just turned on is in force at the
+    /// next launch and not this one. A menu bar app has no window to close and reopen, and a quit
+    /// leaves the person looking for it in Applications; this is a quit with an open after it,
+    /// arranged the same way the updater arranges one.
+    func restart() {
+        // A call being recorded is the one thing a restart would spoil, and the audio of a call
+        // still being captured is not on disk in a form anything could put back.
+        guard recorderState.phase != .recording, recorderState.phase != .paused else {
+            errorMessage = "A recording is running. Stop it first, then restart to pick the "
+                + "permission up."
+            return
+        }
+        let log = Self.restartLogURL
+        try? FileManager.default.createDirectory(
+            at: log.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard AppRelaunch.schedule(bundle: Bundle.main.bundleURL, log: log) else {
+            errorMessage = "Call Recorder could not arrange to open itself again. Quit it from "
+                + "the menu, then open it again to pick the permission up."
+            return
+        }
+        NSApplication.shared.terminate(nil)
+    }
+
+    /// Where a restart that could not open the app again is written.
+    ///
+    /// Beside the updater's log, because it is the same kind of line: a quit with an open after
+    /// it that did not complete, which is otherwise invisible once the app is no longer running.
+    private static var restartLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Logs/CallRecorder/restart.log")
     }
 
     /// The login keychain locks with the screen, so reading the voiceprint key fails while the

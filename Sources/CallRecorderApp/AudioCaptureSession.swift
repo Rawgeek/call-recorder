@@ -255,6 +255,22 @@ final class AudioCaptureSession {
         return "System (" + device.name + ")"
     }
 
+    /// The choices a microphone menu offers: the system's own first, then every device.
+    ///
+    /// The first choice is not a device but the instruction to follow the system, named for the
+    /// device it points at today so a person can see what following the system means before
+    /// choosing it. Each device after it is a pin: that one, and nothing else.
+    nonisolated static func microphoneChoices(
+        systemDefaultID: String?,
+        devices: [AudioInputDevice]
+    ) -> [AudioInputDevice] {
+        [
+            AudioInputDevice(
+                id: systemMicrophoneID,
+                name: systemChoiceName(systemDefaultID: systemDefaultID, devices: devices)
+            )
+        ] + devices
+    }
 
     /// The built-in microphone is a fixed device identifier, so it can be named plainly.
     nonisolated static func displayName(for device: AudioInputDevice) -> String {

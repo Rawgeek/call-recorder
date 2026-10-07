@@ -440,8 +440,15 @@ struct GeneralSettingsView: View {
         }
         if model.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
             guard let systemMicrophone else { return "Follows the microphone macOS is set to use." }
-            return "Follows the microphone macOS is set to use, which is " + systemMicrophone.name
-                + " now."
+            let follows = "Follows the microphone macOS is set to use, which is "
+                + systemMicrophone.name + " now."
+            // A Mac with one input has nothing to switch to, and a menu that offers the same
+            // device twice with no explanation is what "the microphone is stuck" looks like from
+            // the other side of the window. macOS offers an input only while it is connected, and
+            // this menu is that list, so the sentence says where another one would come from.
+            return model.availableMicrophones.count <= 1
+                ? follows + " No other input is connected; plug in another and it is offered here."
+                : follows
         }
         guard let selectedMicrophone else { return "Used for new recordings" }
         return AudioCaptureSession.isBluetooth(selectedMicrophone)
@@ -459,8 +466,11 @@ struct GeneralSettingsView: View {
     }
 
     /// The device the system choice points at right now.
+    ///
+    /// Read through the watcher rather than from the audio system directly, so the sentence above
+    /// follows the system's own choice while the window is open instead of only at the next draw.
     private var systemMicrophone: AudioInputDevice? {
-        guard let id = AudioCaptureSession.systemDefaultMicrophoneID() else { return nil }
+        guard let id = model.audioDevices.systemDefaultID else { return nil }
         return model.availableMicrophones.first { $0.id == id }
     }
 
