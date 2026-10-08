@@ -413,6 +413,13 @@ final class AppModel {
     /// moment it draws, so plugging a headset in while the window is open is answered by the menu
     /// itself instead of after a restart.
     let audioDevices = AudioDeviceWatcher()
+    /// A bounded listen to the chosen microphone, for the level row in Settings.
+    ///
+    /// The row draws the capture's own microphone track while a recording runs. With nothing being
+    /// recorded there is no capture to read, and this is what answers "does it hear me" before the
+    /// call. It is stopped the moment a recording starts, because holding an input open while the
+    /// recorder wants it is nobody's idea of a check.
+    let microphoneCheck = MicrophoneCheck()
     /// True when the app was started only to look at its windows.
     ///
     /// Reviewing a layout change should not require packaging, signing, and installing the app,
@@ -755,6 +762,29 @@ final class AppModel {
 
     var availableMicrophones: [AudioInputDevice] {
         audioDevices.microphones
+    }
+
+    /// What the microphone track of a running recording is delivering right now, in decibels.
+    ///
+    /// Nil while nothing is captured, which is what the Settings level row draws as an empty bar:
+    /// a reading from before the pause says nothing about now.
+    func currentMicrophoneDecibels() -> Double? {
+        captureSession.microphoneLevels.currentDecibels()
+    }
+
+    /// Starts or stops the Settings level check on the microphone the next recording would use.
+    ///
+    /// "Follow the system" is answered by naming no device, because that is the same instruction
+    /// the recorder takes: the audio system's own choice decides.
+    func toggleMicrophoneCheck() {
+        guard !microphoneCheck.isRunning else {
+            microphoneCheck.stop()
+            return
+        }
+        let chosen = selectedMicrophoneID
+        microphoneCheck.start(
+            deviceID: chosen == AudioCaptureSession.systemMicrophoneID ? nil : chosen
+        )
     }
 
     /// The microphone choices the settings menu offers.
@@ -1332,6 +1362,15 @@ final class AppModel {
     /// is a sentence that loses them. This lands on the exact pane.
     func openScreenRecordingSettings() {
         guard let url = URL(string: ScreenRecordingPermission.settingsURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Opens the Microphone pane of System Settings.
+    ///
+    /// The same reason the Screen Recording card opens its own pane: a sentence telling the user to
+    /// find a switch by hand is a sentence that loses them.
+    func openMicrophoneSettings() {
+        guard let url = URL(string: MicrophoneCheck.settingsURL) else { return }
         NSWorkspace.shared.open(url)
     }
 
@@ -2713,6 +2752,9 @@ final class AppModel {
 
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
+        // A check holds the audio input open. The recorder is about to want the same device, and
+        // the row that offers the check says the recording's own level once it has it.
+        microphoneCheck.stop()
         guard let pipeline else {
             errorMessage = "ffmpeg and ffprobe are required to save recordings."
             apply(.fail(.storageUnavailable))

@@ -111,4 +111,18 @@ struct AudioInputDeviceTests {
 
         #expect(choices.map(\.name) == ["System default"])
     }
+
+    @Test("a device that is gone is not found in the audio system either")
+    func anUnpluggedDeviceIsNotFound() {
+        #expect(AudioCaptureSession.audioDeviceID(forUID: "no-such-device-anywhere") == nil)
+    }
+
+    @Test("the identifier macOS reports for its own choice is one the audio system answers to")
+    func theSystemsOwnChoiceResolves() {
+        // The level check hands the chosen device to Core Audio by this identifier, so the two
+        // lists have to answer to the same name. A Mac with no input has nothing to check.
+        guard let uid = AudioCaptureSession.systemDefaultMicrophoneID() else { return }
+
+        #expect(AudioCaptureSession.audioDeviceID(forUID: uid) != nil)
+    }
 }

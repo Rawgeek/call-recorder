@@ -171,6 +171,13 @@ final class AudioCaptureSession {
     /// rail that reads it does not care which file the audio is being written to.
     let levels = AudioLevelMeter()
 
+    /// What the microphone track alone is delivering, read by the Settings level row.
+    ///
+    /// The meter above answers "has the call gone quiet", which either side can answer. This one
+    /// answers "is the microphone hearing the person in front of it", which is the question the
+    /// level row is there for.
+    let microphoneLevels = AudioLevelMeter()
+
     static func availableMicrophones() -> [AudioInputDevice] {
         captureDevices().map {
             AudioInputDevice(id: $0.uniqueID, name: $0.localizedName)
@@ -240,6 +247,70 @@ final class AudioCaptureSession {
         }
         guard read == noErr, let uid else { return nil }
         return uid as String
+    }
+
+    /// The Core Audio device behind a device-list identifier, or nil when it is not there.
+    ///
+    /// The two lists agree on the identifier: the menu is built from AVCaptureDevice, and the
+    /// microphone a level check opens is a Core Audio device, and both answer to the same UID. A
+    /// device that has been unplugged since it was chosen answers nil, and the caller then follows
+    /// the system's own choice rather than opening nothing.
+    nonisolated static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var byteCount: UInt32 = 0
+        guard
+            AudioObjectGetPropertyDataSize(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &byteCount
+            ) == noErr
+        else { return nil }
+        var devices = [AudioDeviceID](
+            repeating: kAudioObjectUnknown,
+            count: Int(byteCount) / MemoryLayout<AudioDeviceID>.size
+        )
+        guard !devices.isEmpty else { return nil }
+        guard
+            devices.withUnsafeMutableBufferPointer({ buffer in
+                guard let base = buffer.baseAddress else { return OSStatus(-50) }
+                return AudioObjectGetPropertyData(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &address,
+                    0,
+                    nil,
+                    &byteCount,
+                    base
+                )
+            }) == noErr
+        else { return nil }
+
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        for device in devices {
+            var value: CFString?
+            var valueSize = UInt32(MemoryLayout<CFString?>.size)
+            let read = withUnsafeMutablePointer(to: &value) { pointer in
+                AudioObjectGetPropertyData(
+                    device,
+                    &uidAddress,
+                    0,
+                    nil,
+                    &valueSize,
+                    UnsafeMutableRawPointer(pointer)
+                )
+            }
+            if read == noErr, let value, value as String == uid { return device }
+        }
+        return nil
     }
 
     /// What the system choice is called in the menu, naming the device it points at today.
@@ -351,6 +422,9 @@ final class AudioCaptureSession {
         // Silence is measured from the moment this segment delivers audio, so a pause does not
         // count as quiet.
         levels.reset()
+        // The level row reads this one, and a reading from the segment before the pause is not a
+        // reading of this one.
+        microphoneLevels.reset()
 
         let content = try await Self.waitingForADisplay(
             look: { try await SCShareableContent.currentProcess },
@@ -386,7 +460,11 @@ final class AudioCaptureSession {
         configuration.microphoneCaptureDeviceID = microphone?.uniqueID
 
         let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        let router = AudioCaptureRouter(paths: paths, levels: levels)
+        let router = AudioCaptureRouter(
+            paths: paths,
+            levels: levels,
+            microphoneLevels: microphoneLevels
+        )
         try stream.addStreamOutput(
             router,
             type: .audio,

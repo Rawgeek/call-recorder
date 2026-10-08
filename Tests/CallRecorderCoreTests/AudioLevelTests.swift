@@ -206,4 +206,69 @@ struct AudioLevelTests {
         // Then: nothing has been measured in this segment, so there is no silence to act on.
         #expect(meter.silentSeconds(at: start.addingTimeInterval(600)) == nil)
     }
+
+    // MARK: - The live reading
+
+    @Test("a meter that has read nothing has no live reading either")
+    func noLiveReadingBeforeAnythingArrives() {
+        #expect(AudioLevelMeter().currentDecibels() == nil)
+    }
+
+    @Test("the live reading is the newest buffer, and it goes stale on its own")
+    func liveReadingIsTheNewestBuffer() throws {
+        // Given: a meter that has just heard somebody.
+        let meter = AudioLevelMeter()
+        let start = Date()
+        meter.observe(try buffer(Array(repeating: 0.05, count: 512)), at: start)
+        let heard = try #require(meter.currentDecibels(now: start))
+        #expect(abs(heard - AudioLevels.decibels(peak: 0.05)) < 0.0001)
+
+        // When: the capture stops delivering, which is what a stopped microphone looks like from
+        // here. The reading is no longer an answer about now, so it is not given as one.
+        #expect(meter.currentDecibels(now: start.addingTimeInterval(2)) == nil)
+
+        // And a reset, which is what the next segment does, leaves nothing behind either.
+        meter.reset()
+        #expect(meter.currentDecibels(now: start) == nil)
+    }
+
+    @Test("a reading taken from a peak the caller already knows feeds the same meter")
+    func aKnownPeakFeedsTheMeter() {
+        // The Settings check measures a playback buffer rather than a sample buffer, and the two
+        // meet here: one place decides what counts as speech and what the live level is.
+        let meter = AudioLevelMeter()
+        let start = Date()
+        meter.observe(peak: 0.25, at: start)
+
+        #expect(meter.currentDecibels(now: start) != nil)
+        #expect(AudioLevels.isSpeech(peak: 0.25))
+        #expect(meter.loudest > -20)
+    }
+
+    // MARK: - The bar
+
+    @Test("a level sits on the bar between the floor and the ceiling")
+    func theBarHasTwoEnds() {
+        #expect(AudioLevels.meterFraction(decibels: AudioLevels.meterFloorDecibels) == 0)
+        #expect(AudioLevels.meterFraction(decibels: AudioLevels.meterCeilingDecibels) == 1)
+        // A quiet room and a slammed door are drawn at the ends rather than past them.
+        #expect(AudioLevels.meterFraction(decibels: -80) == 0)
+        #expect(AudioLevels.meterFraction(decibels: 3) == 1)
+        // Digital silence has no level at all, and belongs at the floor.
+        #expect(AudioLevels.meterFraction(decibels: -.infinity) == 0)
+    }
+
+    @Test("the speech threshold is marked along the bar, not at one of its ends")
+    func theThresholdIsSomewhereReadable() {
+        let position = AudioLevels.meterFraction(
+            decibels: AudioLevels.speechThresholdDecibels
+        )
+
+        // The mark is what says whether the bar is showing a voice or the room, so it has to sit
+        // inside the bar with room on both sides of it.
+        #expect(position > 0.1)
+        #expect(position < 0.4)
+        // And a level above it is further along than the mark.
+        #expect(AudioLevels.meterFraction(decibels: -20) > position)
+    }
 }

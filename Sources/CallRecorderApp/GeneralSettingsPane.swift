@@ -146,6 +146,8 @@ struct GeneralSettingsView: View {
                     )
                 }
                 CRSettingsDivider()
+                MicrophoneLevelRow(model: model)
+                CRSettingsDivider()
                 CRSettingsRow(
                     title: "Record when there is no microphone",
                     detail: model.settings.recordsWithoutMicrophone
@@ -534,5 +536,200 @@ private struct AutomaticRailRow: View {
             get: { value > 0 },
             set: { value = switchWrites($0) }
         )
+    }
+}
+
+/// What the chosen microphone is delivering, drawn under the choice of it.
+///
+/// The menu says which device a recording will use and cannot say whether it hears anything, which
+/// is the question asked before a call rather than during one. While a recording runs the row draws
+/// the capture's own microphone track; with nothing recorded there is no capture to read, so it
+/// offers a bounded check for the time before it. Both draw the same bar, so what a check shows is
+/// what a recording will show.
+private struct MicrophoneLevelRow: View {
+    let model: AppModel
+
+    /// The level the bar draws, held between samples so it falls rather than flickers.
+    @State private var shownDecibels = AudioLevels.meterFloorDecibels
+    /// The clock the countdown reads, ticked along with the level.
+    @State private var now = Date()
+
+    /// How far the bar falls between two samples once the sound stops.
+    ///
+    /// Sixteen samples a second, so a bar at the top empties in about a second: long enough to read
+    /// as the end of a word rather than a flicker, short enough that the bar is answering about
+    /// now.
+    private static let fallPerSample: Double = 1.5
+
+    var body: some View {
+        CRSettingsRow(
+            title: "Microphone level",
+            detail: detail,
+            warning: model.microphoneCheck.refusal != nil
+        ) {
+            HStack(spacing: CR.Space.inner) {
+                CRLevelBar(decibels: isListening ? shownDecibels : nil)
+                if isListening {
+                    Text(Self.reading(shownDecibels))
+                        .font(CR.Font.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(CR.Ink.readable)
+                        .frame(width: 46, alignment: .trailing)
+                }
+                controls
+            }
+        }
+        .task { await watch() }
+        // The microphone is put down when the row leaves the screen: a check nobody is looking at
+        // is a microphone left open, and the one thing this row must not do is open it quietly.
+        .onDisappear { model.microphoneCheck.stop() }
+        .onChange(of: model.selectedMicrophoneID) { _, _ in model.microphoneCheck.stop() }
+    }
+
+    /// Whether something is listening right now: a recording's capture, or the check.
+    private var isListening: Bool {
+        model.recorderState.phase == .recording || model.microphoneCheck.isRunning
+    }
+
+    /// Whether a call is being captured, which is the state a check gives way to.
+    private var isCapturing: Bool {
+        model.recorderState.phase == .recording || model.recorderState.phase == .paused
+    }
+
+    /// What the bar should draw next, from whichever source is listening.
+    private var liveDecibels: Double? {
+        if model.recorderState.phase == .recording { return model.currentMicrophoneDecibels() }
+        if model.microphoneCheck.isRunning { return model.microphoneCheck.currentDecibels() }
+        return nil
+    }
+
+    private var isHearingSpeech: Bool {
+        shownDecibels >= AudioLevels.speechThresholdDecibels
+    }
+
+    private var detail: String {
+        if let refusal = model.microphoneCheck.refusal { return refusal.message }
+        switch model.recorderState.phase {
+        case .recording:
+            return isHearingSpeech
+                ? "Recording, and the microphone is hearing you."
+                : "Recording. Nothing on the microphone yet."
+        case .paused:
+            return "Paused. The microphone is not being captured."
+        default:
+            guard model.microphoneCheck.isRunning else {
+                return "Not listening. Check the microphone to watch the level before a call."
+            }
+            guard let remaining = model.microphoneCheck.secondsRemaining(now: now), remaining > 0
+            else { return "Listening. Say something and watch the bar." }
+            return "Listening, \(remaining) s left. Say something and watch the bar."
+        }
+    }
+
+    @ViewBuilder private var controls: some View {
+        if isCapturing {
+            // The recording is the check, and it lasts as long as the call does.
+            EmptyView()
+        } else if model.microphoneCheck.refusal?.opensMicrophoneSettings == true {
+            CRButton(title: "Open Settings", icon: "gearshape", kind: .primary) {
+                model.openMicrophoneSettings()
+            }
+        } else if model.microphoneCheck.isRunning {
+            CRButton(title: "Stop") { model.microphoneCheck.stop() }
+        } else {
+            CRButton(title: "Check") { model.toggleMicrophoneCheck() }
+        }
+    }
+
+    /// Samples the level while the row is on screen.
+    ///
+    /// The capture delivers a hundred buffers a second and an eye follows about a tenth of that, so
+    /// the bar is redrawn sixteen times a second rather than on every buffer.
+    private func watch() async {
+        while !Task.isCancelled {
+            sample()
+            try? await Task.sleep(for: .milliseconds(60))
+        }
+    }
+
+    /// Takes one reading and lets the bar fall back when the sound stops.
+    private func sample() {
+        now = Date()
+        // A recording takes the input, so a check gives it up the moment one starts. Without this
+        // the row would go on drawing the check's silence while the capture holds the device.
+        if isCapturing, model.microphoneCheck.isRunning {
+            model.microphoneCheck.stop()
+        }
+        guard isListening else {
+            shownDecibels = AudioLevels.meterFloorDecibels
+            return
+        }
+        let reading = liveDecibels ?? -.infinity
+        // Digital silence has no decibel value at all, and belongs at the floor with everything
+        // else that cannot be heard.
+        let target = reading.isFinite
+            ? max(reading, AudioLevels.meterFloorDecibels)
+            : AudioLevels.meterFloorDecibels
+        // Up with the voice and down on its own: a bar that emptied with the buffer would flicker
+        // at speech's own rhythm, and one that held its top would report a word said a minute ago.
+        shownDecibels = max(target, shownDecibels - Self.fallPerSample)
+    }
+
+    /// What the number beside the bar says.
+    ///
+    /// A level at the floor is drawn as a dash rather than as a number: it is where the meter stops,
+    /// not a measurement of anything.
+    private static func reading(_ decibels: Double) -> String {
+        let value = Int(decibels.rounded())
+        return value <= Int(AudioLevels.meterFloorDecibels.rounded()) ? "—" : "\(value) dB"
+    }
+}
+
+/// One level, drawn as a bar with the point speech begins at marked on it.
+///
+/// The mark is what makes the bar worth drawing: any height proves the microphone is connected, and
+/// only the threshold says whether what reaches the recorder is a voice or the room around it. Nil
+/// draws the empty track of nothing listening.
+private struct CRLevelBar: View {
+    var decibels: Double?
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(Color.primary.opacity(0.08))
+                if let decibels, decibels > AudioLevels.meterFloorDecibels {
+                    Capsule(style: .continuous)
+                        .fill(
+                            decibels >= AudioLevels.speechThresholdDecibels
+                                ? CR.Tone.ready.ink
+                                : CR.Tone.muted.ink
+                        )
+                        .frame(
+                            width: proxy.size.width
+                                * AudioLevels.meterFraction(decibels: decibels)
+                        )
+                }
+                Rectangle()
+                    .fill(CR.Ink.mark)
+                    .frame(width: 1)
+                    .offset(
+                        x: proxy.size.width
+                            * AudioLevels.meterFraction(
+                                decibels: AudioLevels.speechThresholdDecibels
+                            )
+                    )
+                    .opacity(0.45)
+            }
+        }
+        .frame(width: 96, height: 8)
+        .accessibilityElement()
+        .accessibilityLabel("Microphone level")
+        .accessibilityValue(Self.value(decibels))
+    }
+
+    private static func value(_ decibels: Double?) -> String {
+        guard let decibels else { return "Not listening" }
+        return decibels >= AudioLevels.speechThresholdDecibels ? "Hearing speech" : "Quiet"
     }
 }
