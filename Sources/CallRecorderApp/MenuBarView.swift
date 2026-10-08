@@ -349,6 +349,33 @@ struct MenuBarView: View {
             }
         }
 
+        // Your own side of a call comes from the microphone, and macOS gates it behind a grant of
+        // its own. Without it a recording still starts and the other side still arrives: what is
+        // missing is every word the person said, from the audio, the transcript, and the timeline.
+        // The card is drawn only while a microphone is connected; a Mac with no input records the
+        // other side by design.
+        if let notice = model.microphoneNotice {
+            CRCallout(
+                icon: "mic.slash.fill",
+                title: notice.title,
+                message: notice.message,
+                tone: .failed
+            ) {
+                VStack(alignment: .leading, spacing: CR.Space.snug) {
+                    CRButton(title: "Open System Settings", icon: "gearshape", kind: .primary) {
+                        model.openMicrophoneSettings()
+                    }
+                    // Clearing the record while a call is being captured would take the microphone
+                    // away from a recording that is already under way.
+                    CRButton(title: "Reset Permission") { model.resetMicrophonePermission() }
+                        .disabled(
+                            model.recorderState.phase == .recording
+                                || model.recorderState.phase == .paused
+                        )
+                }
+            }
+        }
+
         if !model.backgroundFailures.isEmpty {
             let count = model.backgroundFailures.count
             CRCallout(
