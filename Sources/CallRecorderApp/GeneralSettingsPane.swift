@@ -582,8 +582,11 @@ private struct MicrophoneLevelRow: View {
         .task { await watch() }
         // The microphone is put down when the row leaves the screen: a check nobody is looking at
         // is a microphone left open, and the one thing this row must not do is open it quietly.
-        .onDisappear { model.microphoneCheck.stop() }
-        .onChange(of: model.selectedMicrophoneID) { _, _ in model.microphoneCheck.stop() }
+        .onDisappear { Task { await model.microphoneCheck.stop() } }
+        .onChange(of: model.selectedMicrophoneID) { _, _ in
+            // The device the check was listening to is not the device the next recording will use.
+            Task { await model.microphoneCheck.stop() }
+        }
     }
 
     /// Whether something is listening right now: a recording's capture, or the check.
@@ -635,9 +638,9 @@ private struct MicrophoneLevelRow: View {
                 model.openMicrophoneSettings()
             }
         } else if model.microphoneCheck.isRunning {
-            CRButton(title: "Stop") { model.microphoneCheck.stop() }
+            CRButton(title: "Stop") { Task { await model.microphoneCheck.stop() } }
         } else {
-            CRButton(title: "Check") { model.toggleMicrophoneCheck() }
+            CRButton(title: "Check") { Task { await model.toggleMicrophoneCheck() } }
         }
     }
 
@@ -647,18 +650,18 @@ private struct MicrophoneLevelRow: View {
     /// the bar is redrawn sixteen times a second rather than on every buffer.
     private func watch() async {
         while !Task.isCancelled {
-            sample()
+            await sample()
             try? await Task.sleep(for: .milliseconds(60))
         }
     }
 
     /// Takes one reading and lets the bar fall back when the sound stops.
-    private func sample() {
+    private func sample() async {
         now = Date()
         // A recording takes the input, so a check gives it up the moment one starts. Without this
         // the row would go on drawing the check's silence while the capture holds the device.
         if isCapturing, model.microphoneCheck.isRunning {
-            model.microphoneCheck.stop()
+            await model.microphoneCheck.stop()
         }
         guard isListening else {
             shownDecibels = AudioLevels.meterFloorDecibels

@@ -425,9 +425,9 @@ final class AppModel {
     ///
     /// The row draws the capture's own microphone track while a recording runs. With nothing being
     /// recorded there is no capture to read, and this is what answers "does it hear me" before the
-    /// call. It is stopped the moment a recording starts, because holding an input open while the
-    /// recorder wants it is nobody's idea of a check.
-    let microphoneCheck = MicrophoneCheck()
+    /// call, through the same capture. It is stopped the moment a recording starts, because holding
+    /// the microphone while the recorder wants it is nobody's idea of a check.
+    let microphoneCheck: MicrophoneCheck
     /// True when the app was started only to look at its windows.
     ///
     /// Reviewing a layout change should not require packaging, signing, and installing the app,
@@ -464,7 +464,7 @@ final class AppModel {
     /// card it opens, and that card moving to the top of the list. The renderer names the voice, and
     /// the window starts with it selected. Only the renderer sets this, and only in preview mode.
     var previewSelectedSpeakerClusterID: SpeakerClusterID?
-    private let captureSession = AudioCaptureSession()
+    private let captureSession: AudioCaptureSession
     private var captureOperationInFlight = false
     private var activeSessionDirectory: URL?
     private var capturedSegments: [CaptureSegment] = []
@@ -555,6 +555,9 @@ final class AppModel {
     }
 
     init() {
+        let capture = AudioCaptureSession()
+        captureSession = capture
+        microphoneCheck = MicrophoneCheck(session: capture)
         let applicationDirectory = Self.previewHomeDirectory()
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Library/Application Support/CallRecorder", directoryHint: .isDirectory)
@@ -784,13 +787,17 @@ final class AppModel {
     ///
     /// "Follow the system" is answered by naming no device, because that is the same instruction
     /// the recorder takes: the audio system's own choice decides.
-    func toggleMicrophoneCheck() {
+    /// Starts or stops the Settings level check on the microphone the next recording would use.
+    ///
+    /// "Follow the system" is answered by naming no device, because that is the same instruction
+    /// the recorder takes: the audio system's own choice decides.
+    func toggleMicrophoneCheck() async {
         guard !microphoneCheck.isRunning else {
-            microphoneCheck.stop()
+            await microphoneCheck.stop()
             return
         }
         let chosen = selectedMicrophoneID
-        microphoneCheck.start(
+        await microphoneCheck.start(
             deviceID: chosen == AudioCaptureSession.systemMicrophoneID ? nil : chosen
         )
     }
@@ -2794,8 +2801,9 @@ final class AppModel {
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
         // A check holds the audio input open. The recorder is about to want the same device, and
-        // the row that offers the check says the recording's own level once it has it.
-        microphoneCheck.stop()
+        // the row that offers the check says the recording's own level once it has it. The stop is
+        // waited for rather than asked for: the capture is refused while one is already running.
+        await microphoneCheck.stop()
         guard let pipeline else {
             errorMessage = "ffmpeg and ffprobe are required to save recordings."
             apply(.fail(.storageUnavailable))
