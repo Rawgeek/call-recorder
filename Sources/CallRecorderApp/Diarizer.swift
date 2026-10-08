@@ -49,10 +49,25 @@ struct Diarizer: Sendable {
         _ = try execute(arguments: ["--check"])
     }
 
+    /// How long a model download may run before it is stopped.
+    ///
+    /// The two models are about a gigabyte together, and the download that is worth keeping is
+    /// the one that finishes on a slow line rather than the one that is killed halfway.
+    static let downloadTimeout: TimeInterval = 30 * 60
+
+    /// Fetches the models a run reads into the local cache.
+    ///
+    /// The app offers this when a check has said the cache does not hold them. The revisions live
+    /// in the script rather than here, so what is fetched is exactly what a run looks for.
+    func downloadModels() throws {
+        _ = try execute(arguments: ["--download-models"], timeout: Self.downloadTimeout)
+    }
+
     private func execute(
         arguments: [String],
         cancellation: ProcessCancellation? = nil,
-        ffmpegOverride: URL? = nil
+        ffmpegOverride: URL? = nil,
+        timeout: TimeInterval? = nil
     ) throws -> DiarizationResult {
         let process = Process()
         process.executableURL = python
@@ -96,7 +111,7 @@ struct Diarizer: Sendable {
         }
         // Waited on in short steps rather than one long block, so a stopped analysis and a run
         // that has overstayed its timeout both end the script instead of waiting for it.
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = Date().addingTimeInterval(timeout ?? self.timeout)
         while terminated.wait(timeout: .now() + 0.2) == .timedOut {
             if cancellation?.isCancelled == true {
                 ProcessRunner.end(process)
@@ -439,6 +454,16 @@ enum DiarizerError: LocalizedError, Equatable {
         case .noSpeakersDetected:
             "Speech was transcribed, but no usable speakers were detected. Audio is retained. Retry speaker detection from Review."
         }
+    }
+
+    /// Whether the failure is the local cache not holding the models.
+    ///
+    /// Only this one is something the app can fetch by itself: the models are data. A missing
+    /// package or a Python environment that is not there is a person's choice of setup, and the
+    /// review window says so rather than offering a download that cannot help.
+    var isMissingModelsFromCache: Bool {
+        if case .modelsNotCached = self { return true }
+        return false
     }
 }
 

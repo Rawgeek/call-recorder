@@ -117,12 +117,24 @@ struct SpeakerReviewView: View {
                     text: "\(learnedVoiceCount) learned voice\(learnedVoiceCount == 1 ? "" : "s")"
                 )
                 runtimeChip
+                    // The chip is two words, and the sentence behind it names the models or the
+                    // package that is not there. It is what tells a person which setup step is
+                    // owed, so it is one hover away rather than only in the copied details.
+                    .help(model.speakerRuntimeMessage)
                 Spacer(minLength: 0)
                 Menu {
                     Button("Check Speaker Setup", systemImage: "checkmark.seal") {
                         Task { await model.checkSpeakerRuntime() }
                     }
-                    .disabled(model.checkingSpeakerRuntime)
+                    .disabled(model.checkingSpeakerRuntime || model.downloadingSpeakerModels)
+                    // Offered only when the check named the models as the reason: the app can
+                    // fetch data, and it cannot install anyone's Python packages for them.
+                    if model.speakerModelsNeedDownloading || model.downloadingSpeakerModels {
+                        Button("Download Speaker Models…", systemImage: "arrow.down.circle") {
+                            Task { await model.downloadSpeakerModels() }
+                        }
+                        .disabled(model.downloadingSpeakerModels || model.checkingSpeakerRuntime)
+                    }
                     Button("Choose Python Environment…", systemImage: "folder") {
                         model.chooseSpeakerPython()
                     }
@@ -145,7 +157,11 @@ struct SpeakerReviewView: View {
 
     @ViewBuilder
     private var runtimeChip: some View {
-        if model.checkingSpeakerRuntime {
+        if model.downloadingSpeakerModels {
+            // A download of both models is about a gigabyte, so the chip says which of the two
+            // waits it is rather than "checking" for minutes.
+            CRStatusChip(tone: .working, text: "Downloading speaker models…")
+        } else if model.checkingSpeakerRuntime {
             CRStatusChip(tone: .working, text: "Checking setup…")
         } else if isRuntimeHealthy {
             CRStatusChip(tone: .ready, text: "Speaker detection ready")

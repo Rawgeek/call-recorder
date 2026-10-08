@@ -48,7 +48,9 @@ voice, so both are needed.
    ~/pyannote-env/bin/pip install "transformers @ git+https://github.com/huggingface/transformers@f324707307757d9c0b8dac1c4462eceff911fa2f"
    ```
 3. In the app, open Review Speakers -> Speaker setup -> Choose Python Environment and select
-   `~/pyannote-env/bin/python3`, then press **Check Speaker Setup**.
+   `~/pyannote-env/bin/python3`, then press **Check Speaker Setup**. If the check says the models
+   are not in the local Hugging Face cache, **Speaker setup -> Download Speaker Models...** fetches
+   both pinned versions into it.
 
 Without this step the app still transcribes everything, with speakers shown as Speaker 1,
 Speaker 2, and so on.

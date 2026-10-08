@@ -260,6 +260,14 @@ final class AppModel {
     }
     private(set) var speakerRuntimeMessage = "Speaker setup has not been checked."
     private(set) var checkingSpeakerRuntime = false
+    /// Whether the last speaker check found the models missing from the local cache.
+    ///
+    /// The chip says "needs setup" for every reason a check can fail, and only one of them is
+    /// something the app can do by itself: the models are data the app can fetch. This is what
+    /// decides whether the review window offers that download.
+    private(set) var speakerModelsNeedDownloading = false
+    /// Whether a fetch of those models is running.
+    private(set) var downloadingSpeakerModels = false
     private(set) var speakerAnalysisIssues: [SpeakerAnalysisIssue] = []
     private(set) var reviewingSpeakerIDs: Set<SpeakerClusterID> = []
     /// The excerpts whose assignment is being written, so the control can say so.
@@ -1484,6 +1492,7 @@ final class AppModel {
         guard !checkingSpeakerRuntime else { return }
         checkingSpeakerRuntime = true
         defer { checkingSpeakerRuntime = false }
+        speakerModelsNeedDownloading = false
         do {
             guard let diarizer else { throw DiarizerError.runtimeUnavailable }
             let check = Diarizer(
@@ -1496,8 +1505,40 @@ final class AppModel {
             speakerRuntimeMessage = "Local speaker model is ready."
         } catch {
             speakerRuntimeMessage = error.localizedDescription
+            speakerModelsNeedDownloading =
+                (error as? DiarizerError)?.isMissingModelsFromCache ?? false
             report(error, context: "Speaker Runtime Check", category: .models)
         }
+    }
+
+    /// Fetches the speaker models the local cache does not hold, then checks again.
+    ///
+    /// A check that fails because the models are not on this Mac is the one failure of that check
+    /// the app can answer by itself: the models are data, they are fetched into the same cache a
+    /// run reads, and the person has asked for speaker detection by asking for this. The Python
+    /// environment is not touched: which packages are installed and where is the setup the check
+    /// reports on, and installing a few gigabytes of torch unasked is not this button's business.
+    func downloadSpeakerModels() async {
+        guard !downloadingSpeakerModels, !checkingSpeakerRuntime else { return }
+        downloadingSpeakerModels = true
+        defer { downloadingSpeakerModels = false }
+        do {
+            guard let diarizer else { throw DiarizerError.runtimeUnavailable }
+            let download = Diarizer(
+                python: diarizer.python,
+                script: diarizer.script,
+                ffmpeg: diarizer.ffmpeg
+            )
+            try await Task.detached { try download.downloadModels() }.value
+        } catch {
+            // The check's own sentence is left alone: what failed here is the fetch, and the
+            // models are still missing afterwards, so the button stays offered.
+            speakerRuntimeMessage = "The speaker models could not be downloaded. "
+                + error.localizedDescription
+            report(error, context: "Speaker Model Download", category: .models)
+            return
+        }
+        await checkSpeakerRuntime()
     }
 
     func chooseSpeakerPython() {
