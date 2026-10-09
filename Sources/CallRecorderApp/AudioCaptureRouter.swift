@@ -1,8 +1,11 @@
 import CoreMedia
 import Foundation
+import OSLog
 import ScreenCaptureKit
 
 final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let logger = Logger(subsystem: "local.callrecorder.app", category: "capture")
+
     private enum WriterOutcome: Sendable {
         case success(CapturedAudioSource?)
         case failure(String)
@@ -48,6 +51,13 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
                 return
             }
         } catch {
+            // The track that just failed is named here, because a recording that holds one side is
+            // the one failure a person cannot hear: the file plays, the transcript is written, and
+            // only the other side is on it. The microphone track was dropped this way on every
+            // recording made on AirPods until 2026-10-09, with nothing said anywhere.
+            logger.error(
+                "capture lost a source: \(String(describing: outputType), privacy: .public) stopped after \(error.localizedDescription, privacy: .public)"
+            )
             switch outputType {
             case .audio:
                 systemWriter.cancel()
@@ -83,6 +93,14 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
         guard systemSource != nil || microphoneSource != nil else {
             if failures.isEmpty { throw AudioCaptureError.noAudio }
             throw AudioSampleWriterError.writerFailed(failures.joined(separator: "; "))
+        }
+        // A segment that lost one side is kept -- the other side is the call -- and the loss is
+        // written where a person can find it. This is the line whose absence let every recording
+        // of 2026-10-09 hold one side while nobody could tell.
+        if !failures.isEmpty {
+            logger.error(
+                "segment \(index, privacy: .public) was saved without one source: \(failures.joined(separator: "; "), privacy: .public)"
+            )
         }
         let segment = try CaptureSegment(
             index: index,
