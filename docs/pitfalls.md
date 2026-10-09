@@ -81,6 +81,20 @@ and it records a meeting worse than the built-in one.
 **Rule:** say so in the microphone row, and name the system's current input rather than pinning
 one silently.
 
+### A headset microphone is not the system track's shape
+
+Every recording made on AirPods on 2026-10-09 held one side. The microphone track was opened the way
+the system track has always been opened: AAC at a fixed 128 kbps. A Bluetooth headset's microphone
+delivers 24 kHz mono, and with the source format hint saying so, the encoder refuses that rate —
+`startWriting` answers "Cannot Encode Media" (-11861, underlying -12651) on the first buffer, the
+route treated the throw as a failed track and cancelled that side, and the segment was saved with
+the system audio alone. The file played, the transcript was written, and nothing anywhere said half
+the call was missing.
+
+**Rule:** the encoder's rate follows the format the capture delivered, not the track this writer was
+first measured on, and a track that cannot be opened is logged where a person can find it, because a
+recording with one side is complete as far as every surface can see.
+
 ## Packaging, releases, and updates
 
 ### The app is not at the root of its own archive
