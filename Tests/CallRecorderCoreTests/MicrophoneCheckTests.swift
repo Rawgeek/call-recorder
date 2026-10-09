@@ -85,5 +85,23 @@ struct MicrophoneCheckTests {
         #expect(MicrophoneCheck.duration > 5)
         #expect(MicrophoneCheck.duration <= 60)
     }
-}
 
+    @Test("a missing-microphone answer stops describing a moment that has one")
+    func aMissingMicrophoneAnswerGoesStale() {
+        // The row said "No microphone is connected" under a menu that offered the headset, because
+        // the check had answered while the headset was away and the sentence was kept (2026-10-09).
+        #expect(!MicrophoneCheck.describesCurrentState(.noMicrophone, hasMicrophone: true))
+        #expect(MicrophoneCheck.describesCurrentState(.noMicrophone, hasMicrophone: false))
+
+        // The other answers are about the permissions and the capture, which a device joining the
+        // menu does not settle: each of them is still the reason a check cannot listen.
+        #expect(MicrophoneCheck.describesCurrentState(.permissionDenied, hasMicrophone: true))
+        #expect(MicrophoneCheck.describesCurrentState(.screenRecordingRefused, hasMicrophone: true))
+        #expect(
+            MicrophoneCheck.describesCurrentState(
+                .captureUnavailable("The device is in use."),
+                hasMicrophone: true
+            )
+        )
+    }
+}
