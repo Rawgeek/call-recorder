@@ -18,6 +18,8 @@ final class AudioLevelMeter: @unchecked Sendable {
     private var lastSpeechAt: Date?
     private var measuredBuffers = 0
     private var loudestDecibels = -Double.infinity
+    private var latestDecibels: Double?
+    private var latestBufferAt: Date?
 
     /// Starts a segment's count over, so silence is measured from the moment audio arrives again
     /// rather than across a pause the person asked for.
@@ -28,11 +30,22 @@ final class AudioLevelMeter: @unchecked Sendable {
         firstMeasuredAt = nil
         measuredBuffers = 0
         loudestDecibels = -.infinity
+        latestDecibels = nil
+        latestBufferAt = nil
     }
 
     /// Reads one buffer of captured audio.
     func observe(_ sampleBuffer: CMSampleBuffer, at date: Date = Date()) {
         guard let peak = Self.peak(of: sampleBuffer) else { return }
+        observe(peak: peak, at: date)
+    }
+
+    /// Reads one buffer of audio whose loudest sample is already known.
+    ///
+    /// A capture that arrives as a sample buffer and one that arrives as a playback buffer compute
+    /// their peak in their own way, and both end up here: what counts as speech, what counts as
+    /// room tone, and how long the room has been quiet are answered in one place.
+    func observe(peak: Float, at date: Date = Date()) {
         lock.lock()
         defer { lock.unlock() }
         if firstMeasuredAt == nil { firstMeasuredAt = date }
@@ -40,6 +53,22 @@ final class AudioLevelMeter: @unchecked Sendable {
         let decibels = AudioLevels.decibels(peak: peak)
         if decibels > loudestDecibels { loudestDecibels = decibels }
         if AudioLevels.isSpeech(peak: peak) { lastSpeechAt = date }
+        latestDecibels = decibels
+        latestBufferAt = date
+    }
+
+    /// The newest buffer's loudness, or nil when nothing arrived recently enough to be this moment.
+    ///
+    /// The Settings row draws this as a live bar, and a reading is only an answer while the audio
+    /// is still arriving: a capture that stopped leaves its last buffer behind, and a bar that went
+    /// on showing it would say the microphone is hearing something when nothing is listening.
+    func currentDecibels(now: Date = Date(), freshWithin: TimeInterval = 0.5) -> Double? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let latestBufferAt, let latestDecibels,
+              now.timeIntervalSince(latestBufferAt) <= freshWithin
+        else { return nil }
+        return latestDecibels
     }
 
     /// How long the capture has held nothing but room tone, or nil when that cannot be said.

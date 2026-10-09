@@ -1,4 +1,5 @@
 import CallRecorderCore
+import AVFoundation
 import Foundation
 @testable import CallRecorderApp
 
@@ -34,6 +35,21 @@ enum TestEnvironment {
     /// starved, and the assertion then measures the machine instead of the stop. The stop path
     /// itself is covered by the app on any desktop.
     static let canMeasureProcessStop = ProcessInfo.processInfo.environment["CI"] == nil
+    /// Whether an audio input is connected, which a capture of the microphone needs.
+    static let hasMicrophoneInput: Bool = {
+        let discovery = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.microphone],
+            mediaType: .audio,
+            position: .unspecified
+        )
+        return !discovery.devices.isEmpty
+    }()
+    /// Whether this machine can run a real microphone capture: a desktop, with an input.
+    ///
+    /// The capture also needs Screen Recording, which is granted per copy of the app: a machine
+    /// that has not granted it to the test runner skips the measurement rather than failing, and
+    /// the app itself covers the same path where it runs.
+    static let canCaptureMicrophone = canRunSpeakerScript && hasMicrophoneInput
     /// The app's own Application Support folder, where models are installed.
     static let applicationDirectory = FileManager.default
         .homeDirectoryForCurrentUser

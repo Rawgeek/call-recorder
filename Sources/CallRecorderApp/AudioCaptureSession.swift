@@ -163,13 +163,30 @@ final class AudioCaptureSession {
         let index: Int
     }
 
+    /// A capture with no writers behind it, kept only to measure the microphone.
+    private struct ActiveMonitor {
+        let stream: SCStream
+        let router: MicrophoneMeteringRouter
+    }
+
     private var activeCapture: ActiveCapture?
+    private var activeMonitor: ActiveMonitor?
+
+    /// Whether a monitoring capture is running.
+    var isMonitoring: Bool { activeMonitor != nil }
 
     /// What the capture hears, read by the model while a recording runs.
     ///
     /// One meter for the session rather than one per segment: the segments are one recording, and a
     /// rail that reads it does not care which file the audio is being written to.
     let levels = AudioLevelMeter()
+
+    /// What the microphone track alone is delivering, read by the Settings level row.
+    ///
+    /// The meter above answers "has the call gone quiet", which either side can answer. This one
+    /// answers "is the microphone hearing the person in front of it", which is the question the
+    /// level row is there for.
+    let microphoneLevels = AudioLevelMeter()
 
     static func availableMicrophones() -> [AudioInputDevice] {
         captureDevices().map {
@@ -242,6 +259,70 @@ final class AudioCaptureSession {
         return uid as String
     }
 
+    /// The Core Audio device behind a device-list identifier, or nil when it is not there.
+    ///
+    /// The two lists agree on the identifier: the menu is built from AVCaptureDevice, and the
+    /// microphone a level check opens is a Core Audio device, and both answer to the same UID. A
+    /// device that has been unplugged since it was chosen answers nil, and the caller then follows
+    /// the system's own choice rather than opening nothing.
+    nonisolated static func audioDeviceID(forUID uid: String) -> AudioDeviceID? {
+        var address = AudioObjectPropertyAddress(
+            mSelector: kAudioHardwarePropertyDevices,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var byteCount: UInt32 = 0
+        guard
+            AudioObjectGetPropertyDataSize(
+                AudioObjectID(kAudioObjectSystemObject),
+                &address,
+                0,
+                nil,
+                &byteCount
+            ) == noErr
+        else { return nil }
+        var devices = [AudioDeviceID](
+            repeating: kAudioObjectUnknown,
+            count: Int(byteCount) / MemoryLayout<AudioDeviceID>.size
+        )
+        guard !devices.isEmpty else { return nil }
+        guard
+            devices.withUnsafeMutableBufferPointer({ buffer in
+                guard let base = buffer.baseAddress else { return OSStatus(-50) }
+                return AudioObjectGetPropertyData(
+                    AudioObjectID(kAudioObjectSystemObject),
+                    &address,
+                    0,
+                    nil,
+                    &byteCount,
+                    base
+                )
+            }) == noErr
+        else { return nil }
+
+        var uidAddress = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyDeviceUID,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        for device in devices {
+            var value: CFString?
+            var valueSize = UInt32(MemoryLayout<CFString?>.size)
+            let read = withUnsafeMutablePointer(to: &value) { pointer in
+                AudioObjectGetPropertyData(
+                    device,
+                    &uidAddress,
+                    0,
+                    nil,
+                    &valueSize,
+                    UnsafeMutableRawPointer(pointer)
+                )
+            }
+            if read == noErr, let value, value as String == uid { return device }
+        }
+        return nil
+    }
+
     /// What the system choice is called in the menu, naming the device it points at today.
     ///
     /// Without the name the choice says nothing a person can check: the point of following the
@@ -255,6 +336,22 @@ final class AudioCaptureSession {
         return "System (" + device.name + ")"
     }
 
+    /// The choices a microphone menu offers: the system's own first, then every device.
+    ///
+    /// The first choice is not a device but the instruction to follow the system, named for the
+    /// device it points at today so a person can see what following the system means before
+    /// choosing it. Each device after it is a pin: that one, and nothing else.
+    nonisolated static func microphoneChoices(
+        systemDefaultID: String?,
+        devices: [AudioInputDevice]
+    ) -> [AudioInputDevice] {
+        [
+            AudioInputDevice(
+                id: systemMicrophoneID,
+                name: systemChoiceName(systemDefaultID: systemDefaultID, devices: devices)
+            )
+        ] + devices
+    }
 
     /// The built-in microphone is a fixed device identifier, so it can be named plainly.
     nonisolated static func displayName(for device: AudioInputDevice) -> String {
@@ -323,23 +420,17 @@ final class AudioCaptureSession {
         ).devices
     }
 
-    func startSegment(
-        directory: URL,
-        index: Int,
+    /// A stream configured the way every capture this app makes is configured.
+    ///
+    /// A recording and the Settings check differ in what is behind the stream — two writers here,
+    /// one meter there — and in nothing else, which is the point: a check that set up its own
+    /// capture could hear something a recording does not, and the one thing the level row must not
+    /// do is disagree with the recording it is a preview of.
+    private static func audioStream(
+        content: SCShareableContent,
         microphoneDeviceID: String?,
         allowsMissingMicrophone: Bool
-    ) async throws -> CaptureSourcePaths {
-        guard activeCapture == nil else { throw AudioCaptureError.alreadyCapturing }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let paths = CaptureSegment.paths(in: directory, index: index)
-        // Silence is measured from the moment this segment delivers audio, so a pause does not
-        // count as quiet.
-        levels.reset()
-
-        let content = try await Self.waitingForADisplay(
-            look: { try await SCShareableContent.currentProcess },
-            hasDisplay: { !$0.displays.isEmpty }
-        )
+    ) throws -> (stream: SCStream, microphone: AVCaptureDevice?) {
         guard let display = content.displays.first else { throw AudioCaptureError.noDisplay }
         let ownApplication = content.applications.filter {
             $0.processID == ProcessInfo.processInfo.processIdentifier
@@ -359,7 +450,7 @@ final class AudioCaptureSession {
         configuration.excludesCurrentProcessAudio = true
         configuration.sampleRate = 48_000
         configuration.channelCount = 2
-        // The microphone is optional when the setting allows it: ScreenCaptureKit records the
+        // The microphone is optional when the caller allows it: ScreenCaptureKit records the
         // call's system audio on its own. If an input appears later, the next segment resolves it
         // again and includes it automatically, so a headset plugged in mid-call is picked up.
         let microphone = try Self.microphone(
@@ -368,9 +459,41 @@ final class AudioCaptureSession {
         )
         configuration.captureMicrophone = microphone != nil
         configuration.microphoneCaptureDeviceID = microphone?.uniqueID
+        return (SCStream(filter: filter, configuration: configuration, delegate: nil), microphone)
+    }
 
-        let stream = SCStream(filter: filter, configuration: configuration, delegate: nil)
-        let router = AudioCaptureRouter(paths: paths, levels: levels)
+    func startSegment(
+        directory: URL,
+        index: Int,
+        microphoneDeviceID: String?,
+        allowsMissingMicrophone: Bool
+    ) async throws -> CaptureSourcePaths {
+        guard activeCapture == nil, activeMonitor == nil else {
+            throw AudioCaptureError.alreadyCapturing
+        }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let paths = CaptureSegment.paths(in: directory, index: index)
+        // Silence is measured from the moment this segment delivers audio, so a pause does not
+        // count as quiet.
+        levels.reset()
+        // The level row reads this one, and a reading from the segment before the pause is not a
+        // reading of this one.
+        microphoneLevels.reset()
+
+        let content = try await Self.waitingForADisplay(
+            look: { try await SCShareableContent.currentProcess },
+            hasDisplay: { !$0.displays.isEmpty }
+        )
+        let (stream, microphone) = try Self.audioStream(
+            content: content,
+            microphoneDeviceID: microphoneDeviceID,
+            allowsMissingMicrophone: allowsMissingMicrophone
+        )
+        let router = AudioCaptureRouter(
+            paths: paths,
+            levels: levels,
+            microphoneLevels: microphoneLevels
+        )
         try stream.addStreamOutput(
             router,
             type: .audio,
@@ -402,6 +525,46 @@ final class AudioCaptureSession {
         defer { self.activeCapture = nil }
         try await Self.stop(activeCapture.stream, within: Self.stopTimeoutSeconds)
         return try await activeCapture.router.finish(index: activeCapture.index)
+    }
+
+    /// Starts a capture that only measures the microphone, for the Settings level check.
+    ///
+    /// Nothing is written: no audio file, no database row, no call. It is the same stream a
+    /// recording makes, with a meter where the writers would be, so what the row shows during a
+    /// check is what a recording will show -- same device choice, same permission, same meter.
+    ///
+    /// It used to be an AVAudioEngine, and that is why this exists: naming a device on the
+    /// engine's input unit stopped it delivering buffers altogether, measured on 2026-10-08 --
+    /// fifteen buffers in two seconds with no device named, none at all with the chosen one.
+    /// A check pointed at the microphone a recording would use showed a dead bar while the
+    /// recording itself worked, which is worse than having no check.
+    func startMonitoring(microphoneDeviceID: String?) async throws {
+        guard activeCapture == nil, activeMonitor == nil else {
+            throw AudioCaptureError.alreadyCapturing
+        }
+        levels.reset()
+        microphoneLevels.reset()
+        let content = try await Self.waitingForADisplay(
+            look: { try await SCShareableContent.currentProcess },
+            hasDisplay: { !$0.displays.isEmpty }
+        )
+        let (stream, microphone) = try Self.audioStream(
+            content: content,
+            microphoneDeviceID: microphoneDeviceID,
+            allowsMissingMicrophone: false
+        )
+        guard microphone != nil else { throw AudioCaptureError.noMicrophone }
+        let router = MicrophoneMeteringRouter(levels: microphoneLevels)
+        try stream.addStreamOutput(router, type: .microphone, sampleHandlerQueue: router.queue)
+        try await stream.startCapture()
+        activeMonitor = ActiveMonitor(stream: stream, router: router)
+    }
+
+    /// Ends a monitoring capture and leaves the microphone to the audio system.
+    func finishMonitoring() async {
+        guard let activeMonitor else { return }
+        self.activeMonitor = nil
+        try? await Self.stop(activeMonitor.stream, within: Self.stopTimeoutSeconds)
     }
 
     /// How long the stop of a capture stream may take before the segment is closed without it.
@@ -452,5 +615,28 @@ final class AudioCaptureSession {
         } catch {
             guard Self.isAlreadyStoppedError(error) else { throw error }
         }
+    }
+}
+
+/// The microphone track of a capture that has no writers, read for its level alone.
+///
+/// A stream needs somewhere to deliver what it captures or it is refused the output, and the
+/// Settings check wants the microphone measured and nothing else: no file, no database row, and
+/// nothing kept after the check ends.
+private final class MicrophoneMeteringRouter: NSObject, SCStreamOutput, @unchecked Sendable {
+    let queue = DispatchQueue(label: "local.callrecorder.capture.monitor")
+    private let levels: AudioLevelMeter
+
+    init(levels: AudioLevelMeter) {
+        self.levels = levels
+    }
+
+    func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of outputType: SCStreamOutputType
+    ) {
+        guard outputType == .microphone else { return }
+        levels.observe(sampleBuffer)
     }
 }

@@ -189,12 +189,15 @@ on the Mac.
    ```
 
    The turn model is read by transformers 5.18, which is not on PyPI yet, so the revision above is
-   pinned. Both models are downloaded once, on first use, into the Hugging Face cache.
+   pinned.
 
 3. In the app: open **Review Speakers** (from the menu-bar panel, or **Settings -> Recovery ->
    Review Speakers...**), then **Speaker setup -> Choose Python Environment**, and select
    `~/pyannote-env/bin/python3`. Press **Check Speaker Setup**; the panel should report that
-   the local speaker model is ready.
+   the local speaker model is ready. When the check answers that the models are not in the local
+   Hugging Face cache, **Speaker setup -> Download Speaker Models...** fetches exactly the two
+   pinned versions into that cache. Hovering the status chip reads the check's own sentence, which
+   names the model, the package, or the environment that is missing.
 
    The environment chosen here is also the one the transcription model runs in, so **Settings ->
    Models** offers to install the transcription packages into it when they are missing.

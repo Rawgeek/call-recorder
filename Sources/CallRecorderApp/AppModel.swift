@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import CallRecorderCore
 import Foundation
 import Observation
@@ -102,6 +103,7 @@ final class AppModel {
     private(set) var callParticipants: [CallID: [Participant]] = [:]
     private var sessionUnlockObserver: NSObjectProtocol?
     private var appTerminationObserver: NSObjectProtocol?
+    private var appActivationObserver: NSObjectProtocol?
     private(set) var recentCalls: [RecentCallSummary] = []
     /// True once the first read of the database has finished, successfully or not.
     ///
@@ -214,6 +216,28 @@ final class AppModel {
     /// rather than after one has failed.
     private(set) var screenRecordingGranted = AppModel.initialScreenRecordingGranted
 
+    /// Whether the Screen Recording record was cleared so the grant could be asked for again.
+    ///
+    /// macOS keeps the grant for the exact copy of the app that asked, and this app replaces
+    /// itself when it updates, so a switch can be on in System Settings while the copy that runs
+    /// is refused. Clearing that record is the repair, and the card has to say what is left to do
+    /// afterwards: turn on the switch, which is this copy's now, and restart.
+    private(set) var screenRecordingAskedAgain = false
+
+    /// Whether macOS has granted the microphone, which is what the person's own side needs.
+    ///
+    /// Without it a recording does not fail: it starts, the other side arrives, and the
+    /// microphone track is empty. Every recording in the library on 2026-10-08 was in that state
+    /// and nothing had said so, which is why the state is kept here and drawn on the surface the
+    /// person opens most.
+    private(set) var microphoneGranted = AppModel.initialMicrophoneGranted
+
+    /// Lets a render show the surface with the microphone granted, which is the ordinary Mac.
+    static var initialMicrophoneGranted: Bool {
+        guard !isPreviewMode else { return true }
+        return AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
     /// Lets a render show the card a missing Screen Recording grant draws.
     ///
     ///     CALL_RECORDER_SCREEN_PERMISSION=denied scripts/preview.sh
@@ -252,6 +276,14 @@ final class AppModel {
     }
     private(set) var speakerRuntimeMessage = "Speaker setup has not been checked."
     private(set) var checkingSpeakerRuntime = false
+    /// Whether the last speaker check found the models missing from the local cache.
+    ///
+    /// The chip says "needs setup" for every reason a check can fail, and only one of them is
+    /// something the app can do by itself: the models are data the app can fetch. This is what
+    /// decides whether the review window offers that download.
+    private(set) var speakerModelsNeedDownloading = false
+    /// Whether a fetch of those models is running.
+    private(set) var downloadingSpeakerModels = false
     private(set) var speakerAnalysisIssues: [SpeakerAnalysisIssue] = []
     private(set) var reviewingSpeakerIDs: Set<SpeakerClusterID> = []
     /// The excerpts whose assignment is being written, so the control can say so.
@@ -399,6 +431,19 @@ final class AppModel {
         })
     }()
     private let activityMonitor = AudioActivityMonitor()
+    /// The microphones macOS offers, kept current while the app runs.
+    ///
+    /// The Settings row that offers a choice reads this rather than asking the audio system at the
+    /// moment it draws, so plugging a headset in while the window is open is answered by the menu
+    /// itself instead of after a restart.
+    let audioDevices = AudioDeviceWatcher()
+    /// A bounded listen to the chosen microphone, for the level row in Settings.
+    ///
+    /// The row draws the capture's own microphone track while a recording runs. With nothing being
+    /// recorded there is no capture to read, and this is what answers "does it hear me" before the
+    /// call, through the same capture. It is stopped the moment a recording starts, because holding
+    /// the microphone while the recorder wants it is nobody's idea of a check.
+    let microphoneCheck: MicrophoneCheck
     /// True when the app was started only to look at its windows.
     ///
     /// Reviewing a layout change should not require packaging, signing, and installing the app,
@@ -435,7 +480,7 @@ final class AppModel {
     /// card it opens, and that card moving to the top of the list. The renderer names the voice, and
     /// the window starts with it selected. Only the renderer sets this, and only in preview mode.
     var previewSelectedSpeakerClusterID: SpeakerClusterID?
-    private let captureSession = AudioCaptureSession()
+    private let captureSession: AudioCaptureSession
     private var captureOperationInFlight = false
     private var activeSessionDirectory: URL?
     private var capturedSegments: [CaptureSegment] = []
@@ -526,6 +571,9 @@ final class AppModel {
     }
 
     init() {
+        let capture = AudioCaptureSession()
+        captureSession = capture
+        microphoneCheck = MicrophoneCheck(session: capture)
         let applicationDirectory = Self.previewHomeDirectory()
             ?? FileManager.default.homeDirectoryForCurrentUser
                 .appending(path: "Library/Application Support/CallRecorder", directoryHint: .isDirectory)
@@ -630,6 +678,7 @@ final class AppModel {
             await processor?.start()
             startSpeakerReviewRequestPolling()
             observeSessionUnlock()
+            observeApplicationActivation()
             // Two repairs run here, and this is the order they have to run in.
             //
             // Cleanup removes a call's working folder once its transcript is promoted. Where the
@@ -740,7 +789,34 @@ final class AppModel {
     }
 
     var availableMicrophones: [AudioInputDevice] {
-        AudioCaptureSession.availableMicrophones()
+        audioDevices.microphones
+    }
+
+    /// What the microphone track of a running recording is delivering right now, in decibels.
+    ///
+    /// Nil while nothing is captured, which is what the Settings level row draws as an empty bar:
+    /// a reading from before the pause says nothing about now.
+    func currentMicrophoneDecibels() -> Double? {
+        captureSession.microphoneLevels.currentDecibels()
+    }
+
+    /// Starts or stops the Settings level check on the microphone the next recording would use.
+    ///
+    /// "Follow the system" is answered by naming no device, because that is the same instruction
+    /// the recorder takes: the audio system's own choice decides.
+    /// Starts or stops the Settings level check on the microphone the next recording would use.
+    ///
+    /// "Follow the system" is answered by naming no device, because that is the same instruction
+    /// the recorder takes: the audio system's own choice decides.
+    func toggleMicrophoneCheck() async {
+        guard !microphoneCheck.isRunning else {
+            await microphoneCheck.stop()
+            return
+        }
+        let chosen = selectedMicrophoneID
+        await microphoneCheck.start(
+            deviceID: chosen == AudioCaptureSession.systemMicrophoneID ? nil : chosen
+        )
     }
 
     /// The microphone choices the settings menu offers.
@@ -748,16 +824,10 @@ final class AppModel {
     /// The system's own choice comes first and is named for the device it points at today, so a
     /// person can see what following the system means before choosing it.
     var microphoneChoices: [AudioInputDevice] {
-        let devices = availableMicrophones
-        return [
-            AudioInputDevice(
-                id: AudioCaptureSession.systemMicrophoneID,
-                name: AudioCaptureSession.systemChoiceName(
-                    systemDefaultID: AudioCaptureSession.systemDefaultMicrophoneID(),
-                    devices: devices
-                )
-            )
-        ] + devices
+        AudioCaptureSession.microphoneChoices(
+            systemDefaultID: audioDevices.systemDefaultID,
+            devices: availableMicrophones
+        )
     }
 
     var selectedMicrophoneID: String {
@@ -1327,6 +1397,153 @@ final class AppModel {
         NSWorkspace.shared.open(url)
     }
 
+    /// Opens the Microphone pane of System Settings.
+    ///
+    /// The same reason the Screen Recording card opens its own pane: a sentence telling the user to
+    /// find a switch by hand is a sentence that loses them.
+    func openMicrophoneSettings() {
+        guard let url = URL(string: MicrophoneCheck.settingsURL) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// The card the popover draws while a call would be recorded without the person's own side.
+    ///
+    /// Nil while the microphone is granted, and nil on a Mac with no audio input at all: that Mac
+    /// records the other side by design, which the Recording settings say in their own row.
+    var microphoneNotice: (title: String, message: String)? {
+        guard !microphoneGranted, !audioDevices.microphones.isEmpty else { return nil }
+        return MicrophonePermission.notice()
+    }
+
+    /// Re-reads the microphone grant.
+    ///
+    /// Unlike Screen Recording, this one is read when a capture starts, so a grant made in System
+    /// Settings is in force for the next recording without a restart: re-reading it when the app
+    /// comes forward is what takes the card away as soon as the switch is turned on.
+    func refreshMicrophonePermission() {
+        guard !Self.isPreviewMode else { return }
+        microphoneGranted = AVCaptureDevice.authorizationStatus(for: .audio) == .authorized
+    }
+
+    /// Asks for the microphone where it is used, and reports what macOS answered.
+    ///
+    /// The grant was never asked for by this app: ScreenCaptureKit reports the microphone as a
+    /// track it could not fill, and a person finds out by listening to a recording of one side.
+    /// Asking at the start of a recording is the one moment the prompt makes sense, and an already
+    /// answered state is answered here without a prompt.
+    @discardableResult
+    func requestMicrophoneAccess() async -> Bool {
+        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        case .authorized:
+            microphoneGranted = true
+        case .notDetermined:
+            microphoneGranted = await AVCaptureDevice.requestAccess(for: .audio)
+        default:
+            microphoneGranted = false
+        }
+        return microphoneGranted
+    }
+
+    /// Clears the microphone record and asks again, the way the Screen Recording card does.
+    ///
+    /// A grant belongs to the copy that asked for it, and this app replaces itself when it updates.
+    /// A switch that is on in the pane can belong to a copy that is gone, and the pane then offers
+    /// nothing to turn on: the record is what has to go.
+    func resetMicrophonePermission() {
+        guard let identifier = Bundle.main.bundleIdentifier else {
+            errorMessage = "Call Recorder cannot read its own identifier, so the permission "
+                + "record cannot be cleared. Turn it off and on again in System Settings instead."
+            return
+        }
+        do {
+            let result = try ProcessRunner.runChecked(
+                executable: MicrophonePermission.resetExecutable,
+                arguments: MicrophonePermission.resetArguments(bundleIdentifier: identifier)
+            )
+            Logger(subsystem: "local.callrecorder.app", category: "capture")
+                .notice(
+                    "the microphone record was cleared: \(result.standardOutput, privacy: .public)"
+                )
+        } catch {
+            report(error, context: "Microphone reset", category: .capture)
+            errorMessage = "The permission record could not be cleared. "
+                + error.localizedDescription
+            return
+        }
+        Task { _ = await requestMicrophoneAccess() }
+    }
+
+    /// Clears the Screen Recording record this app's identifier holds, then asks again.
+    ///
+    /// macOS ties the grant to the exact copy that asked for it, and this app replaces itself when
+    /// it updates. The copy that asked is then gone: the switch in System Settings stays on, and
+    /// the copy that is running is refused with "the user declined TCCs". That is the state in
+    /// which the card's instructions lead nowhere, and the record is the thing that has to go.
+    /// Asking again is what lists the running copy in the pane with a switch of its own; the grant
+    /// itself is read when the app next starts, which is why the card offers a restart with it.
+    func resetScreenRecordingPermission() {
+        guard let identifier = Bundle.main.bundleIdentifier else {
+            errorMessage = "Call Recorder cannot read its own identifier, so the permission "
+                + "record cannot be cleared. Turn it off and on again in System Settings instead."
+            return
+        }
+        do {
+            let result = try ProcessRunner.runChecked(
+                executable: ScreenRecordingPermission.resetExecutable,
+                arguments: ScreenRecordingPermission.resetArguments(bundleIdentifier: identifier)
+            )
+            Logger(subsystem: "local.callrecorder.app", category: "capture")
+                .notice(
+                    "the Screen Recording record was cleared: \(result.standardOutput, privacy: .public)"
+                )
+        } catch {
+            report(error, context: "Screen Recording reset", category: .capture)
+            errorMessage = "The permission record could not be cleared. "
+                + error.localizedDescription
+            return
+        }
+        screenRecordingAskedAgain = true
+        // The request is what puts this copy in the pane: macOS keeps a record for the app that
+        // asked, and the one that was just removed is no longer it.
+        screenRecordingGranted = CGRequestScreenCaptureAccess()
+    }
+
+    /// Quits the app and opens it again.
+    ///
+    /// The grant is read when a process starts, so a permission just turned on is in force at the
+    /// next launch and not this one. A menu bar app has no window to close and reopen, and a quit
+    /// leaves the person looking for it in Applications; this is a quit with an open after it,
+    /// arranged the same way the updater arranges one.
+    func restart() {
+        // A call being recorded is the one thing a restart would spoil, and the audio of a call
+        // still being captured is not on disk in a form anything could put back.
+        guard recorderState.phase != .recording, recorderState.phase != .paused else {
+            errorMessage = "A recording is running. Stop it first, then restart to pick the "
+                + "permission up."
+            return
+        }
+        let log = Self.restartLogURL
+        try? FileManager.default.createDirectory(
+            at: log.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        guard AppRelaunch.schedule(bundle: Bundle.main.bundleURL, log: log) else {
+            errorMessage = "Call Recorder could not arrange to open itself again. Quit it from "
+                + "the menu, then open it again to pick the permission up."
+            return
+        }
+        NSApplication.shared.terminate(nil)
+    }
+
+    /// Where a restart that could not open the app again is written.
+    ///
+    /// Beside the updater's log, because it is the same kind of line: a quit with an open after
+    /// it that did not complete, which is otherwise invisible once the app is no longer running.
+    private static var restartLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appending(path: "Library/Logs/CallRecorder/restart.log")
+    }
+
     /// The login keychain locks with the screen, so reading the voiceprint key fails while the
     /// Mac is locked and works again after the user comes back. Retrying on unlock saves a manual
     /// click and heals a session that started before the first unlock.
@@ -1362,10 +1579,32 @@ final class AppModel {
         }
     }
 
+    /// Re-reads both permission grants when the app comes forward.
+    ///
+    /// The microphone was never asked for by this app until it started a capture, and the person
+    /// meets its card after the fact. The switch that answers it lives in System Settings, so the
+    /// moment they come back is the moment to look again: the card goes away by itself instead of
+    /// waiting for the next launch.
+    private func observeApplicationActivation() {
+        guard appActivationObserver == nil else { return }
+        appActivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.refreshScreenRecordingPermission()
+                self.refreshMicrophonePermission()
+            }
+        }
+    }
+
     func checkSpeakerRuntime() async {
         guard !checkingSpeakerRuntime else { return }
         checkingSpeakerRuntime = true
         defer { checkingSpeakerRuntime = false }
+        speakerModelsNeedDownloading = false
         do {
             guard let diarizer else { throw DiarizerError.runtimeUnavailable }
             let check = Diarizer(
@@ -1378,8 +1617,40 @@ final class AppModel {
             speakerRuntimeMessage = "Local speaker model is ready."
         } catch {
             speakerRuntimeMessage = error.localizedDescription
+            speakerModelsNeedDownloading =
+                (error as? DiarizerError)?.isMissingModelsFromCache ?? false
             report(error, context: "Speaker Runtime Check", category: .models)
         }
+    }
+
+    /// Fetches the speaker models the local cache does not hold, then checks again.
+    ///
+    /// A check that fails because the models are not on this Mac is the one failure of that check
+    /// the app can answer by itself: the models are data, they are fetched into the same cache a
+    /// run reads, and the person has asked for speaker detection by asking for this. The Python
+    /// environment is not touched: which packages are installed and where is the setup the check
+    /// reports on, and installing a few gigabytes of torch unasked is not this button's business.
+    func downloadSpeakerModels() async {
+        guard !downloadingSpeakerModels, !checkingSpeakerRuntime else { return }
+        downloadingSpeakerModels = true
+        defer { downloadingSpeakerModels = false }
+        do {
+            guard let diarizer else { throw DiarizerError.runtimeUnavailable }
+            let download = Diarizer(
+                python: diarizer.python,
+                script: diarizer.script,
+                ffmpeg: diarizer.ffmpeg
+            )
+            try await Task.detached { try download.downloadModels() }.value
+        } catch {
+            // The check's own sentence is left alone: what failed here is the fetch, and the
+            // models are still missing afterwards, so the button stays offered.
+            speakerRuntimeMessage = "The speaker models could not be downloaded. "
+                + error.localizedDescription
+            report(error, context: "Speaker Model Download", category: .models)
+            return
+        }
+        await checkSpeakerRuntime()
     }
 
     func chooseSpeakerPython() {
@@ -2634,6 +2905,17 @@ final class AppModel {
 
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
+        // A check holds the audio input open. The recorder is about to want the same device, and
+        // the row that offers the check says the recording's own level once it has it. The stop is
+        // waited for rather than asked for: the capture is refused while one is already running.
+        await microphoneCheck.stop()
+        // The microphone is asked for where it is used, on a copy of the app that has never asked.
+        // Without the grant the recording starts anyway and holds the other side alone, which is
+        // the one failure nobody can hear: the file plays and the transcript is written, and the
+        // person's own words are simply not in either.
+        if !audioDevices.microphones.isEmpty, !microphoneGranted {
+            await requestMicrophoneAccess()
+        }
         guard let pipeline else {
             errorMessage = "ffmpeg and ffprobe are required to save recordings."
             apply(.fail(.storageUnavailable))

@@ -630,4 +630,68 @@ struct DiarizerTests {
         #expect(result.clusters.map(\.speakerLabel) == ["SPEAKER_00"])
         #expect(result.clusters.first?.embedding.count == 256)
     }
+
+    @Test(
+        "the download is asked for by the flag the shipping script knows",
+        .enabled(if: TestEnvironment.canRunSpeakerScript)
+    )
+    func asksTheScriptForTheDownloadItKnows() throws {
+        // The flag the app passes and the flag the script parses are one contract. The app's half
+        // is checked by running a script that writes down what it was asked for.
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "diarizer-download-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let script = directory.appending(path: "download.py")
+        try """
+        import json, os, sys
+        here = os.path.dirname(os.path.abspath(__file__))
+        open(os.path.join(here, "arguments.txt"), "w").write(" ".join(sys.argv[1:]))
+        print(json.dumps({"models": []}))
+        """.write(to: script, atomically: true, encoding: .utf8)
+
+        try Diarizer(python: URL(filePath: "/usr/bin/python3"), script: script).downloadModels()
+
+        let recorded = try String(
+            contentsOf: directory.appending(path: "arguments.txt"), encoding: .utf8
+        )
+        #expect(recorded == "--download-models")
+    }
+
+    @Test(
+        "the shipping script names the download in its own usage",
+        .enabled(if: TestEnvironment.canRunSpeakerScript)
+    )
+    func theShippingScriptKnowsTheFlag() throws {
+        // The other half: a flag the script does not parse is an argparse refusal, and the button
+        // in the review window would fail with a usage text instead of fetching anything.
+        let script = TestEnvironment.packageRoot
+            .appending(path: "Sources/CallRecorderApp/diarize.py")
+        let process = Process()
+        process.executableURL = URL(filePath: "/usr/bin/python3")
+        process.arguments = [script.path, "--help"]
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        let text = String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+            + String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+
+        #expect(process.terminationStatus == 0)
+        #expect(text.contains("--download-models"))
+    }
+
+    @Test("only a cache the run cannot read is offered as a download")
+    func onlyACacheAnswerOffersADownload() {
+        // The button fetches models. A missing package or a Python that is not there is the
+        // person's own setup, and a download offered for it would be a button that cannot help.
+        #expect(DiarizerError.modelsNotCached("nothing at /Volumes/Media").isMissingModelsFromCache)
+        #expect(!DiarizerError.runtimeUnavailable.isMissingModelsFromCache)
+        #expect(!DiarizerError.timedOut.isMissingModelsFromCache)
+        #expect(
+            !DiarizerError.scriptFailed("No module named 'transformers'").isMissingModelsFromCache
+        )
+    }
 }

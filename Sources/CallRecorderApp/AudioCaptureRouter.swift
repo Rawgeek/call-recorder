@@ -14,10 +14,18 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     private let microphoneWriter: AudioSampleWriter
     /// The level of everything the capture delivers, which is what the silence rail reads.
     private let levels: AudioLevelMeter
-    init(paths: CaptureSourcePaths, levels: AudioLevelMeter) {
+    /// The microphone track on its own, which is what the Settings level row draws.
+    ///
+    /// A second meter rather than the one above, because the two questions are different: the rail
+    /// asks whether the call went quiet, and the row asks whether the microphone is hearing the
+    /// person in front of it. One meter cannot answer both: the other side of a call is loud enough
+    /// to hold a shared meter up while the room is silent.
+    private let microphoneLevels: AudioLevelMeter
+    init(paths: CaptureSourcePaths, levels: AudioLevelMeter, microphoneLevels: AudioLevelMeter) {
         systemWriter = AudioSampleWriter(destination: paths.system)
         microphoneWriter = AudioSampleWriter(destination: paths.microphone)
         self.levels = levels
+        self.microphoneLevels = microphoneLevels
     }
 
     func stream(
@@ -32,6 +40,7 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
                 try systemWriter.append(sampleBuffer)
             case .microphone:
                 levels.observe(sampleBuffer)
+                microphoneLevels.observe(sampleBuffer)
                 try microphoneWriter.append(sampleBuffer)
             case .screen:
                 return

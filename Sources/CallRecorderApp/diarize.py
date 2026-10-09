@@ -300,6 +300,28 @@ def emit_not_cached(missing: list[str]) -> None:
     emit({"error": not_cached_sentence(missing), "errorCode": MODELS_NOT_CACHED_CODE})
 
 
+def download_models() -> int:
+    """Fetch both pinned models into the local cache a run reads them from.
+
+    The app asks for this when a check has said the cache does not hold them. The offline switch
+    at the top of this file is what keeps an ordinary run from reaching for a network nobody
+    agreed to use; this is the one call that is online because somebody asked for it. The
+    revisions are the ones above, so what is fetched here is exactly what a run looks for.
+    """
+    os.environ.pop("HF_HUB_OFFLINE", None)
+    from huggingface_hub import snapshot_download
+
+    downloaded: list[str] = []
+    for repository, revision in (
+        (TURN_MODEL_ID, TURN_MODEL_REVISION),
+        (EMBEDDING_PIPELINE, EMBEDDING_REVISION),
+    ):
+        snapshot_download(repository, revision=revision)
+        downloaded.append(f"{repository}@{revision[:7]}")
+    emit({"models": downloaded})
+    return 0
+
+
 def load_embedder():
     from pyannote.audio import Pipeline
 
@@ -665,6 +687,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("audio", type=Path, nargs="?", help="16kHz mono WAV file")
     parser.add_argument("--check", action="store_true", help="Check the local runtime and cached models")
+    parser.add_argument("--download-models", action="store_true",
+                        help="Fetch both models a run reads into the local Hugging Face cache")
     parser.add_argument("--num-speakers", type=int, default=0,
                         help="Separate into exactly this many voices")
     parser.add_argument("--self-check", action="store_true",
@@ -674,6 +698,9 @@ def main() -> int:
     if args.self_check:
         self_check()
         return 0
+
+    if args.download_models:
+        return download_models()
 
     if args.check:
         # The cache answers first, because it is the cheapest question and the one whose answer a

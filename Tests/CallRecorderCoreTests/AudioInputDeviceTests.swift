@@ -85,4 +85,44 @@ struct AudioInputDeviceTests {
                 == "System default"
         )
     }
+
+    @Test("the menu offers the system choice first and every device after it")
+    func menuOffersTheSystemChoiceFirst() {
+        let devices = [
+            AudioInputDevice(id: "BuiltInMicrophoneDevice", name: "MacBook Pro Microphone"),
+            AudioInputDevice(id: "08-FF-44-4C-9B-A6:input", name: "AirPods Max"),
+        ]
+
+        let choices = AudioCaptureSession.microphoneChoices(
+            systemDefaultID: "08-FF-44-4C-9B-A6:input",
+            devices: devices
+        )
+
+        // The first row is the instruction to follow the system, named for what that means today;
+        // every row after it is one device, pinned by name.
+        #expect(choices.map(\.id) == [AudioCaptureSession.systemMicrophoneID] + devices.map(\.id))
+        #expect(choices.first?.name == "System (AirPods Max)")
+        #expect(choices.dropFirst().map(\.name) == ["MacBook Pro Microphone", "AirPods Max"])
+    }
+
+    @Test("a Mac with no default input still has the system choice to offer")
+    func menuWithoutADefaultDevice() {
+        let choices = AudioCaptureSession.microphoneChoices(systemDefaultID: nil, devices: [])
+
+        #expect(choices.map(\.name) == ["System default"])
+    }
+
+    @Test("a device that is gone is not found in the audio system either")
+    func anUnpluggedDeviceIsNotFound() {
+        #expect(AudioCaptureSession.audioDeviceID(forUID: "no-such-device-anywhere") == nil)
+    }
+
+    @Test("the identifier macOS reports for its own choice is one the audio system answers to")
+    func theSystemsOwnChoiceResolves() {
+        // The level check hands the chosen device to Core Audio by this identifier, so the two
+        // lists have to answer to the same name. A Mac with no input has nothing to check.
+        guard let uid = AudioCaptureSession.systemDefaultMicrophoneID() else { return }
+
+        #expect(AudioCaptureSession.audioDeviceID(forUID: uid) != nil)
+    }
 }

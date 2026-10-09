@@ -48,5 +48,37 @@ struct ScreenRecordingPermissionTests {
         #expect(url.hasPrefix("x-apple.systempreferences:"))
         #expect(url.contains("Privacy_ScreenCapture"))
     }
-}
 
+    @Test("the card names the state where the switch is on but belongs to a copy that is gone")
+    func saysWhyAnOnSwitchStillAsks() {
+        // macOS keeps the grant for the exact copy of the app that asked, and this app replaces
+        // itself when it updates. The person then sees a switch that is on and an app that still
+        // asks, and the card's old instructions led nowhere. The repair has to be on the card.
+        let message = ScreenRecordingPermission.notice(granted: false)?.message ?? ""
+
+        #expect(message.contains("Reset Permission"))
+        #expect(message.contains("copy"))
+    }
+
+    @Test("the reset forgets this app's record and nothing else")
+    func resetNamesTheAppAndTheService() {
+        let arguments = ScreenRecordingPermission.resetArguments(
+            bundleIdentifier: "local.callrecorder.app"
+        )
+
+        #expect(arguments == ["reset", "ScreenCapture", "local.callrecorder.app"])
+        #expect(ScreenRecordingPermission.resetExecutable.path == "/usr/bin/tccutil")
+    }
+
+    @Test("after the record is cleared the card asks for a switch and a restart")
+    func askedAgainSaysWhatIsLeft() {
+        let notice = ScreenRecordingPermission.notice(granted: false, askedAgain: true)
+
+        #expect(notice?.title == "Screen Recording permission is needed")
+        let message = notice?.message ?? ""
+        #expect(message.contains("cleared"))
+        #expect(message.contains("restart"))
+        // The state does not outlive the problem: a grant that arrives still takes the card away.
+        #expect(ScreenRecordingPermission.notice(granted: true, askedAgain: true) == nil)
+    }
+}

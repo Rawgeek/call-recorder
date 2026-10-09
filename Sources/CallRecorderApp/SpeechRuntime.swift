@@ -350,7 +350,11 @@ private final class PipOutputTail: @unchecked Sendable {
 }
 
 /// Runs pip for the speech runtime, outside the main actor and outside the class that owns it.
-private enum SpeechRuntimeInstaller {
+///
+/// Readable from the tests rather than private: the sequence of commands it runs is the contract
+/// between this app and whatever made the environment, and a stub interpreter is the only way to
+/// check that sequence without installing anything.
+enum SpeechRuntimeInstaller {
     enum Outcome: Sendable {
         case success
         case failure(String)
@@ -397,10 +401,43 @@ private enum SpeechRuntimeInstaller {
         return String(trimmed.suffix(600))
     }
 
+    /// Whether the environment's own pip answers.
+    ///
+    /// An environment made by another tool holds the interpreter and its packages but no pip:
+    /// uv is the common one on a Mac where the person set the environment up themselves, and the
+    /// app's own folder was one on 2026-10-08. Every install there answered "No module named pip",
+    /// which read as a broken environment that was in fact one command from working.
+    static func hasPip(python: URL) -> Bool {
+        guard
+            let outcome = try? ProcessRunner.run(
+                executable: python,
+                arguments: ["-m", "pip", "--version"]
+            )
+        else { return false }
+        return outcome.exitCode == 0
+    }
+
     static func run(
         python: URL,
         onLine: @escaping @Sendable (String) -> Void
     ) -> Outcome {
+        // pip comes back from the interpreter's own standard library before anything is asked of
+        // it, so the pinned install below runs the same way in every environment this app meets.
+        if !hasPip(python: python) {
+            onLine("The environment has no pip; adding it from its own standard library")
+            let bootstrap = try? ProcessRunner.run(
+                executable: python,
+                arguments: ["-m", "ensurepip", "--upgrade"]
+            )
+            guard bootstrap?.exitCode == 0 else {
+                return .failure(
+                    tail(
+                        of: bootstrap?.standardError ?? "",
+                        or: "the environment has no pip and could not make one"
+                    )
+                )
+            }
+        }
         let process = Process()
         process.executableURL = python
         process.arguments = ["-m", "pip", "install", "--upgrade"] + SpeechRuntimeRequirement.packages
