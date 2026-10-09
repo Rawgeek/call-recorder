@@ -813,11 +813,46 @@ final class AppModel {
             await microphoneCheck.stop()
             return
         }
+        // A check only starts while the recorder is doing nothing: a recording owns the microphone,
+        // and a capture that is changing hands is about to.
+        guard canStartMicrophoneCheck else { return }
         let chosen = selectedMicrophoneID
         await microphoneCheck.start(
             deviceID: chosen == AudioCaptureSession.systemMicrophoneID ? nil : chosen
         )
     }
+
+    /// Whether a level check may start now: the recorder is idle and no capture is changing hands.
+    var canStartMicrophoneCheck: Bool {
+        recorderState.phase == .idle && !captureOperationInFlight
+    }
+
+    /// Whether a permission reset or a restart would interrupt capture.
+    ///
+    /// A reset clears a record a running capture depends on, and a restart ends the capture. A
+    /// capture changing hands and a level check listening, starting or being put down hold the same
+    /// devices, so they count too.
+    var isCaptureBusy: Bool {
+        Self.captureIsBusy(
+            phase: recorderState.phase,
+            captureInFlight: captureOperationInFlight,
+            checkBusy: microphoneCheck.isBusy
+        )
+    }
+
+    /// The rule behind isCaptureBusy, pulled out so the surfaces share it and a test can hold the
+    /// truth table without building the model.
+    nonisolated static func captureIsBusy(
+        phase: RecordingPhase,
+        captureInFlight: Bool,
+        checkBusy: Bool
+    ) -> Bool {
+        phase == .recording || phase == .paused || captureInFlight || checkBusy
+    }
+
+    /// What a permission change says while a capture or a check is using the audio.
+    private static let captureBusyMessage =
+        "A recording or a microphone check is using the audio. Stop it first, then try again."
 
     /// The microphone choices the settings menu offers.
     ///
@@ -1450,6 +1485,10 @@ final class AppModel {
     /// A switch that is on in the pane can belong to a copy that is gone, and the pane then offers
     /// nothing to turn on: the record is what has to go.
     func resetMicrophonePermission() {
+        guard !isCaptureBusy else {
+            errorMessage = Self.captureBusyMessage
+            return
+        }
         guard let identifier = Bundle.main.bundleIdentifier else {
             errorMessage = "Call Recorder cannot read its own identifier, so the permission "
                 + "record cannot be cleared. Turn it off and on again in System Settings instead."
@@ -1482,6 +1521,10 @@ final class AppModel {
     /// Asking again is what lists the running copy in the pane with a switch of its own; the grant
     /// itself is read when the app next starts, which is why the card offers a restart with it.
     func resetScreenRecordingPermission() {
+        guard !isCaptureBusy else {
+            errorMessage = Self.captureBusyMessage
+            return
+        }
         guard let identifier = Bundle.main.bundleIdentifier else {
             errorMessage = "Call Recorder cannot read its own identifier, so the permission "
                 + "record cannot be cleared. Turn it off and on again in System Settings instead."
@@ -1516,10 +1559,10 @@ final class AppModel {
     /// arranged the same way the updater arranges one.
     func restart() {
         // A call being recorded is the one thing a restart would spoil, and the audio of a call
-        // still being captured is not on disk in a form anything could put back.
-        guard recorderState.phase != .recording, recorderState.phase != .paused else {
-            errorMessage = "A recording is running. Stop it first, then restart to pick the "
-                + "permission up."
+        // still being captured is not on disk in a form anything could put back. A capture that is
+        // starting and a level check hold the same devices, so they are waited for too.
+        guard !isCaptureBusy else {
+            errorMessage = Self.captureBusyMessage
             return
         }
         let log = Self.restartLogURL
@@ -2905,6 +2948,11 @@ final class AppModel {
 
     private func beginRecording(automatic: Bool) async {
         guard recorderState.phase == .idle, !captureOperationInFlight else { return }
+        // Taken before the first wait and held to the end: a start waits on the microphone check and
+        // on the grant, and a second start arriving during either wait must find the recorder busy
+        // rather than start a second capture of the same device.
+        captureOperationInFlight = true
+        defer { captureOperationInFlight = false }
         // A check holds the audio input open. The recorder is about to want the same device, and
         // the row that offers the check says the recording's own level once it has it. The stop is
         // waited for rather than asked for: the capture is refused while one is already running.
@@ -2921,8 +2969,6 @@ final class AppModel {
             apply(.fail(.storageUnavailable))
             return
         }
-        captureOperationInFlight = true
-        defer { captureOperationInFlight = false }
         let startedAt = Date()
         let sessionID = SessionID(rawValue: UUID())
         let callID = CallID(rawValue: sessionID.rawValue)

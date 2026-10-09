@@ -641,6 +641,7 @@ private struct MicrophoneLevelRow: View {
             CRButton(title: "Stop") { Task { await model.microphoneCheck.stop() } }
         } else {
             CRButton(title: "Check") { Task { await model.toggleMicrophoneCheck() } }
+                .disabled(!model.canStartMicrophoneCheck || model.microphoneCheck.isBusy)
         }
     }
 

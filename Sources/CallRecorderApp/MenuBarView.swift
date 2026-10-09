@@ -336,14 +336,12 @@ struct MenuBarView: View {
                             help: "Quits and opens Call Recorder again, which is when macOS "
                                 + "reads the permission."
                         ) { model.restart() }
-                        .disabled(
-                            model.recorderState.phase == .recording
-                                || model.recorderState.phase == .paused
-                        )
+                        .disabled(model.isCaptureBusy)
                     } else {
                         CRButton(title: "Reset Permission") {
                             model.resetScreenRecordingPermission()
                         }
+                        .disabled(model.isCaptureBusy)
                     }
                 }
             }
@@ -368,10 +366,7 @@ struct MenuBarView: View {
                     // Clearing the record while a call is being captured would take the microphone
                     // away from a recording that is already under way.
                     CRButton(title: "Reset Permission") { model.resetMicrophonePermission() }
-                        .disabled(
-                            model.recorderState.phase == .recording
-                                || model.recorderState.phase == .paused
-                        )
+                        .disabled(model.isCaptureBusy)
                 }
             }
         }

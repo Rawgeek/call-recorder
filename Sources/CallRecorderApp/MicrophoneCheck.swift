@@ -70,11 +70,24 @@ final class MicrophoneCheck {
     private var endsAt: Date?
 
     @ObservationIgnored private let session: AudioCaptureSession
+    /// The grant and the capture, handed in so a start that is held open can be stopped in a test.
+    @ObservationIgnored private let system: any MicrophoneCheckSystem
+    /// The start that is still asking, and the one cleanup a stop leaves behind.
+    ///
+    /// A start waits twice before it can listen, so a press during either wait must not open a
+    /// second stream, and a press during a cleanup must not open one at all. Both are read by the
+    /// surfaces that hold a permission change, so neither is hidden from observation.
+    private var pendingStart: Task<Void, Never>?
+    private var stopping: Task<Void, Never>?
     @ObservationIgnored private var stopTask: Task<Void, Never>?
 
-    init(session: AudioCaptureSession) {
+    init(session: AudioCaptureSession, system: (any MicrophoneCheckSystem)? = nil) {
         self.session = session
+        self.system = system ?? LiveMicrophoneCheckSystem(session: session)
     }
+
+    /// Whether a listen is running, still being started, or still being put down.
+    var isBusy: Bool { isRunning || pendingStart != nil || stopping != nil }
 
     /// What the microphone is delivering right now, or nil when nothing is being listened to.
     func currentDecibels() -> Double? {
@@ -93,15 +106,30 @@ final class MicrophoneCheck {
     /// A device identifier names one device; nothing means "follow whatever macOS is set to use",
     /// which is the same instruction the recorder takes when the menu says System.
     func start(deviceID: String?) async {
-        guard !isRunning else { return }
+        // One start at a time: a press while a start is still asking, or while a stop is still
+        // putting the last one down, does not open a second stream.
+        guard stopping == nil, pendingStart == nil, !isRunning else { return }
         refusal = nil
-        switch AVCaptureDevice.authorizationStatus(for: .audio) {
+        let start = Task { [weak self] in _ = await self?.run(deviceID: deviceID) }
+        pendingStart = start
+        await start.value
+    }
+
+    /// The start work, in its own task so a stop can cancel it and wait for it to finish.
+    ///
+    /// Cancellation is checked after each wait. A stop that arrives inside a wait makes the start
+    /// give up rather than publish a running check, and a stream that was already opened before the
+    /// stop is put down here rather than left for anyone else to find.
+    private func run(deviceID: String?) async {
+        defer { pendingStart = nil }
+        switch system.authorizationStatus() {
         case .authorized:
             break
         case .notDetermined:
             // The prompt belongs to the press: a settings row that opens the microphone without
             // asking is a row that has no business opening it.
-            guard await AVCaptureDevice.requestAccess(for: .audio) else {
+            guard await system.requestAccess() else {
+                guard !Task.isCancelled else { return }
                 refusal = .permissionDenied
                 return
             }
@@ -109,10 +137,16 @@ final class MicrophoneCheck {
             refusal = .permissionDenied
             return
         }
+        guard !Task.isCancelled else { return }
         do {
-            try await session.startMonitoring(microphoneDeviceID: deviceID)
+            try await system.startMonitoring(microphoneDeviceID: deviceID)
         } catch {
+            guard !Task.isCancelled else { return }
             refusal = Self.refusal(for: error)
+            return
+        }
+        guard !Task.isCancelled else {
+            await system.finishMonitoring()
             return
         }
         isRunning = true
@@ -125,12 +159,33 @@ final class MicrophoneCheck {
     }
 
     /// Puts the microphone down, whatever state the check is in.
+    ///
+    /// Every stop joins the one cleanup already running, so two stops wait for the same work and a
+    /// start pressed meanwhile is refused until the stream is down.
     func stop() async {
         stopTask?.cancel()
         stopTask = nil
-        isRunning = false
-        endsAt = nil
-        await session.finishMonitoring()
+        if let stopping {
+            await stopping.value
+            return
+        }
+        let start = pendingStart
+        start?.cancel()
+        let cleanup = Task { [weak self] in
+            // The cancelled start is waited for first: a framework start may still succeed after
+            // the cancellation, and the stream it opened must be closed before this cleanup ends.
+            _ = await start?.value
+            guard let self else { return }
+            self.isRunning = false
+            self.endsAt = nil
+            self.refusal = nil
+            await self.system.finishMonitoring()
+            // Cleared last, so a start pressed during teardown is refused until the stream is down.
+            self.pendingStart = nil
+            self.stopping = nil
+        }
+        stopping = cleanup
+        await cleanup.value
     }
 
     /// What stopped a check, said as the one thing a person can act on.
@@ -146,5 +201,48 @@ final class MicrophoneCheck {
             return .screenRecordingRefused
         }
         return .captureUnavailable(error.localizedDescription)
+    }
+}
+
+/// What a check asks of the system: the microphone grant, and the capture it listens through.
+///
+/// A check waits twice, once for the grant and once for the capture to answer, and a stop can
+/// arrive while either is outstanding. Those two waits are the only things handed in here; the
+/// start and stop above them, where the races live, stay the production ones.
+@MainActor
+protocol MicrophoneCheckSystem: AnyObject {
+    /// Whether macOS has granted this copy of the app the microphone.
+    func authorizationStatus() -> AVAuthorizationStatus
+    /// Asks for the microphone, and answers whether it was granted.
+    func requestAccess() async -> Bool
+    /// Opens the recorder's own capture, measuring the microphone and writing nothing.
+    func startMonitoring(microphoneDeviceID: String?) async throws
+    /// Puts the capture down.
+    func finishMonitoring() async
+}
+
+/// The system behind a real check: the microphone grant, and the recorder's own capture.
+@MainActor
+final class LiveMicrophoneCheckSystem: MicrophoneCheckSystem {
+    private let session: AudioCaptureSession
+
+    init(session: AudioCaptureSession) {
+        self.session = session
+    }
+
+    func authorizationStatus() -> AVAuthorizationStatus {
+        AVCaptureDevice.authorizationStatus(for: .audio)
+    }
+
+    func requestAccess() async -> Bool {
+        await AVCaptureDevice.requestAccess(for: .audio)
+    }
+
+    func startMonitoring(microphoneDeviceID: String?) async throws {
+        try await session.startMonitoring(microphoneDeviceID: microphoneDeviceID)
+    }
+
+    func finishMonitoring() async {
+        await session.finishMonitoring()
     }
 }

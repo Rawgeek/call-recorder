@@ -4,6 +4,22 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.40] - 2026-10-09
+
+### Added
+
+- The microphone menu updates when an input connects, disconnects, or becomes the system default.
+- Settings offers a twenty-second microphone check through the same capture path used for recordings.
+- The recording view warns when microphone permission is missing and offers permission repair controls.
+- Review Speakers offers to download the pinned speaker models when they are missing from the local cache.
+
+### Fixed
+
+- The speech runtime installer restores pip when the Python environment was created without it.
+- Recording startup reserves capture before waiting for microphone setup, preventing overlapping starts.
+- Stopping a microphone check waits for pending startup and cleanup before recording can use the input.
+- Permission resets and Restart cannot interrupt a recording, capture startup, or a microphone check.
+
 ## [0.1.39] - 2026-10-06
 
 ### Fixed
