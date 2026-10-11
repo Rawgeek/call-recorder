@@ -128,7 +128,7 @@ struct SpeakerReviewPlaybackTests {
         #expect(evidence.audioURL == nil)
     }
 
-    @Test("source-specific audio is preferred, then call.m4a, then the Recently Deleted payload")
+    @Test("the mix is preferred, then the system track, then the microphone, then the payload")
     func audioResolutionPreferenceOrder() throws {
         // Given
         let root = FileManager.default.temporaryDirectory
@@ -157,7 +157,9 @@ struct SpeakerReviewPlaybackTests {
             purgeAfter: Date().addingTimeInterval(60)
         )
 
-        // When: all candidates exist, the source-specific file wins.
+        // When: all candidates exist, the mix wins. It is the only file that holds both sides of
+        // the call, and the local participant's row on the timeline is drawn from the microphone
+        // half: playing the system track alone left that row silent (2026-10-12).
         var resolved = SpeakerReviewPlayback.resolveAudio(
             review: SpeakerReviewItem(
                 clusterID: SpeakerClusterID(rawValue: UUID()),
@@ -173,19 +175,9 @@ struct SpeakerReviewPlaybackTests {
             recoverableArtifacts: [artifact],
             fileExists: { FileManager.default.fileExists(atPath: $0.path) }
         )
-        #expect(resolved == sourceSpecific)
-
-        // When: the source-specific file is missing, call.m4a wins.
-        try FileManager.default.removeItem(at: sourceSpecific)
-        resolved = SpeakerReviewPlayback.resolveAudio(
-            review: review,
-            callDirectory: callDirectory,
-            recoverableArtifacts: [artifact],
-            fileExists: { FileManager.default.fileExists(atPath: $0.path) }
-        )
         #expect(resolved == callAudio)
 
-        // When: both working-directory files are missing, the payload source file wins.
+        // When: the mix is missing, the system track wins: it is the side the review is drawn from.
         try FileManager.default.removeItem(at: callAudio)
         resolved = SpeakerReviewPlayback.resolveAudio(
             review: review,
@@ -193,10 +185,22 @@ struct SpeakerReviewPlaybackTests {
             recoverableArtifacts: [artifact],
             fileExists: { FileManager.default.fileExists(atPath: $0.path) }
         )
-        #expect(resolved == payloadSource)
+        #expect(resolved == sourceSpecific)
 
-        // When: only the payload call.m4a remains, it wins.
-        try FileManager.default.removeItem(at: payloadSource)
+        // When: a call has only its microphone half left, that is what plays.
+        try FileManager.default.removeItem(at: sourceSpecific)
+        let microphoneOnly = callDirectory.appending(path: "microphone.m4a")
+        try Data([5]).write(to: microphoneOnly)
+        resolved = SpeakerReviewPlayback.resolveAudio(
+            review: review,
+            callDirectory: callDirectory,
+            recoverableArtifacts: [artifact],
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+        )
+        #expect(resolved == microphoneOnly)
+
+        // When: the call's own directory holds nothing, the payload's mix wins.
+        try FileManager.default.removeItem(at: microphoneOnly)
         resolved = SpeakerReviewPlayback.resolveAudio(
             review: review,
             callDirectory: callDirectory,
@@ -205,8 +209,18 @@ struct SpeakerReviewPlaybackTests {
         )
         #expect(resolved == payloadCallAudio)
 
-        // When: everything is gone, the sample is explicitly unavailable.
+        // When: only the payload's system track remains, it wins.
         try FileManager.default.removeItem(at: payloadCallAudio)
+        resolved = SpeakerReviewPlayback.resolveAudio(
+            review: review,
+            callDirectory: callDirectory,
+            recoverableArtifacts: [artifact],
+            fileExists: { FileManager.default.fileExists(atPath: $0.path) }
+        )
+        #expect(resolved == payloadSource)
+
+        // When: everything is gone, the sample is explicitly unavailable.
+        try FileManager.default.removeItem(at: payloadSource)
         resolved = SpeakerReviewPlayback.resolveAudio(
             review: review,
             callDirectory: callDirectory,
