@@ -195,22 +195,59 @@ final class AudioSampleWriter: @unchecked Sendable {
         guard !FileManager.default.fileExists(atPath: destination.path) else {
             throw AudioSampleWriterError.outputExists(destination)
         }
+        // The rate follows the format the capture delivered. The system track keeps the 128 kbps it
+        // has always been written at, because that is where this number came from; a Bluetooth
+        // headset's microphone is 24 kHz mono, and AAC refuses 128 kbps for it when the source
+        // format hint says what the source is. Measured on 2026-10-09: startWriting answered
+        // "Cannot Encode Media" (-11861, underlying -12651) on the first buffer of every recording
+        // made on AirPods, and the microphone track was then dropped with nothing said.
+        let preferred = Self.bitRate(for: stream)
+        do {
+            return try startWriter(for: sampleBuffer, format: format, bitRate: preferred)
+        } catch {
+            // A track is worth more than the settings it was first asked for: an encoder that
+            // refuses the rate is asked again without one, and one that refuses the hint is given
+            // its samples alone. The format goes as it came from the capture either way.
+            logger.notice(
+                "capture could not start a track at \(preferred, privacy: .public) bps; writing it without a rate"
+            )
+            return try startWriter(for: sampleBuffer, format: format, bitRate: nil, usesHint: false)
+        }
+    }
+
+    /// Opens a track with the given settings, or throws what the writer said.
+    private func startWriter(
+        for sampleBuffer: CMSampleBuffer,
+        format: CMFormatDescription,
+        bitRate: Int?,
+        usesHint: Bool = true
+    ) throws -> AVAssetWriterInput {
+        guard let description = CMAudioFormatDescriptionGetStreamBasicDescription(format)
+        else { throw AudioSampleWriterError.invalidAudioFormat }
+        let stream = description.pointee
         let writer = try AVAssetWriter(outputURL: partial, fileType: .m4a)
-        let settings: [String: Any] = [
+        var settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatMPEG4AAC,
             AVSampleRateKey: stream.mSampleRate,
             AVNumberOfChannelsKey: Int(stream.mChannelsPerFrame),
-            AVEncoderBitRateKey: 128_000,
         ]
+        if let bitRate { settings[AVEncoderBitRateKey] = bitRate }
         let input = AVAssetWriterInput(
             mediaType: .audio,
             outputSettings: settings,
-            sourceFormatHint: format
+            sourceFormatHint: usesHint ? format : nil
         )
         input.expectsMediaDataInRealTime = true
-        guard writer.canAdd(input) else { throw AudioSampleWriterError.invalidAudioFormat }
+        guard writer.canAdd(input) else {
+            writer.cancelWriting()
+            throw AudioSampleWriterError.invalidAudioFormat
+        }
         writer.add(input)
         guard writer.startWriting() else {
+            writer.cancelWriting()
+            if FileManager.default.fileExists(atPath: partial.path) {
+                try? FileManager.default.removeItem(at: partial)
+            }
             throw AudioSampleWriterError.writerFailed(
                 writer.error?.localizedDescription ?? "start failed"
             )
@@ -222,6 +259,16 @@ final class AudioSampleWriter: @unchecked Sendable {
         firstPresentationTime = presentation
         lastPresentationEnd = presentation
         return input
+    }
+
+    /// The rate a track is encoded at, for the format the capture delivered.
+    ///
+    /// 128 kbps is what the call's other side has always been written at, and it is right for the
+    /// 48 kHz stereo it arrives in. Two bits per sample per channel is at or under what the encoder
+    /// accepts at every other format the capture delivers, and the cap leaves the system track at
+    /// the rate it has always had.
+    static func bitRate(for stream: AudioStreamBasicDescription) -> Int {
+        min(128_000, Int(stream.mSampleRate * Double(stream.mChannelsPerFrame)) * 2)
     }
 
     /// Whether a captured buffer carries a format a track can be opened with.

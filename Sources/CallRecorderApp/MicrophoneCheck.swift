@@ -202,6 +202,20 @@ final class MicrophoneCheck {
         }
         return .captureUnavailable(error.localizedDescription)
     }
+
+    /// Whether a failure still describes this moment, given what is connected.
+    ///
+    /// A check that found nothing to listen to is an answer about the device list it was measured
+    /// against. A headset connected afterwards is not described by it, and the row went on saying
+    /// no microphone was connected while the menu above it offered one (2026-10-09). Everything
+    /// else is a state of the permissions or the capture, which a device joining the menu does not
+    /// settle.
+    static func describesCurrentState(_ refusal: Refusal, hasMicrophone: Bool) -> Bool {
+        switch refusal {
+        case .noMicrophone: return !hasMicrophone
+        default: return true
+        }
+    }
 }
 
 /// What a check asks of the system: the microphone grant, and the capture it listens through.
