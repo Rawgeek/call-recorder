@@ -8,6 +8,7 @@ import Testing
 /// moves is checked here rather than only looked at in a render: a blink that outlived its
 /// recording, or one that ignored Reduce Motion, would both be found by the person it disturbs.
 @Suite("Menu bar blink")
+@MainActor
 struct MenuBarBlinkTests {
     @Test("the icon blinks while a recording runs and stands still in every other state")
     func blinksOnlyWhileRecording() {
@@ -33,6 +34,44 @@ struct MenuBarBlinkTests {
     func thePaceIsAReadableOne() {
         #expect(MenuBarView.blinkIntervalMilliseconds >= 400)
         #expect(MenuBarView.blinkIntervalMilliseconds <= 1_000)
+    }
+
+    @Test("the blink runs while a recording does, and stops and brightens with it")
+    func theBlinkFollowsTheRecording() async {
+        // Given a blinker whose wait never returns, so the loop is parked inside the sleep and
+        // the test sees one stable half rather than a race with the next one.
+        let blinker = MenuBarBlinker()
+        blinker.sleep = { _ in try await Task.sleep(for: .seconds(3_600)) }
+
+        // When a recording starts, the first half lands without waiting for the interval.
+        blinker.update(shouldBlink: true)
+        var spins = 0
+        while !blinker.isDimmed, spins < 100 {
+            await Task.yield()
+            spins += 1
+        }
+        #expect(blinker.isDimmed)
+        #expect(blinker.isBlinking)
+
+        // A second "yes" is the same state, not a second blink.
+        blinker.update(shouldBlink: true)
+        #expect(blinker.isBlinking)
+
+        // When the recording stops, the blink stops and the glyph is left bright.
+        blinker.update(shouldBlink: false)
+        #expect(!blinker.isBlinking)
+        #expect(!blinker.isDimmed)
+    }
+
+    @Test("Reduce Motion keeps the blink from starting at all")
+    func reduceMotionKeepsTheBlinkerStill() {
+        let blinker = MenuBarBlinker()
+        blinker.reducesMotion = { true }
+
+        blinker.update(shouldBlink: true)
+
+        #expect(!blinker.isBlinking)
+        #expect(!blinker.isDimmed)
     }
 }
 
