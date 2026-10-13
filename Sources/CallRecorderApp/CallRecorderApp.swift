@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct CallRecorderApp: App {
@@ -37,12 +38,37 @@ struct CallRecorderApp: App {
 private struct StatusItemLabel: View {
     @Bindable var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    /// Whether the glyph is in the dimmed half of its blink.
+    @State private var isDimmed = false
 
     var body: some View {
         Image(systemName: model.menuBarSymbol)
+            .opacity(isDimmed ? 0.25 : 1)
             .accessibilityLabel("Call Recorder, \(model.statusLabel)")
             .onAppear {
                 WindowPresentation.startObservingWindows()
             }
+            // The phase is the identity: every change to it cancels whatever blink was running
+            // and starts the one this state asks for, so no timer outlives the recording it was
+            // announcing.
+            .task(id: model.recorderState.phase) {
+                await blink()
+            }
+    }
+
+    /// Blinks while a recording runs, and stands still in every other state.
+    private func blink() async {
+        isDimmed = false
+        guard
+            MenuBarView.statusItemBlinks(
+                phase: model.recorderState.phase,
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+        else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(MenuBarView.blinkIntervalMilliseconds))
+            guard !Task.isCancelled else { return }
+            isDimmed.toggle()
+        }
     }
 }
