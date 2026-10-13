@@ -41,6 +41,9 @@ struct MenuBarBlinkTests {
         // Given a blinker whose wait never returns, so the loop is parked inside the sleep and
         // the test sees one stable half rather than a race with the next one.
         let blinker = MenuBarBlinker()
+        // The ambient accessibility setting is not this test's subject: a build machine reports
+        // Reduce Motion as on, and the loop then never starts (found by CI on 2026-10-13).
+        blinker.reducesMotion = { false }
         blinker.sleep = { _ in try await Task.sleep(for: .seconds(3_600)) }
         // Every half is reported as well as stored: the label listens to the owner, not to this
         // object, and a blink nobody republishes is a blink nobody sees (2026-10-13).
