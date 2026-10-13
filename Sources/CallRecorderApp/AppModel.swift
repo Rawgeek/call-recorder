@@ -449,8 +449,8 @@ final class AppModel {
     /// not a change of this one, and the label listens to this one. It is what made the difference
     /// on 2026-10-13 — the blink ran behind a label that never redrew.
     ///
-    /// The label turns this into a different glyph rather than a lower opacity: a menu bar item
-    /// draws a template image, and a template is a shape, so only a shape swap is visible there.
+    /// The label draws the glyph at this half's ink: full strength is one, and the two halves of
+    /// the pulse are the two grays in `MenuBarView.statusItemOpacity`.
     private(set) var menuBarIconDimmed = false
     /// A bounded listen to the chosen microphone, for the level row in Settings.
     ///

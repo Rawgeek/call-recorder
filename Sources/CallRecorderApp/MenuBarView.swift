@@ -586,6 +586,45 @@ struct MenuBarView: View {
         phase == .recording && !reduceMotion
     }
 
+    /// The ink the status item is drawn with: full while nothing is captured, and the two grays of
+    /// the pulse while a recording runs.
+    ///
+    /// The asking of 2026-10-13 was for a softer pulse than black-and-transparent: the quiet half
+    /// is a light gray and the loud half a medium one, and neither end is black. Both are alphas
+    /// of the same glyph, which the bar renders as grays.
+    nonisolated static func statusItemOpacity(
+        phase: RecordingPhase,
+        dimmed: Bool,
+        reduceMotion: Bool
+    ) -> Double {
+        guard statusItemBlinks(phase: phase, reduceMotion: reduceMotion) else { return 1 }
+        return dimmed ? statusItemQuietInk : statusItemLoudInk
+    }
+
+    /// The two inks of the pulse: a light gray at its quiet half, a medium one at its loud half.
+    static let statusItemQuietInk = 0.35
+    static let statusItemLoudInk = 0.6
+
+    /// The glyph with its ink baked in, as a template the bar tints.
+    ///
+    /// The pulse cannot be an `opacity` modifier: a menu bar item drops it — measured on
+    /// 2026-10-13, twenty frames a third of a second apart were byte identical while a
+    /// modifier-driven pulse ran, and the same surface repainted the moment the symbol itself was
+    /// replaced. The ink is therefore part of the image, and swapping one image for another is the
+    /// change this surface already follows. 100% ink is the untouched symbol.
+    nonisolated static func statusItemIcon(name: String, ink: Double) -> NSImage {
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            return NSImage()
+        }
+        guard ink < 1 else { return base }
+        let image = NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: ink)
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
     /// Half a blink, in milliseconds: bright, dim, bright again.
     ///
     /// A blink reads as alive at about a second from bright to bright, which is also the pace a

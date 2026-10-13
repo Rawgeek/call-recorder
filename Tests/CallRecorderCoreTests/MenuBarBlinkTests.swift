@@ -82,5 +82,42 @@ struct MenuBarBlinkTests {
         #expect(!blinker.isBlinking)
         #expect(!blinker.isDimmed)
     }
+
+    @Test("the pulse keeps two grays: neither half is black and neither is an empty bar")
+    func theBlinkStaysSoft() {
+        // The asking of 2026-10-13: softer than transparent-to-black. The quiet half is a light
+        // gray and the loud half a medium one — and the loud half is the one that must not be
+        // black, which is what the upper bound here holds.
+        let quiet = MenuBarView.statusItemOpacity(
+            phase: .recording,
+            dimmed: true,
+            reduceMotion: false
+        )
+        let loud = MenuBarView.statusItemOpacity(
+            phase: .recording,
+            dimmed: false,
+            reduceMotion: false
+        )
+
+        #expect(quiet < loud)
+        #expect(quiet > 0.25)  // still ink on the bar
+        #expect(loud < 0.8)  // not black
+        #expect(loud > 0.4)  // still reads as an icon
+
+        // Every other state is drawn as it always was, whatever half was last reported.
+        let rest: [RecordingPhase] = [
+            .idle, .paused, .finalizing, .awaitingParticipants, .transcribing, .indexing, .failed,
+        ]
+        for phase in rest {
+            #expect(
+                MenuBarView.statusItemOpacity(phase: phase, dimmed: true, reduceMotion: false) == 1
+            )
+        }
+
+        // Reduce Motion stands still, at full ink.
+        #expect(
+            MenuBarView.statusItemOpacity(phase: .recording, dimmed: true, reduceMotion: true) == 1
+        )
+    }
 }
 
