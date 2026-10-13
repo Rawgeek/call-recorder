@@ -443,6 +443,15 @@ final class AppModel {
     /// menu is first drawn, and the icon's job is to say "a call is being captured" while the
     /// popover is closed.
     let menuBarBlinker = MenuBarBlinker()
+    /// The half of the blink the menu bar label draws.
+    ///
+    /// The blinker reports every half, and this is where it lands: a change of a nested object is
+    /// not a change of this one, and the label listens to this one. It is what made the difference
+    /// on 2026-10-13 — the blink ran behind a label that never redrew.
+    ///
+    /// The label turns this into a different glyph rather than a lower opacity: a menu bar item
+    /// draws a template image, and a template is a shape, so only a shape swap is visible there.
+    private(set) var menuBarIconDimmed = false
     /// A bounded listen to the chosen microphone, for the level row in Settings.
     ///
     /// The row draws the capture's own microphone track while a recording runs. With nothing being
@@ -2788,6 +2797,7 @@ final class AppModel {
     /// Called from the one place the recorder's phase changes, so the blink starts with a
     /// recording and stops with it, whatever stopped it.
     private func updateMenuBarBlink() {
+        menuBarBlinker.onDim = { [weak self] dimmed in self?.menuBarIconDimmed = dimmed }
         menuBarBlinker.update(
             shouldBlink: MenuBarView.statusItemBlinks(
                 phase: recorderState.phase,

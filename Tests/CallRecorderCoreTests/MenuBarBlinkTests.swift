@@ -42,6 +42,10 @@ struct MenuBarBlinkTests {
         // the test sees one stable half rather than a race with the next one.
         let blinker = MenuBarBlinker()
         blinker.sleep = { _ in try await Task.sleep(for: .seconds(3_600)) }
+        // Every half is reported as well as stored: the label listens to the owner, not to this
+        // object, and a blink nobody republishes is a blink nobody sees (2026-10-13).
+        var reported: [Bool] = []
+        blinker.onDim = { reported.append($0) }
 
         // When a recording starts, the first half lands without waiting for the interval.
         blinker.update(shouldBlink: true)
@@ -52,6 +56,7 @@ struct MenuBarBlinkTests {
         }
         #expect(blinker.isDimmed)
         #expect(blinker.isBlinking)
+        #expect(reported == [true])
 
         // A second "yes" is the same state, not a second blink.
         blinker.update(shouldBlink: true)
@@ -61,6 +66,7 @@ struct MenuBarBlinkTests {
         blinker.update(shouldBlink: false)
         #expect(!blinker.isBlinking)
         #expect(!blinker.isDimmed)
+        #expect(reported == [true, false])
     }
 
     @Test("Reduce Motion keeps the blink from starting at all")
