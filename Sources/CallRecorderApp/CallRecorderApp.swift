@@ -1,3 +1,5 @@
+import AppKit
+import CallRecorderCore
 import SwiftUI
 
 struct CallRecorderApp: App {
@@ -39,11 +41,37 @@ private struct StatusItemLabel: View {
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        Image(systemName: model.menuBarSymbol)
-            .opacity(model.menuBarBlinker.isDimmed ? 0.25 : 1)
+        Image(systemName: Self.symbol(for: model))
             .accessibilityLabel("Call Recorder, \(model.statusLabel)")
             .onAppear {
                 WindowPresentation.startObservingWindows()
             }
+    }
+
+    /// Whether the icon moves: a recording runs, and the system has not asked for still.
+    ///
+    /// Reduce Motion is read when the label is drawn. The setting is one a person sets once; the
+    /// glyph still says the state (a filled record circle while a recording runs).
+    static func blinks(phase: RecordingPhase) -> Bool {
+        MenuBarView.statusItemBlinks(
+            phase: phase,
+            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        )
+    }
+
+    /// The glyph the status item draws, which is the recorder's symbol half-way through a blink.
+    ///
+    /// The quiet half of the blink swaps the record circle's filling rather than its opacity,
+    /// because that is what this surface renders: a menu bar item draws a template image, and a
+    /// template is a shape. Half-transparent ink and opaque ink make the same shape, so an opacity
+    /// step changes nothing on screen — measured on 2026-10-13, twelve frames a tenth of a second
+    /// apart were byte identical while an opacity-driven blink ran, and the two versions of the
+    /// record circle alternating at the same pace were the first frames that differed. A filled
+    /// circle and an outlined one are different shapes, and the swap is what a person sees.
+    static func symbol(for model: AppModel) -> String {
+        guard blinks(phase: model.recorderState.phase), model.menuBarIconDimmed else {
+            return model.menuBarSymbol
+        }
+        return "record.circle"
     }
 }
