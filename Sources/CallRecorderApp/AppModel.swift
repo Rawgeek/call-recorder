@@ -437,6 +437,12 @@ final class AppModel {
     /// moment it draws, so plugging a headset in while the window is open is answered by the menu
     /// itself instead of after a restart.
     let audioDevices = AudioDeviceWatcher()
+    /// Keeps the menu bar icon blinking while a recording runs.
+    ///
+    /// Owned here rather than by the label: a menu bar label's own timers do not start until the
+    /// menu is first drawn, and the icon's job is to say "a call is being captured" while the
+    /// popover is closed.
+    let menuBarBlinker = MenuBarBlinker()
     /// A bounded listen to the chosen microphone, for the level row in Settings.
     ///
     /// The row draws the capture's own microphone track while a recording runs. With nothing being
@@ -2774,6 +2780,20 @@ final class AppModel {
 
     private func apply(_ event: RecorderEvent) {
         recorderState = RecorderReducer.reduce(state: recorderState, event: event)
+        updateMenuBarBlink()
+    }
+
+    /// Tells the icon whether this moment is one a blink describes.
+    ///
+    /// Called from the one place the recorder's phase changes, so the blink starts with a
+    /// recording and stops with it, whatever stopped it.
+    private func updateMenuBarBlink() {
+        menuBarBlinker.update(
+            shouldBlink: MenuBarView.statusItemBlinks(
+                phase: recorderState.phase,
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+        )
     }
 
     /// Moves the recorder into a state for a layout render, and only for a layout render.
