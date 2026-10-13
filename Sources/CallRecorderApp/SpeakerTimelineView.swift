@@ -128,6 +128,11 @@ struct SpeakerTimelineView: View {
             }
             .buttonStyle(.plain)
             .disabled(player.url == nil || player.durationMs == 0)
+            // Space is what a player answers to, and the timeline is a listening surface: the
+            // pointer stays on the rows while the recording runs, so the keyboard is the one way
+            // to stop and start it without aiming. The shortcut belongs to the window, and a
+            // popover over it keeps its own keys.
+            .keyboardShortcut(.space, modifiers: [])
             .help(player.isPlaying ? "Pause" : "Play the recording")
             .accessibilityLabel(player.isPlaying ? "Pause" : "Play")
 

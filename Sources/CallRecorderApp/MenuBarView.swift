@@ -572,6 +572,26 @@ struct MenuBarView: View {
         !enabled && !dismissed
     }
 
+    /// Whether the menu bar icon blinks: a recording runs, and the system has not asked for still.
+    ///
+    /// The icon is the only surface visible while the app is closed, and one grey glyph among the
+    /// others does not say "a call is being captured right now" from across the desk. The dim half
+    /// of the blink is what carries that, and it is what the person checks when they cannot
+    /// remember whether the recorder was started.
+    ///
+    /// Reduce Motion stops it. The setting exists because movement costs some people something,
+    /// and the state is still said by the glyph itself, which is a filled record circle while a
+    /// recording runs.
+    nonisolated static func statusItemBlinks(phase: RecordingPhase, reduceMotion: Bool) -> Bool {
+        phase == .recording && !reduceMotion
+    }
+
+    /// Half a blink, in milliseconds: bright, dim, bright again.
+    ///
+    /// A blink reads as alive at about a second from bright to bright, which is also the pace a
+    /// person's eye is willing to follow all day without it becoming noise.
+    static let blinkIntervalMilliseconds = 600
+
     /// What a row is named after. A call with nobody on it is named by its own date and time,
     /// which is the only thing it has.
     nonisolated static func title(for call: RecentCallSummary) -> String {
