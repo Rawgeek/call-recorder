@@ -726,6 +726,9 @@ final class AppModel {
                 },
                 onChange: { [weak self] isActive in
                     self?.microphoneActivityChanged(isActive)
+                },
+                onCallChange: { [weak self] isActive in
+                    self?.callActivityChanged(isActive)
                 }
             )
             // These used to run from the menu bar label's onAppear, which macOS does not
@@ -2789,8 +2792,14 @@ final class AppModel {
     }
 
     private func apply(_ event: RecorderEvent) {
+        let previousPhase = recorderState.phase
         recorderState = RecorderReducer.reduce(state: recorderState, event: event)
         updateMenuBarBlink()
+        // A call that comes back while the previous recording is still being saved is the next
+        // recording, not a state the recorder should miss because the phase was busy then.
+        if previousPhase != .idle, recorderState.phase == .idle {
+            startAutomaticRecordingIfPossible()
+        }
     }
 
     /// Tells the icon whether this moment is one a blink describes.
@@ -2856,45 +2865,98 @@ final class AppModel {
             settings.automaticDetectionEnabled,
             recorderState.phase == .idle
         {
-            // A call is two-way and it lasts. A voice message, a voice search, and a dictation
-            // session take the microphone and play nothing, and a microphone that is busy for a
-            // moment is not a meeting: starting on the microphone alone is what made recordings
-            // with one side and no speech in them.
-            automaticStartTask = Task { [weak self] in
-                let window = AutomaticRecordingRails.confirmationSeconds
-                try? await Task.sleep(for: .seconds(window))
-                guard !Task.isCancelled, let self else { return }
-                let who = self.activityMonitor.microphoneHolderBundleID ?? "an unknown app"
-                guard self.activityMonitor.twoWayCallActive else {
-                    Self.automaticLogger.notice(
-                        "not starting: \(who, privacy: .public) holds the microphone and plays nothing"
-                    )
-                    return
-                }
-                guard self.settings.automaticDetectionEnabled, self.recorderState.phase == .idle else {
-                    return
-                }
-                Self.automaticLogger.notice(
-                    "starting by itself: \(who, privacy: .public) held the microphone and played the other side for \(Int(window), privacy: .public) seconds"
-                )
-                self.captureQueue.enqueue { [weak self] in
-                    await self?.beginRecording(automatic: true)
-                }
-            }
+            startAutomaticRecordingIfPossible()
             return
         }
         apply(.externalMicrophoneChanged(isActive: isActive, newSessionID: nil))
+        scheduleAutomaticStopIfNeeded()
+    }
+
+    /// Waits out the confirmation window before a recording starts by itself.
+    ///
+    /// A call is two-way and it lasts. A voice message, a voice search, and a dictation session
+    /// take the microphone and play nothing, and a microphone that is busy for a moment is not a
+    /// meeting: starting on the microphone alone is what made recordings with one side and no
+    /// speech in them.
+    private func startAutomaticRecordingIfPossible() {
+        automaticStartTask?.cancel()
         guard
-            !isActive,
+            settings.automaticDetectionEnabled,
+            recorderState.phase == .idle,
+            !recorderState.automaticStartSuppressed,
+            activityMonitor.externalMicrophoneActive,
+            activityMonitor.twoWayCallActive
+        else { return }
+        automaticStartTask = Task { [weak self] in
+            let window = AutomaticRecordingRails.confirmationSeconds
+            try? await Task.sleep(for: .seconds(window))
+            guard !Task.isCancelled, let self else { return }
+            let who = self.activityMonitor.microphoneHolderBundleID ?? "an unknown app"
+            guard
+                self.activityMonitor.externalMicrophoneActive,
+                self.activityMonitor.twoWayCallActive
+            else {
+                Self.automaticLogger.notice(
+                    "not starting: \(who, privacy: .public) stopped holding the microphone or playing the other side"
+                )
+                return
+            }
+            guard self.settings.automaticDetectionEnabled, self.recorderState.phase == .idle else {
+                return
+            }
+            Self.automaticLogger.notice(
+                "starting by itself: \(who, privacy: .public) held the microphone and played the other side for \(Int(window), privacy: .public) seconds"
+            )
+            self.captureQueue.enqueue { [weak self] in
+                await self?.beginRecording(automatic: true)
+            }
+        }
+    }
+
+    /// The other side of the call stopped playing.
+    ///
+    /// Discord can keep its input stream open after leaving a voice channel, so the microphone
+    /// answer never changes. It does stop playing the call, and that is the same end of the call
+    /// seen from the other side.
+    private func callActivityChanged(_ isActive: Bool) {
+        stopGraceTask?.cancel()
+        automaticStartTask?.cancel()
+        if isActive, settings.automaticDetectionEnabled, recorderState.phase == .idle {
+            startAutomaticRecordingIfPossible()
+            return
+        }
+        scheduleAutomaticStopIfNeeded()
+    }
+
+    /// Stops an automatic recording once either side of the call has gone.
+    ///
+    /// A call is over when its app stops playing the other side or stops holding the microphone.
+    /// The grace is the same one the microphone release has always used, and the answer is read
+    /// again when it ends, because a device that comes back during the grace is a call still going.
+    private func scheduleAutomaticStopIfNeeded() {
+        stopGraceTask?.cancel()
+        guard
             recorderState.phase == .recording,
             !recorderState.automaticStartSuppressed
+        else { return }
+        guard
+            !activityMonitor.externalMicrophoneActive
+                || !activityMonitor.twoWayCallActive
         else { return }
         let delay = settings.automaticStopGraceSeconds
         stopGraceTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
-            guard !Task.isCancelled else { return }
-            self?.captureQueue.enqueue {
-                await self?.stopRecording(.microphoneReleased)
+            guard !Task.isCancelled, let self else { return }
+            guard
+                self.recorderState.phase == .recording,
+                !self.recorderState.automaticStartSuppressed
+            else { return }
+            guard
+                !self.activityMonitor.externalMicrophoneActive
+                    || !self.activityMonitor.twoWayCallActive
+            else { return }
+            self.captureQueue.enqueue { [weak self] in
+                await self?.stopRecording(.callEnded)
             }
         }
     }
@@ -3033,6 +3095,7 @@ final class AppModel {
             recordedSecondsBeforePause = 0
             if automatic {
                 apply(.externalMicrophoneChanged(isActive: true, newSessionID: sessionID))
+                scheduleAutomaticStopIfNeeded()
             } else {
                 apply(
                     .externalMicrophoneChanged(
@@ -3181,6 +3244,8 @@ final class AppModel {
         case person
         /// The calling app released the microphone and the grace has run out.
         case microphoneReleased
+        /// The calling app stopped playing the other side while it still held the microphone.
+        case callEnded
         /// The ceiling, or ten minutes of silence.
         case rail
     }
@@ -3202,6 +3267,7 @@ final class AppModel {
         switch reason {
         case .person: apply(.manualStop)
         case .microphoneReleased: apply(.automaticStopGraceElapsed)
+        case .callEnded: apply(.externalCallEnded)
         case .rail: apply(.limitStop)
         }
         let automatic = reason != .person

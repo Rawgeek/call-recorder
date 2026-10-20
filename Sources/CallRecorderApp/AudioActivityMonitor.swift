@@ -24,9 +24,13 @@ final class AudioActivityMonitor {
     ///   - ignoringNonCallApps: Read on every poll rather than taken once, so turning the list off
     ///     in the settings takes effect at the next poll instead of at the next launch.
     ///   - onChange: Called when the answer changes, and only then.
+    ///   - onCallChange: Called when the two-way answer changes, and only then. An app can keep the
+    ///     microphone open after a call ends while it stops playing the other side, so the two
+    ///     answers are reported separately.
     func start(
         ignoringNonCallApps: @escaping @MainActor () -> Bool,
-        onChange: @escaping @MainActor (Bool) -> Void
+        onChange: @escaping @MainActor (Bool) -> Void,
+        onCallChange: @escaping @MainActor (Bool) -> Void
     ) {
         guard task == nil else { return }
         // ponytail: 500 ms polling is sufficient for call starts; add HAL listeners if latency is measured.
@@ -34,11 +38,14 @@ final class AudioActivityMonitor {
             while !Task.isCancelled {
                 if let activity = try? Self.readActivity(ignoringNonCallApps: ignoringNonCallApps()) {
                     guard let self else { return }
-                    self.twoWayCallActive = activity.twoWayCall
                     self.microphoneHolderBundleID = activity.holderBundleID
                     if activity.microphoneHeld != self.externalMicrophoneActive {
                         self.externalMicrophoneActive = activity.microphoneHeld
                         onChange(activity.microphoneHeld)
+                    }
+                    if activity.twoWayCall != self.twoWayCallActive {
+                        self.twoWayCallActive = activity.twoWayCall
+                        onCallChange(activity.twoWayCall)
                     }
                 }
                 try? await Task.sleep(for: .milliseconds(500))
@@ -94,15 +101,19 @@ final class AudioActivityMonitor {
         }
         guard status == noErr else { throw AudioActivityMonitorError.coreAudio(status) }
 
-        let activeProcessIDs = try processObjects.compactMap { processObject -> Int32? in
-            guard try readRunningInput(processObject) else { return nil }
-            return try readProcessID(processObject)
+        // A process object can disappear while the list is being read. That object says nothing
+        // about the call, and letting it throw away the whole poll freezes the last answer for as
+        // long as the list keeps changing. A process that cannot be read is skipped; the next poll
+        // is half a second away.
+        let activeProcessIDs = processObjects.compactMap { processObject -> Int32? in
+            guard (try? readRunningInput(processObject)) == true else { return nil }
+            return try? readProcessID(processObject)
         }
         // Which of them are also playing audio: a caller plays the other side, dictation and a
         // voice message do not.
-        let playingProcessIDs = try processObjects.compactMap { processObject -> Int32? in
-            guard try readRunningOutput(processObject) else { return nil }
-            return try readProcessID(processObject)
+        let playingProcessIDs = processObjects.compactMap { processObject -> Int32? in
+            guard (try? readRunningOutput(processObject)) == true else { return nil }
+            return try? readProcessID(processObject)
         }
         // The process identifier is what the audio system reports; the bundle identifier is what
         // says whether the process is a meeting. An app that cannot be resolved keeps its vote,

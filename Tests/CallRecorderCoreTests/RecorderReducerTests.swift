@@ -95,6 +95,32 @@ struct RecorderReducerTests {
         #expect(!state.automaticStartSuppressed)
     }
 
+    @Test("a call that stops playing while its app holds the microphone stops the recording")
+    func externalCallEndedWhileMicrophoneHeld() {
+        let recording = RecordingState.recording(
+            sessionID: SessionID(rawValue: UUID()),
+            externalMicrophoneActive: true
+        )
+        let state = RecorderReducer.reduce(state: recording, event: .externalCallEnded)
+        #expect(state.phase == .finalizing)
+        #expect(state.automaticStartSuppressed)
+
+        let idle = RecorderReducer.reduce(state: state, event: .audioFinalizedAndQueued)
+        #expect(idle.phase == .idle)
+        #expect(!idle.externalMicrophoneActive)
+        #expect(!idle.automaticStartSuppressed)
+    }
+
+    @Test("a manual recording is not stopped when its app stops playing")
+    func externalCallEndedLeavesManualRecordingAlone() {
+        let manual = RecorderReducer.reduce(
+            state: .idle,
+            event: .manualStart(sessionID: SessionID(rawValue: UUID()))
+        )
+        let state = RecorderReducer.reduce(state: manual, event: .externalCallEnded)
+        #expect(state.phase == .recording)
+    }
+
     @Test("a rail's stop reaches finalizing while the microphone is still held")
     func railStopLeavesRecordingWithTheMicrophoneHeld() {
         // The state both rails exist for: the app started a recording by itself, and the call's

@@ -52,6 +52,24 @@ public enum RecorderReducer {
             guard state.phase == .recording, !state.externalMicrophoneActive else { return state }
             return state.replacing(phase: .finalizing)
 
+        case .externalCallEnded:
+            // The call's app stopped playing the other side while it kept the microphone open.
+            // The microphone-release grace cannot answer this -- it refuses to stop while the
+            // microphone is active -- so this event ends the automatic recording on its own.
+            guard
+                state.phase == .recording || state.phase == .paused,
+                !state.automaticStartSuppressed
+            else { return state }
+            // The finished call no longer counts as holding the microphone for the next one. Some
+            // apps leave the device open after a call and report it as running input for minutes;
+            // the next two-way signal is what starts the next recording, and it must not be
+            // refused for a microphone the old call left behind.
+            return state.replacing(
+                phase: .finalizing,
+                externalMicrophoneActive: false,
+                automaticStartSuppressed: true
+            )
+
         case .limitStop:
             // A rail's stop: the ceiling, or ten minutes of silence. Both ask while the call's app
             // may still hold the microphone -- that is the state they exist for -- so this cannot
