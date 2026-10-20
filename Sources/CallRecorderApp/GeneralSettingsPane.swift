@@ -565,7 +565,7 @@ private struct MicrophoneLevelRow: View {
         CRSettingsRow(
             title: "Microphone level",
             detail: detail,
-            warning: model.microphoneCheck.refusal != nil
+            warning: refusal != nil
         ) {
             HStack(spacing: CR.Space.inner) {
                 CRLevelBar(decibels: isListening ? shownDecibels : nil)
@@ -610,8 +610,30 @@ private struct MicrophoneLevelRow: View {
         shownDecibels >= AudioLevels.speechThresholdDecibels
     }
 
+    /// The failure worth reporting now, if any.
+    ///
+    /// A stored failure is kept, and only what still describes this moment is reported: a check
+    /// that answered "nothing is connected" while the headset was away kept that sentence after
+    /// the headset joined the menu, so the row said no microphone was connected under a menu that
+    /// offered one (2026-10-09).
+    private var refusal: MicrophoneCheck.Refusal? {
+        guard
+            let refusal = model.microphoneCheck.refusal,
+            MicrophoneCheck.describesCurrentState(
+                refusal,
+                hasMicrophone: !model.availableMicrophones.isEmpty
+            )
+        else { return nil }
+        return refusal
+    }
+
     private var detail: String {
-        if let refusal = model.microphoneCheck.refusal { return refusal.message }
+        if let refusal { return refusal.message }
+        // The live device list answers this, not a past check: the row says what is connected now.
+        if model.availableMicrophones.isEmpty {
+            return "No microphone is connected, so there is nothing to listen to. Plug one in "
+                + "and it joins the menu on its own."
+        }
         switch model.recorderState.phase {
         case .recording:
             return isHearingSpeech
@@ -633,7 +655,11 @@ private struct MicrophoneLevelRow: View {
         if isCapturing {
             // The recording is the check, and it lasts as long as the call does.
             EmptyView()
-        } else if model.microphoneCheck.refusal?.opensMicrophoneSettings == true {
+        } else if model.availableMicrophones.isEmpty {
+            // Nothing to press: the sentence says what to do, and a check would answer the same
+            // thing it answered a moment ago.
+            EmptyView()
+        } else if let refusal, refusal.opensMicrophoneSettings {
             CRButton(title: "Open Settings", icon: "gearshape", kind: .primary) {
                 model.openMicrophoneSettings()
             }

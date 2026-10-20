@@ -4,6 +4,24 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.41] - 2026-10-20
+
+### Added
+
+- The menu bar icon pulses while recording and stays still when Reduce Motion is enabled.
+- Space plays and pauses the recording in Review Speakers.
+
+### Fixed
+
+- Headset microphones use an encoding rate that fits their audio format.
+- Recording startup follows the system microphone and waits for the first writable microphone sample.
+- A microphone that delivers no samples reports recovery steps instead of silently saving only the other side.
+- Review playback prefers the call mix so both sides are audible.
+- Reconnecting a microphone clears the stale missing-microphone warning.
+- Automatic recordings stop after the grace period when the calling app stops its output, even if Discord keeps its microphone open.
+- Failed microphone startup cannot wait indefinitely for capture cleanup.
+- Queued automatic stops recheck the call and ignore recovered activity or a newer recording.
+
 ## [0.1.40] - 2026-10-09
 
 ### Added

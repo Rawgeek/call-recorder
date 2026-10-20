@@ -1,8 +1,60 @@
 import CoreMedia
 import Foundation
+import OSLog
 import ScreenCaptureKit
 
+final class MicrophoneSampleGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var receivedSample = false
+    private var waiters: [UUID: CheckedContinuation<Bool, Never>] = [:]
+
+    func signal() {
+        lock.lock()
+        receivedSample = true
+        let continuations = Array(waiters.values)
+        waiters.removeAll()
+        lock.unlock()
+        continuations.forEach { $0.resume(returning: true) }
+    }
+
+    func wait(timeout: Duration) async -> Bool {
+        let token = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                lock.lock()
+                if receivedSample {
+                    lock.unlock()
+                    continuation.resume(returning: true)
+                    return
+                }
+                waiters[token] = continuation
+                let alreadyCancelled = Task.isCancelled
+                lock.unlock()
+                if alreadyCancelled {
+                    resolve(token: token, value: false)
+                    return
+                }
+                Task { [weak self] in
+                    try? await Task.sleep(for: timeout)
+                    self?.resolve(token: token, value: false)
+                }
+            }
+        } onCancel: {
+            resolve(token: token, value: false)
+        }
+    }
+
+    private func resolve(token: UUID, value: Bool) {
+        lock.lock()
+        let continuation = waiters.removeValue(forKey: token)
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let logger = Logger(subsystem: "local.callrecorder.app", category: "capture")
+
     private enum WriterOutcome: Sendable {
         case success(CapturedAudioSource?)
         case failure(String)
@@ -12,6 +64,9 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     let microphoneQueue = DispatchQueue(label: "local.callrecorder.capture.microphone")
     private let systemWriter: AudioSampleWriter
     private let microphoneWriter: AudioSampleWriter
+    private let microphoneSampleGate = MicrophoneSampleGate()
+    private let cancelLock = NSLock()
+    private var cancelled = false
     /// The level of everything the capture delivers, which is what the silence rail reads.
     private let levels: AudioLevelMeter
     /// The microphone track on its own, which is what the Settings level row draws.
@@ -33,6 +88,16 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        receive(sampleBuffer, of: outputType)
+    }
+
+    func receive(_ sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        cancelLock.lock()
+        guard !cancelled else {
+            cancelLock.unlock()
+            return
+        }
+        defer { cancelLock.unlock() }
         do {
             switch outputType {
             case .audio:
@@ -41,13 +106,23 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
             case .microphone:
                 levels.observe(sampleBuffer)
                 microphoneLevels.observe(sampleBuffer)
-                try microphoneWriter.append(sampleBuffer)
+                let appended = try microphoneWriter.append(sampleBuffer)
+                // Readiness means more than receiving a callback: the AirPods format must also be
+                // accepted by the writer before the app tells the user recording has begun.
+                if appended { microphoneSampleGate.signal() }
             case .screen:
                 return
             @unknown default:
                 return
             }
         } catch {
+            // The track that just failed is named here, because a recording that holds one side is
+            // the one failure a person cannot hear: the file plays, the transcript is written, and
+            // only the other side is on it. The microphone track was dropped this way on every
+            // recording made on AirPods until 2026-10-09, with nothing said anywhere.
+            logger.error(
+                "capture lost a source: \(String(describing: outputType), privacy: .public) stopped after \(error.localizedDescription, privacy: .public)"
+            )
             switch outputType {
             case .audio:
                 systemWriter.cancel()
@@ -84,6 +159,14 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
             if failures.isEmpty { throw AudioCaptureError.noAudio }
             throw AudioSampleWriterError.writerFailed(failures.joined(separator: "; "))
         }
+        // A segment that lost one side is kept -- the other side is the call -- and the loss is
+        // written where a person can find it. This is the line whose absence let every recording
+        // of 2026-10-09 hold one side while nobody could tell.
+        if !failures.isEmpty {
+            logger.error(
+                "segment \(index, privacy: .public) was saved without one source: \(failures.joined(separator: "; "), privacy: .public)"
+            )
+        }
         let segment = try CaptureSegment(
             index: index,
             system: systemSource,
@@ -93,9 +176,16 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
         return segment
     }
 
+    func waitForMicrophoneSample(timeout: Duration) async -> Bool {
+        await microphoneSampleGate.wait(timeout: timeout)
+    }
+
     func cancel() {
+        cancelLock.lock()
+        cancelled = true
         systemWriter.cancel()
         microphoneWriter.cancel()
+        cancelLock.unlock()
     }
 
     private func outcome(from writer: AudioSampleWriter) async -> WriterOutcome {

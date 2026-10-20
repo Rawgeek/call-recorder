@@ -572,6 +572,65 @@ struct MenuBarView: View {
         !enabled && !dismissed
     }
 
+    /// Whether the menu bar icon blinks: a recording runs, and the system has not asked for still.
+    ///
+    /// The icon is the only surface visible while the app is closed, and one grey glyph among the
+    /// others does not say "a call is being captured right now" from across the desk. The dim half
+    /// of the blink is what carries that, and it is what the person checks when they cannot
+    /// remember whether the recorder was started.
+    ///
+    /// Reduce Motion stops it. The setting exists because movement costs some people something,
+    /// and the state is still said by the glyph itself, which is a filled record circle while a
+    /// recording runs.
+    nonisolated static func statusItemBlinks(phase: RecordingPhase, reduceMotion: Bool) -> Bool {
+        phase == .recording && !reduceMotion
+    }
+
+    /// The ink the status item is drawn with: full while nothing is captured, and the two grays of
+    /// the pulse while a recording runs.
+    ///
+    /// The asking of 2026-10-13 was for a softer pulse than black-and-transparent: the quiet half
+    /// is a light gray and the loud half a medium one, and neither end is black. Both are alphas
+    /// of the same glyph, which the bar renders as grays.
+    nonisolated static func statusItemOpacity(
+        phase: RecordingPhase,
+        dimmed: Bool,
+        reduceMotion: Bool
+    ) -> Double {
+        guard statusItemBlinks(phase: phase, reduceMotion: reduceMotion) else { return 1 }
+        return dimmed ? statusItemQuietInk : statusItemLoudInk
+    }
+
+    /// The two inks of the pulse: a light gray at its quiet half, a medium one at its loud half.
+    static let statusItemQuietInk = 0.35
+    static let statusItemLoudInk = 0.6
+
+    /// The glyph with its ink baked in, as a template the bar tints.
+    ///
+    /// The pulse cannot be an `opacity` modifier: a menu bar item drops it — measured on
+    /// 2026-10-13, twenty frames a third of a second apart were byte identical while a
+    /// modifier-driven pulse ran, and the same surface repainted the moment the symbol itself was
+    /// replaced. The ink is therefore part of the image, and swapping one image for another is the
+    /// change this surface already follows. 100% ink is the untouched symbol.
+    nonisolated static func statusItemIcon(name: String, ink: Double) -> NSImage {
+        guard let base = NSImage(systemSymbolName: name, accessibilityDescription: nil) else {
+            return NSImage()
+        }
+        guard ink < 1 else { return base }
+        let image = NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect, from: .zero, operation: .sourceOver, fraction: ink)
+            return true
+        }
+        image.isTemplate = true
+        return image
+    }
+
+    /// Half a blink, in milliseconds: bright, dim, bright again.
+    ///
+    /// A blink reads as alive at about a second from bright to bright, which is also the pace a
+    /// person's eye is willing to follow all day without it becoming noise.
+    static let blinkIntervalMilliseconds = 600
+
     /// What a row is named after. A call with nobody on it is named by its own date and time,
     /// which is the only thing it has.
     nonisolated static func title(for call: RecentCallSummary) -> String {

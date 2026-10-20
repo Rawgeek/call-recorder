@@ -71,11 +71,18 @@ struct AudioInputDevice: Equatable, Identifiable, Sendable {
     let name: String
 }
 
+struct MicrophoneCapturePlan: Equatable, Sendable {
+    let capturesMicrophone: Bool
+    /// `nil` deliberately asks ScreenCaptureKit to follow the system-default microphone.
+    let deviceID: String?
+}
+
 enum AudioCaptureError: Error {
     case alreadyCapturing
     case notCapturing
     case noDisplay
     case noMicrophone
+    case microphoneSilent
     case noAudio
 }
 
@@ -97,6 +104,9 @@ extension AudioCaptureError: LocalizedError {
         case .noMicrophone:
             "No microphone is connected. Turn on Settings, General, Record when there is no "
                 + "microphone to record the other side without one."
+        case .microphoneSilent:
+            "No audio arrived from the selected microphone. Check microphone permission, "
+                + "reconnect your headset, or choose a microphone in Settings, then try again."
         case .noAudio:
             "The capture produced no audio."
         }
@@ -199,17 +209,38 @@ final class AudioCaptureSession {
         selectedID: String?,
         systemDefaultID: String? = nil
     ) -> String? {
-        // The system can be set to a device that has since been unplugged, and it can be set to
-        // one this app cannot open. Either way the choice has been made, so it falls through to
-        // the built-in microphone below rather than leaving the recorder with nothing.
-        if selectedID == systemMicrophoneID,
-            let systemDefaultID,
-            availableIDs.contains(systemDefaultID) {
-            return systemDefaultID
-        }
-        if let selectedID, availableIDs.contains(selectedID) { return selectedID }
+        // An explicit available choice wins. An unset, system-default, or stale choice follows
+        // Core Audio first; only when that answer is unavailable does the display helper fall back
+        // to the built-in/first device. Capture itself uses `microphoneCapturePlan`, because
+        // ScreenCaptureKit can follow the system route directly without pinning a discovery result.
+        if let selectedID,
+            selectedID != systemMicrophoneID,
+            availableIDs.contains(selectedID) { return selectedID }
+        if let systemDefaultID, availableIDs.contains(systemDefaultID) { return systemDefaultID }
         if availableIDs.contains(builtInMicrophoneID) { return builtInMicrophoneID }
         return availableIDs.first
+    }
+
+    /// How ScreenCaptureKit should route microphone audio for this recording.
+    ///
+    /// Its API follows the system default when `microphoneCaptureDeviceID` is nil. That matters on
+    /// a Mac mini: an unset preference used to pick the first discovery result, which can be an
+    /// inactive Continuity or Bluetooth input rather than the AirPods selected in macOS.
+    nonisolated static func microphoneCapturePlan(
+        availableIDs: [String],
+        selectedID: String?,
+        systemDefaultID: String?
+    ) -> MicrophoneCapturePlan {
+        let hasInput = !availableIDs.isEmpty || systemDefaultID != nil
+        guard hasInput else {
+            return MicrophoneCapturePlan(capturesMicrophone: false, deviceID: nil)
+        }
+        if let selectedID,
+            selectedID != systemMicrophoneID,
+            availableIDs.contains(selectedID) {
+            return MicrophoneCapturePlan(capturesMicrophone: true, deviceID: selectedID)
+        }
+        return MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil)
     }
 
     /// The identifier of the microphone macOS is set to use, in the form the device list uses.
@@ -398,20 +429,6 @@ final class AudioCaptureSession {
         return nil
     }
 
-    private static func microphone(
-        deviceID: String?,
-        allowsMissingMicrophone: Bool
-    ) throws -> AVCaptureDevice? {
-        let devices = captureDevices()
-        let resolvedID = try chosenMicrophoneID(
-            availableIDs: devices.map(\.uniqueID),
-            selectedID: deviceID,
-            systemDefaultID: systemDefaultMicrophoneID(),
-            allowsMissingMicrophone: allowsMissingMicrophone
-        )
-        return devices.first(where: { $0.uniqueID == resolvedID })
-    }
-
     private static func captureDevices() -> [AVCaptureDevice] {
         AVCaptureDevice.DiscoverySession(
             deviceTypes: [.microphone],
@@ -430,7 +447,7 @@ final class AudioCaptureSession {
         content: SCShareableContent,
         microphoneDeviceID: String?,
         allowsMissingMicrophone: Bool
-    ) throws -> (stream: SCStream, microphone: AVCaptureDevice?) {
+    ) throws -> (stream: SCStream, microphone: MicrophoneCapturePlan) {
         guard let display = content.displays.first else { throw AudioCaptureError.noDisplay }
         let ownApplication = content.applications.filter {
             $0.processID == ProcessInfo.processInfo.processIdentifier
@@ -453,13 +470,17 @@ final class AudioCaptureSession {
         // The microphone is optional when the caller allows it: ScreenCaptureKit records the
         // call's system audio on its own. If an input appears later, the next segment resolves it
         // again and includes it automatically, so a headset plugged in mid-call is picked up.
-        let microphone = try Self.microphone(
-            deviceID: microphoneDeviceID,
-            allowsMissingMicrophone: allowsMissingMicrophone
+        let microphonePlan = Self.microphoneCapturePlan(
+            availableIDs: Self.captureDevices().map(\.uniqueID),
+            selectedID: microphoneDeviceID,
+            systemDefaultID: Self.systemDefaultMicrophoneID()
         )
-        configuration.captureMicrophone = microphone != nil
-        configuration.microphoneCaptureDeviceID = microphone?.uniqueID
-        return (SCStream(filter: filter, configuration: configuration, delegate: nil), microphone)
+        guard microphonePlan.capturesMicrophone || allowsMissingMicrophone else {
+            throw AudioCaptureError.noMicrophone
+        }
+        configuration.captureMicrophone = microphonePlan.capturesMicrophone
+        configuration.microphoneCaptureDeviceID = microphonePlan.deviceID
+        return (SCStream(filter: filter, configuration: configuration, delegate: nil), microphonePlan)
     }
 
     func startSegment(
@@ -484,7 +505,7 @@ final class AudioCaptureSession {
             look: { try await SCShareableContent.currentProcess },
             hasDisplay: { !$0.displays.isEmpty }
         )
-        let (stream, microphone) = try Self.audioStream(
+        let (stream, microphonePlan) = try Self.audioStream(
             content: content,
             microphoneDeviceID: microphoneDeviceID,
             allowsMissingMicrophone: allowsMissingMicrophone
@@ -499,15 +520,22 @@ final class AudioCaptureSession {
             type: .audio,
             sampleHandlerQueue: router.systemQueue
         )
-        if microphone != nil {
+        if microphonePlan.capturesMicrophone {
             try stream.addStreamOutput(
                 router,
                 type: .microphone,
                 sampleHandlerQueue: router.microphoneQueue
             )
         }
+        var streamStarted = false
         do {
             try await stream.startCapture()
+            streamStarted = true
+            if microphonePlan.capturesMicrophone {
+                guard await router.waitForMicrophoneSample(timeout: .seconds(5)) else {
+                    throw AudioCaptureError.microphoneSilent
+                }
+            }
             activeCapture = ActiveCapture(
                 stream: stream,
                 router: router,
@@ -515,7 +543,16 @@ final class AudioCaptureSession {
             )
             return paths
         } catch {
-            router.cancel()
+            if streamStarted {
+                nonisolated(unsafe) let stream = stream
+                await Self.stopFailedStart(
+                    { completion in stream.stopCapture(completionHandler: completion) },
+                    cancel: { router.cancel() },
+                    within: Self.stopTimeoutSeconds
+                )
+            } else {
+                router.cancel()
+            }
             throw error
         }
     }
@@ -548,12 +585,12 @@ final class AudioCaptureSession {
             look: { try await SCShareableContent.currentProcess },
             hasDisplay: { !$0.displays.isEmpty }
         )
-        let (stream, microphone) = try Self.audioStream(
+        let (stream, microphonePlan) = try Self.audioStream(
             content: content,
             microphoneDeviceID: microphoneDeviceID,
             allowsMissingMicrophone: false
         )
-        guard microphone != nil else { throw AudioCaptureError.noMicrophone }
+        guard microphonePlan.capturesMicrophone else { throw AudioCaptureError.noMicrophone }
         let router = MicrophoneMeteringRouter(levels: microphoneLevels)
         try stream.addStreamOutput(router, type: .microphone, sampleHandlerQueue: router.queue)
         try await stream.startCapture()
@@ -579,42 +616,114 @@ final class AudioCaptureSession {
 
     /// Stops a stream, or gives up waiting for the answer.
     ///
-    /// The stop is raced against a timer. When the timer wins, the stream is left to the system —
-    /// nothing is reading from it any more — and the segment is finished anyway, which is what
-    /// writes the index of everything already recorded. An error the stop reports itself still
-    /// comes back, except the "already stopped" answer a second stop returns.
+    /// The stop and an independent deadline resolve one continuation. When the deadline wins the
+    /// stream is left to the system, and the segment is finished anyway, which writes the index of
+    /// everything already recorded. An error the stop reports still comes back, except the
+    /// "already stopped" answer a second stop returns.
     private static func stop(_ stream: SCStream, within seconds: Double) async throws {
-        // The stop runs in its own task and the timer in another, and both are waited for on this
-        // one: SCStream is not Sendable, which is why the reference is handed over unchecked here
-        // and nowhere else.
         nonisolated(unsafe) let stream = stream
-        let stop = Task { try await stream.stopCapture() }
-        let answered = await withTaskGroup(of: Bool.self) { group -> Bool in
-            group.addTask {
-                _ = try? await stop.value
-                return true
+        try await stop(
+            { completion in stream.stopCapture(completionHandler: completion) },
+            within: seconds
+        )
+    }
+
+    /// Stops a stream without joining its completion handler. The handler and the deadline both
+    /// resolve one continuation; a stop that never answers is left to the system.
+    nonisolated static func stop(
+        _ stopCapture: @escaping @Sendable (@escaping @Sendable ((any Error)?) -> Void) -> Void,
+        within seconds: Double,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) async throws {
+        let race = CaptureStopRace()
+        let outcome = await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                race.install(continuation)
+                let deadline = Task {
+                    await sleep(.seconds(seconds))
+                    race.resolve(.timedOut)
+                }
+                race.attach(deadline)
+                stopCapture { error in race.resolve(.completed(error)) }
             }
-            group.addTask {
-                try? await Task.sleep(for: .seconds(seconds))
-                return false
-            }
-            let first = await group.next() ?? true
-            group.cancelAll()
-            return first
+        } onCancel: {
+            race.resolve(.cancelled)
         }
-        guard answered else {
-            stop.cancel()
+        switch outcome {
+        case let .completed(error):
+            if let error, !Self.isAlreadyStoppedError(error) { throw error }
+        case .timedOut, .cancelled:
             Logger(subsystem: "local.callrecorder.app", category: "capture")
                 .notice(
                     "the capture stream did not confirm its stop within \(Int(seconds), privacy: .public) s; the segment was closed anyway"
                 )
+        }
+    }
+
+    /// Cleanup for a start that never became a capture: stop what started, then make the router
+    /// terminal whether the stop answers or not. The start's own error is the one reported.
+    nonisolated static func stopFailedStart(
+        _ stopCapture: @escaping @Sendable (@escaping @Sendable ((any Error)?) -> Void) -> Void,
+        cancel: @escaping @Sendable () -> Void,
+        within seconds: Double,
+        sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
+    ) async {
+        do {
+            try await stop(stopCapture, within: seconds, sleep: sleep)
+        } catch {
+            // The readiness or start error is already the answer; this path only cleans up.
+        }
+        cancel()
+    }
+}
+
+private enum CaptureStopOutcome: @unchecked Sendable {
+    case completed((any Error)?)
+    case timedOut
+    case cancelled
+}
+
+private final class CaptureStopRace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<CaptureStopOutcome, Never>?
+    private var pending: CaptureStopOutcome?
+    private var resolved = false
+    private var deadline: Task<Void, Never>?
+
+    func install(_ continuation: CheckedContinuation<CaptureStopOutcome, Never>) {
+        lock.lock()
+        if let pending {
+            lock.unlock()
+            continuation.resume(returning: pending)
             return
         }
-        do {
-            try await stop.value
-        } catch {
-            guard Self.isAlreadyStoppedError(error) else { throw error }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func attach(_ deadline: Task<Void, Never>) {
+        lock.lock()
+        let isResolved = resolved
+        if !isResolved { self.deadline = deadline }
+        lock.unlock()
+        if isResolved { deadline.cancel() }
+    }
+
+    func resolve(_ outcome: CaptureStopOutcome) {
+        lock.lock()
+        guard !resolved else {
+            lock.unlock()
+            return
         }
+        resolved = true
+        let continuation = self.continuation
+        self.continuation = nil
+        let deadline = self.deadline
+        self.deadline = nil
+        if continuation == nil { pending = outcome }
+        lock.unlock()
+        continuation?.resume(returning: outcome)
+        deadline?.cancel()
     }
 }
 
