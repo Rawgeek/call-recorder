@@ -94,6 +94,12 @@ enum SpeakerReviewPlayback {
     ///
     /// A call whose voices are all named has no card left to ask for its recording, and the
     /// timeline that draws the call rather than one voice in it still needs the file.
+    ///
+    /// The mix comes first, because it is the one file that holds both sides of the call. Playing
+    /// the system track alone is what the window did until 2026-10-12: the local participant's row
+    /// is drawn on the timeline from the microphone track, and pressing play on a call whose voice
+    /// is on that row played everything but it. The mix is written once the audio is kept, so a
+    /// call that has no mix yet falls back to the side that is there.
     static func resolveAudio(
         callID: CallID,
         callDirectory: URL,
@@ -105,10 +111,12 @@ enum SpeakerReviewPlayback {
             .first(where: { $0.callID == callID })?
             .payloadDirectory
         let candidates = [
-            callDirectory.appending(path: "system.m4a"),
             callDirectory.appending(path: "call.m4a"),
-            payloadDirectory?.appending(path: "system.m4a"),
+            callDirectory.appending(path: "system.m4a"),
+            callDirectory.appending(path: "microphone.m4a"),
             payloadDirectory?.appending(path: "call.m4a"),
+            payloadDirectory?.appending(path: "system.m4a"),
+            payloadDirectory?.appending(path: "microphone.m4a"),
         ].compactMap { $0 }
         return candidates.first(where: fileExists)
     }

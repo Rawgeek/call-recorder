@@ -148,4 +148,141 @@ struct AudioSampleWriterTests {
             #expect(dropped > 0)
         }
     }
+
+    // MARK: - The microphone a Bluetooth headset delivers
+
+    /// One buffer of float PCM in the shape the capture delivers it.
+    private func buffer(
+        samples: [Float],
+        sampleRate: Double,
+        channels: Int
+    ) throws -> CMSampleBuffer {
+        var description = AudioStreamBasicDescription(
+            mSampleRate: sampleRate,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+                | kAudioFormatFlagIsNonInterleaved,
+            mBytesPerPacket: 4,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 4,
+            mChannelsPerFrame: UInt32(channels),
+            mBitsPerChannel: 32,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        #expect(
+            CMAudioFormatDescriptionCreate(
+                allocator: kCFAllocatorDefault,
+                asbd: &description,
+                layoutSize: 0,
+                layout: nil,
+                magicCookieSize: 0,
+                magicCookie: nil,
+                extensions: nil,
+                formatDescriptionOut: &format
+            ) == noErr
+        )
+        let frames = samples.count / channels
+        var block: CMBlockBuffer?
+        let byteCount = frames * 4 * channels
+        let blockStatus = CMBlockBufferCreateWithMemoryBlock(
+            allocator: kCFAllocatorDefault,
+            memoryBlock: nil,
+            blockLength: byteCount,
+            blockAllocator: kCFAllocatorDefault,
+            customBlockSource: nil,
+            offsetToData: 0,
+            dataLength: byteCount,
+            flags: kCMBlockBufferAssureMemoryNowFlag,
+            blockBufferOut: &block
+        )
+        #expect(blockStatus == noErr, "CMBlockBufferCreateWithMemoryBlock status \(blockStatus)")
+        let blockBuffer = try #require(block)
+        var lengthAtOffset = 0
+        var totalLength = 0
+        var dataPointer: UnsafeMutablePointer<CChar>?
+        _ = CMBlockBufferGetDataPointer(
+            blockBuffer,
+            atOffset: 0,
+            lengthAtOffsetOut: &lengthAtOffset,
+            totalLengthOut: &totalLength,
+            dataPointerOut: &dataPointer
+        )
+        let destination = try #require(dataPointer)
+        _ = samples.withUnsafeBytes { source in
+            memcpy(destination, source.baseAddress, source.count)
+        }
+        var timing = CMSampleTimingInfo(
+            duration: CMTime(value: 1, timescale: CMTimeScale(sampleRate)),
+            presentationTimeStamp: .zero,
+            decodeTimeStamp: .invalid
+        )
+        var sampleSizes = [4]
+        var sample: CMSampleBuffer?
+        #expect(
+            CMSampleBufferCreateReady(
+                allocator: kCFAllocatorDefault,
+                dataBuffer: blockBuffer,
+                formatDescription: try #require(format),
+                sampleCount: frames,
+                sampleTimingEntryCount: 1,
+                sampleTimingArray: &timing,
+                sampleSizeEntryCount: 1,
+                sampleSizeArray: &sampleSizes,
+                sampleBufferOut: &sample
+            ) == noErr
+        )
+        return try #require(sample)
+    }
+
+    @Test("the rate a track is encoded at follows the format the capture delivered")
+    func theRateFollowsTheFormat() {
+        // The system track: 48 kHz stereo keeps the 128 kbps it has always been written at.
+        var system = AudioStreamBasicDescription()
+        system.mSampleRate = 48_000
+        system.mChannelsPerFrame = 2
+        #expect(AudioSampleWriter.bitRate(for: system) == 128_000)
+
+        // A Bluetooth headset's microphone: 24 kHz mono, which AAC refuses 128 kbps for when the
+        // source format hint says what the source is. Measured on 2026-10-09: every recording made
+        // on AirPods dropped its microphone track with "Cannot Encode Media" (-11861 / -12651).
+        var headset = AudioStreamBasicDescription()
+        headset.mSampleRate = 24_000
+        headset.mChannelsPerFrame = 1
+        #expect(AudioSampleWriter.bitRate(for: headset) == 48_000)
+    }
+
+    @Test("a microphone that delivers 24 kHz mono becomes a readable track")
+    func writesABluetoothMicrophonesFormat() async throws {
+        // Given the format an AirPods microphone delivers, handed over the way the capture hands
+        // it over: a source format hint on the first buffer, which is what the encoder refused the
+        // app's fixed 128 kbps for.
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "audio-headset-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let destination = directory.appending(path: "microphone-001.m4a")
+        let writer = AudioSampleWriter(destination: destination)
+
+        // When a quarter of a second of quiet room is written a buffer at a time.
+        var written = 0
+        for step in 0..<12 {
+            var samples = [Float](repeating: 0.01, count: 500)
+            samples[0] = Float(0.05 * sin(Double(step)))
+            let sample = try buffer(samples: samples, sampleRate: 24_000, channels: 1)
+            try writer.append(sample)
+            written += 1
+        }
+        let captured = try await writer.finish()
+
+        // Then the track is there. Without the derived rate this is where the writer answered
+        // "Cannot Encode Media" and the whole microphone side of the call was dropped.
+        let source = try #require(captured)
+        #expect(written == 12)
+        #expect(FileManager.default.fileExists(atPath: source.fileURL.path))
+        let asset = AVURLAsset(url: source.fileURL)
+        let track = try #require(try await asset.loadTracks(withMediaType: .audio).first)
+        let rate = try await track.load(.naturalTimeScale)
+        #expect(rate == 24_000)
+    }
 }

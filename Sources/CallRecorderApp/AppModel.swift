@@ -437,6 +437,21 @@ final class AppModel {
     /// moment it draws, so plugging a headset in while the window is open is answered by the menu
     /// itself instead of after a restart.
     let audioDevices = AudioDeviceWatcher()
+    /// Keeps the menu bar icon blinking while a recording runs.
+    ///
+    /// Owned here rather than by the label: a menu bar label's own timers do not start until the
+    /// menu is first drawn, and the icon's job is to say "a call is being captured" while the
+    /// popover is closed.
+    let menuBarBlinker = MenuBarBlinker()
+    /// The half of the blink the menu bar label draws.
+    ///
+    /// The blinker reports every half, and this is where it lands: a change of a nested object is
+    /// not a change of this one, and the label listens to this one. It is what made the difference
+    /// on 2026-10-13 — the blink ran behind a label that never redrew.
+    ///
+    /// The label draws the glyph at this half's ink: full strength is one, and the two halves of
+    /// the pulse are the two grays in `MenuBarView.statusItemOpacity`.
+    private(set) var menuBarIconDimmed = false
     /// A bounded listen to the chosen microphone, for the level row in Settings.
     ///
     /// The row draws the capture's own microphone track while a recording runs. With nothing being
@@ -2774,6 +2789,21 @@ final class AppModel {
 
     private func apply(_ event: RecorderEvent) {
         recorderState = RecorderReducer.reduce(state: recorderState, event: event)
+        updateMenuBarBlink()
+    }
+
+    /// Tells the icon whether this moment is one a blink describes.
+    ///
+    /// Called from the one place the recorder's phase changes, so the blink starts with a
+    /// recording and stops with it, whatever stopped it.
+    private func updateMenuBarBlink() {
+        menuBarBlinker.onDim = { [weak self] dimmed in self?.menuBarIconDimmed = dimmed }
+        menuBarBlinker.update(
+            shouldBlink: MenuBarView.statusItemBlinks(
+                phase: recorderState.phase,
+                reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+            )
+        )
     }
 
     /// Moves the recorder into a state for a layout render, and only for a layout render.
