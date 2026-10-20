@@ -120,4 +120,3 @@ struct MenuBarBlinkTests {
         )
     }
 }
-
