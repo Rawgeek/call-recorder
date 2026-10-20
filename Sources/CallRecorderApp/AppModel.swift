@@ -885,13 +885,14 @@ final class AppModel {
             // The saved choice is reported as it was saved. Resolving it here would collapse
             // "follow the system" into whichever device the system points at while the menu is
             // drawn, and the menu would then show that device as chosen instead of the choice.
-            if settings.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
+            if settings.selectedMicrophoneID == nil
+                || settings.selectedMicrophoneID == AudioCaptureSession.systemMicrophoneID {
                 return AudioCaptureSession.systemMicrophoneID
             }
-            return AudioCaptureSession.resolvedMicrophoneID(
-                availableIDs: availableMicrophones.map(\.id),
-                selectedID: settings.selectedMicrophoneID
-            ) ?? ""
+            guard let selected = settings.selectedMicrophoneID,
+                availableMicrophones.contains(where: { $0.id == selected })
+            else { return AudioCaptureSession.systemMicrophoneID }
+            return selected
         }
         set { settings.selectedMicrophoneID = newValue.isEmpty ? nil : newValue }
     }
@@ -3054,6 +3055,11 @@ final class AppModel {
                 return
             }
             report(error, context: "Capture Start", category: .capture)
+            if error is AudioCaptureError {
+                // Capture errors are written to diagnostics above, but the visible message needs
+                // the recovery instruction rather than the reflected enum case name.
+                errorMessage = error.localizedDescription
+            }
             apply(.fail(.captureUnavailable))
         }
     }

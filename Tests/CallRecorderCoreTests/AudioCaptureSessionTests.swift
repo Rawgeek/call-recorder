@@ -152,6 +152,93 @@ struct AudioCaptureSessionTests {
         #expect(microphoneID == "ExternalMicrophone")
     }
 
+    @Test("an unset microphone follows the system AirPods instead of discovery order")
+    func unsetMicrophoneFollowsSystemDefault() {
+        let available = ["ContinuityMicrophone", "AirPodsMicrophone"]
+
+        let resolved = AudioCaptureSession.resolvedMicrophoneID(
+            availableIDs: available,
+            selectedID: nil,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+        let plan = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: nil,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+
+        #expect(resolved == "AirPodsMicrophone")
+        #expect(plan == MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil))
+    }
+
+    @Test("the system and stale choices let ScreenCaptureKit follow the system default")
+    func systemAndStaleChoicesUseSystemRoute() {
+        let available = ["ContinuityMicrophone", "AirPodsMicrophone"]
+
+        let system = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: AudioCaptureSession.systemMicrophoneID,
+            systemDefaultID: "AirPodsMicrophone"
+        )
+        let stale = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: available,
+            selectedID: "DisconnectedMicrophone",
+            systemDefaultID: "AirPodsMicrophone"
+        )
+
+        #expect(system == MicrophoneCapturePlan(capturesMicrophone: true, deviceID: nil))
+        #expect(stale == system)
+    }
+
+    @Test("an explicit AirPods choice is handed to ScreenCaptureKit unchanged")
+    func explicitAirPodsChoiceIsPreserved() {
+        let plan = AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: ["ContinuityMicrophone", "AirPodsMicrophone"],
+            selectedID: "AirPodsMicrophone",
+            systemDefaultID: "ContinuityMicrophone"
+        )
+
+        #expect(plan == MicrophoneCapturePlan(
+            capturesMicrophone: true,
+            deviceID: "AirPodsMicrophone"
+        ))
+    }
+
+    @Test("microphone readiness succeeds only after a writable sample signal")
+    func waitsForWritableMicrophoneSample() async {
+        let ready = MicrophoneSampleGate()
+        ready.signal()
+        #expect(await ready.wait(timeout: .seconds(1)))
+
+        let silent = MicrophoneSampleGate()
+        #expect(await !silent.wait(timeout: .milliseconds(10)))
+    }
+
+    @Test("cancelling microphone readiness does not wait for the timeout")
+    func cancelsMicrophoneReadinessImmediately() async {
+        let gate = MicrophoneSampleGate()
+        let started = ContinuousClock.now
+        let wait = Task {
+            // Far longer than the check below, so a cancellation that failed to resume the waiter
+            // would be visible as a timeout rather than as a test that merely looked slow.
+            await gate.wait(timeout: .seconds(30))
+        }
+
+        wait.cancel()
+
+        #expect(await !wait.value)
+        #expect(ContinuousClock.now - started < .seconds(10))
+    }
+
+    @Test("a silent microphone error tells the user how to recover")
+    func silentMicrophoneErrorIsActionable() {
+        let message = AudioCaptureError.microphoneSilent.localizedDescription
+
+        #expect(message.contains("microphone"))
+        #expect(message.contains("Reconnect"))
+        #expect(message.contains("Settings"))
+    }
+
     @Test("a Mac mini with no audio input records without a microphone")
     func recordsWithoutAMicrophone() throws {
         // Given a machine whose device list is empty, and the setting that allows it.
@@ -164,6 +251,11 @@ struct AudioCaptureSessionTests {
         )
 
         #expect(microphoneID == nil)
+        #expect(AudioCaptureSession.microphoneCapturePlan(
+            availableIDs: [],
+            selectedID: AudioCaptureSession.systemMicrophoneID,
+            systemDefaultID: nil
+        ) == MicrophoneCapturePlan(capturesMicrophone: false, deviceID: nil))
     }
 
     @Test("the refusal is kept for the setting that asks for it")
