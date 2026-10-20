@@ -525,7 +525,7 @@ private struct TestStopFailure: Error {}
 private final class HeldCaptureStop: @unchecked Sendable {
     private let lock = NSLock()
     private let requested: AsyncGate
-    private var completions: [@Sendable (any Error?) -> Void] = []
+    private var completions: [@Sendable ((any Error)?) -> Void] = []
 
     init(requested: AsyncGate) {
         self.requested = requested
@@ -537,7 +537,7 @@ private final class HeldCaptureStop: @unchecked Sendable {
         return !completions.isEmpty
     }
 
-    func stop(_ completion: @escaping @Sendable (any Error?) -> Void) {
+    func stop(_ completion: @escaping @Sendable ((any Error)?) -> Void) {
         lock.lock()
         completions.append(completion)
         lock.unlock()

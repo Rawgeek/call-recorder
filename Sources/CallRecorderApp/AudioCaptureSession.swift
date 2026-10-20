@@ -631,7 +631,7 @@ final class AudioCaptureSession {
     /// Stops a stream without joining its completion handler. The handler and the deadline both
     /// resolve one continuation; a stop that never answers is left to the system.
     nonisolated static func stop(
-        _ stopCapture: @escaping @Sendable (@escaping @Sendable (any Error?) -> Void) -> Void,
+        _ stopCapture: @escaping @Sendable (@escaping @Sendable ((any Error)?) -> Void) -> Void,
         within seconds: Double,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
     ) async throws {
@@ -663,7 +663,7 @@ final class AudioCaptureSession {
     /// Cleanup for a start that never became a capture: stop what started, then make the router
     /// terminal whether the stop answers or not. The start's own error is the one reported.
     nonisolated static func stopFailedStart(
-        _ stopCapture: @escaping @Sendable (@escaping @Sendable (any Error?) -> Void) -> Void,
+        _ stopCapture: @escaping @Sendable (@escaping @Sendable ((any Error)?) -> Void) -> Void,
         cancel: @escaping @Sendable () -> Void,
         within seconds: Double,
         sleep: @escaping @Sendable (Duration) async -> Void = { try? await Task.sleep(for: $0) }
