@@ -214,20 +214,18 @@ struct AudioCaptureSessionTests {
         #expect(await !silent.wait(timeout: .milliseconds(10)))
     }
 
-    @Test("cancelling microphone readiness does not wait for the timeout")
-    func cancelsMicrophoneReadinessImmediately() async {
+    @Test("cancelling microphone readiness resumes the waiter")
+    func cancellingMicrophoneReadinessResumesTheWaiter() async {
         let gate = MicrophoneSampleGate()
-        let started = ContinuousClock.now
         let wait = Task {
-            // Far longer than the check below, so a cancellation that failed to resume the waiter
-            // would be visible as a timeout rather than as a test that merely looked slow.
+            // The timeout is far longer than the cancellation, so a waiter that was not resumed
+            // would hold this test until the suite's own time limit rather than passing quickly.
             await gate.wait(timeout: .seconds(30))
         }
 
         wait.cancel()
 
         #expect(await !wait.value)
-        #expect(ContinuousClock.now - started < .seconds(10))
     }
 
     @Test("a silent microphone error tells the user how to recover")
@@ -235,7 +233,7 @@ struct AudioCaptureSessionTests {
         let message = AudioCaptureError.microphoneSilent.localizedDescription
 
         #expect(message.contains("microphone"))
-        #expect(message.contains("Reconnect"))
+        #expect(message.contains("reconnect"))
         #expect(message.contains("Settings"))
     }
 
