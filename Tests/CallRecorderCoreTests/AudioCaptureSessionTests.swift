@@ -355,4 +355,199 @@ struct AudioCaptureSessionTests {
         #expect(restored == segment)
         #expect(manifestURL.lastPathComponent == "segment-003.json")
     }
+
+    @Test("a cancelled router drops a sample that arrives after cleanup")
+    func cancelledRouterIsTerminal() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "capture-cancelled-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let paths = CaptureSegment.paths(in: directory, index: 1)
+        let router = AudioCaptureRouter(
+            paths: paths,
+            levels: AudioLevelMeter(),
+            microphoneLevels: AudioLevelMeter()
+        )
+        router.cancel()
+
+        var sample: CMSampleBuffer?
+        let status = CMSampleBufferCreateReady(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: nil,
+            formatDescription: nil,
+            sampleCount: 0,
+            sampleTimingEntryCount: 0,
+            sampleTimingArray: nil,
+            sampleSizeEntryCount: 0,
+            sampleSizeArray: nil,
+            sampleBufferOut: &sample
+        )
+        let lateSample = try #require(sample)
+
+        #expect(status == noErr)
+        router.receive(lateSample, of: .audio)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+
+    @Test("failed-start cleanup returns on the deadline and releases the next command")
+    @MainActor
+    func failedStartCleanupDoesNotJoinTheStop() async {
+        let requested = AsyncGate()
+        let deadline = AsyncGate()
+        let fake = HeldCaptureStop(requested: requested)
+        let probe = LockedStringProbe()
+        var queue = CaptureCommandQueue()
+
+        let cleanup = Task {
+            await AudioCaptureSession.stopFailedStart(
+                { completion in fake.stop(completion) },
+                cancel: { probe.record("cancelled") },
+                within: 15,
+                sleep: { _ in await deadline.wait() }
+            )
+        }
+        await requested.wait()
+
+        deadline.open()
+        await cleanup.value
+        let next = queue.enqueue { probe.record("next") }
+        await next.value
+
+        #expect(probe.values() == ["cancelled", "next"])
+        #expect(fake.isHoldingCompletion)
+        fake.complete(nil)
+    }
+
+    @Test("a stop completion wins and a late deadline does nothing")
+    func completionFirstResolvesOnce() async throws {
+        let requested = AsyncGate()
+        let deadline = AsyncGate()
+        let fake = HeldCaptureStop(requested: requested)
+
+        let stop = Task {
+            try await AudioCaptureSession.stop(
+                { completion in fake.stop(completion) },
+                within: 15,
+                sleep: { _ in await deadline.wait() }
+            )
+        }
+        await requested.wait()
+        fake.complete(nil)
+        try await stop.value
+
+        deadline.open()
+    }
+
+    @Test("a stop failure is thrown and already stopped is normalized")
+    func stopErrorsKeepTheirMeaning() async throws {
+        let failureRequested = AsyncGate()
+        let failureDeadline = AsyncGate()
+        let failure = HeldCaptureStop(requested: failureRequested)
+        let stoppedRequested = AsyncGate()
+        let stoppedDeadline = AsyncGate()
+        let stopped = HeldCaptureStop(requested: stoppedRequested)
+
+        let failing = Task {
+            try await AudioCaptureSession.stop(
+                { completion in failure.stop(completion) },
+                within: 15,
+                sleep: { _ in await failureDeadline.wait() }
+            )
+        }
+        await failureRequested.wait()
+        failure.complete(TestStopFailure())
+        await #expect(throws: TestStopFailure.self) {
+            try await failing.value
+        }
+        failureDeadline.open()
+
+        let alreadyStopped = Task {
+            try await AudioCaptureSession.stop(
+                { completion in stopped.stop(completion) },
+                within: 15,
+                sleep: { _ in await stoppedDeadline.wait() }
+            )
+        }
+        await stoppedRequested.wait()
+        stopped.complete(NSError(domain: SCStreamErrorDomain, code: -3_808))
+        try await alreadyStopped.value
+        stoppedDeadline.open()
+    }
+
+    @Test("failed-start cleanup keeps the start error and still cancels")
+    func failedStartCleanupSwallowsStopError() async {
+        let requested = AsyncGate()
+        let deadline = AsyncGate()
+        let fake = HeldCaptureStop(requested: requested)
+        let probe = LockedStringProbe()
+
+        let cleanup = Task {
+            await AudioCaptureSession.stopFailedStart(
+                { completion in fake.stop(completion) },
+                cancel: { probe.record("cancelled") },
+                within: 15,
+                sleep: { _ in await deadline.wait() }
+            )
+        }
+        await requested.wait()
+        fake.complete(TestStopFailure())
+        await cleanup.value
+
+        #expect(probe.values() == ["cancelled"])
+        deadline.open()
+    }
+
+    @Test("cancelling the wait resolves it without the stop completion")
+    func cancellationResolvesOnce() async throws {
+        let requested = AsyncGate()
+        let deadline = AsyncGate()
+        let fake = HeldCaptureStop(requested: requested)
+
+        let stop = Task {
+            try await AudioCaptureSession.stop(
+                { completion in fake.stop(completion) },
+                within: 15,
+                sleep: { _ in await deadline.wait() }
+            )
+        }
+        await requested.wait()
+        stop.cancel()
+        try await stop.value
+
+        deadline.open()
+        fake.complete(nil)
+    }
+}
+
+private struct TestStopFailure: Error {}
+
+/// A stop boundary whose completion is held until the test releases it.
+private final class HeldCaptureStop: @unchecked Sendable {
+    private let lock = NSLock()
+    private let requested: AsyncGate
+    private var completions: [@Sendable (any Error?) -> Void] = []
+
+    init(requested: AsyncGate) {
+        self.requested = requested
+    }
+
+    var isHoldingCompletion: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return !completions.isEmpty
+    }
+
+    func stop(_ completion: @escaping @Sendable (any Error?) -> Void) {
+        lock.lock()
+        completions.append(completion)
+        lock.unlock()
+        requested.open()
+    }
+
+    func complete(_ error: (any Error)?) {
+        lock.lock()
+        let completion = completions.isEmpty ? nil : completions.removeFirst()
+        lock.unlock()
+        completion?(error)
+    }
 }

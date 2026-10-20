@@ -513,6 +513,8 @@ final class AppModel {
     private var speakerCountOverrides: [CallID: Int] = [:]
     private var launchStartConsumed = false
     private var stopGraceTask: Task<Void, Never>?
+    /// Bumped when a grace is cancelled or replaced, so queued work can identify itself.
+    private var stopGraceGeneration = 0
     /// The wait between a busy microphone and a recording that starts by itself.
     private var automaticStartTask: Task<Void, Never>?
     private var recordingLimitTask: Task<Void, Never>?
@@ -2858,7 +2860,7 @@ final class AppModel {
 
 
     private func microphoneActivityChanged(_ isActive: Bool) {
-        stopGraceTask?.cancel()
+        cancelAutomaticStopGrace()
         automaticStartTask?.cancel()
         if
             isActive,
@@ -2919,7 +2921,7 @@ final class AppModel {
     /// answer never changes. It does stop playing the call, and that is the same end of the call
     /// seen from the other side.
     private func callActivityChanged(_ isActive: Bool) {
-        stopGraceTask?.cancel()
+        cancelAutomaticStopGrace()
         automaticStartTask?.cancel()
         if isActive, settings.automaticDetectionEnabled, recorderState.phase == .idle {
             startAutomaticRecordingIfPossible()
@@ -2932,33 +2934,63 @@ final class AppModel {
     ///
     /// A call is over when its app stops playing the other side or stops holding the microphone.
     /// The grace is the same one the microphone release has always used, and the answer is read
-    /// again when it ends, because a device that comes back during the grace is a call still going.
+    /// again when it ends and again when the queued stop runs, because a device that comes back
+    /// during either is a call still going.
     private func scheduleAutomaticStopIfNeeded() {
-        stopGraceTask?.cancel()
+        cancelAutomaticStopGrace()
         guard
             recorderState.phase == .recording,
-            !recorderState.automaticStartSuppressed
+            !recorderState.automaticStartSuppressed,
+            let sessionID = recorderState.sessionID
         else { return }
         guard
             !activityMonitor.externalMicrophoneActive
                 || !activityMonitor.twoWayCallActive
         else { return }
         let delay = settings.automaticStopGraceSeconds
+        let request = AutomaticStopRequest(
+            sessionID: sessionID,
+            generation: stopGraceGeneration
+        )
         stopGraceTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled, let self else { return }
-            guard
-                self.recorderState.phase == .recording,
-                !self.recorderState.automaticStartSuppressed
-            else { return }
-            guard
-                !self.activityMonitor.externalMicrophoneActive
-                    || !self.activityMonitor.twoWayCallActive
-            else { return }
+            guard self.automaticStopIsCurrent(request) else { return }
             self.captureQueue.enqueue { [weak self] in
-                await self?.stopRecording(.callEnded)
+                guard let self, self.automaticStopIsCurrent(request) else { return }
+                await self.stopRecording(.callEnded)
             }
         }
+    }
+
+    private func cancelAutomaticStopGrace() {
+        stopGraceTask?.cancel()
+        stopGraceTask = nil
+        stopGraceGeneration &+= 1
+    }
+
+    private func automaticStopIsCurrent(_ request: AutomaticStopRequest) -> Bool {
+        Self.automaticStopIsCurrent(
+            request,
+            generation: stopGraceGeneration,
+            state: recorderState,
+            externalMicrophoneActive: activityMonitor.externalMicrophoneActive,
+            twoWayCallActive: activityMonitor.twoWayCallActive
+        )
+    }
+
+    nonisolated static func automaticStopIsCurrent(
+        _ request: AutomaticStopRequest,
+        generation: Int,
+        state: RecordingState,
+        externalMicrophoneActive: Bool,
+        twoWayCallActive: Bool
+    ) -> Bool {
+        generation == request.generation
+            && state.sessionID == request.sessionID
+            && state.phase == .recording
+            && !state.automaticStartSuppressed
+            && (!externalMicrophoneActive || !twoWayCallActive)
     }
 
     /// Stops a recording that has run past the ceiling.
@@ -3258,7 +3290,7 @@ final class AppModel {
     private func stopRecording(_ reason: StopReason, discarding: Bool = false) async {
         guard recorderState.phase == .recording || recorderState.phase == .paused else { return }
         guard !captureOperationInFlight else { return }
-        stopGraceTask?.cancel()
+        cancelAutomaticStopGrace()
         recordingLimitTask?.cancel()
         recordingLimitTask = nil
         captureOperationInFlight = true
@@ -5765,4 +5797,10 @@ struct CaptureCommandQueue {
         tail = task
         return task
     }
+}
+
+/// The recording and grace a queued automatic stop was scheduled for.
+struct AutomaticStopRequest: Equatable, Sendable {
+    let sessionID: SessionID
+    let generation: Int
 }

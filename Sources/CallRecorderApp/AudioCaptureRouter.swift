@@ -65,6 +65,8 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     private let systemWriter: AudioSampleWriter
     private let microphoneWriter: AudioSampleWriter
     private let microphoneSampleGate = MicrophoneSampleGate()
+    private let cancelLock = NSLock()
+    private var cancelled = false
     /// The level of everything the capture delivers, which is what the silence rail reads.
     private let levels: AudioLevelMeter
     /// The microphone track on its own, which is what the Settings level row draws.
@@ -86,6 +88,16 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of outputType: SCStreamOutputType
     ) {
+        receive(sampleBuffer, of: outputType)
+    }
+
+    func receive(_ sampleBuffer: CMSampleBuffer, of outputType: SCStreamOutputType) {
+        cancelLock.lock()
+        guard !cancelled else {
+            cancelLock.unlock()
+            return
+        }
+        defer { cancelLock.unlock() }
         do {
             switch outputType {
             case .audio:
@@ -169,8 +181,11 @@ final class AudioCaptureRouter: NSObject, SCStreamOutput, @unchecked Sendable {
     }
 
     func cancel() {
+        cancelLock.lock()
+        cancelled = true
         systemWriter.cancel()
         microphoneWriter.cancel()
+        cancelLock.unlock()
     }
 
     private func outcome(from writer: AudioSampleWriter) async -> WriterOutcome {
