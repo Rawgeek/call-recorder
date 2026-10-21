@@ -217,6 +217,70 @@ struct ArtifactRecoveryTests {
         #expect(try recovery.items().isEmpty)
     }
 
+    @Test("the screen photographs stay with the call when its audio is given back")
+    func screenshotsOutliveTheAudioCleanup() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(
+            path: "Screenshots",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: item.payloadDirectory.path))
+        #expect(
+            ScreenshotArchive.read(in: fixture.workingDirectory).map(\.url.lastPathComponent)
+                == [shot.lastPathComponent]
+        )
+
+        // A repeat after the saved audio expired finds a folder that holds only pictures. That is
+        // a finished call rather than a missing source, and the new pass must not fail on it.
+        try fixture.recovery().purgeExpired(now: item.purgeAfter)
+        let second = try await fixture.recovery().finalizeReadyCall(
+            fixture.callID,
+            store: fixture.store,
+            at: fixture.finishedAt
+        )
+        #expect(second == nil)
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+    }
+
+    @Test("restoring a finished call puts its audio back beside its screenshots")
+    func restoreMergesAudioBesideScreenshots() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(
+            path: "Screenshots",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        _ = try await fixture.recovery().finalizeReadyCall(
+            fixture.callID,
+            store: fixture.store,
+            at: fixture.finishedAt
+        )
+
+        try fixture.recovery().restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(try fixture.recovery().items().isEmpty)
+    }
+
     @Test("re-running cleanup after the saved copy expired succeeds")
     func repeatCleanupAfterPurgeSucceeds() async throws {
         // Given: a call that was cleaned once, and whose saved copy has since expired.

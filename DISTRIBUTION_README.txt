@@ -74,8 +74,8 @@ After a transcript and search index are verified, working audio moves to Recentl
 for 24 hours. The desktop retains the compact Markdown transcript; private normalized
 metadata is retained only to support speaker corrections and reindexing.
 
-Recordings, transcripts, glossary data, participant profiles, and multilingual search
-embeddings stay on this Mac. The search indexer is included in the app.
+Recordings, screenshot folders, transcripts, glossary data, participant profiles, and multilingual
+search embeddings stay on this Mac. The search indexer is included in the app.
 
 Optional Codex MCP
 After moving the app to Applications, run:

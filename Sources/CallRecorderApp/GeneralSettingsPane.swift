@@ -244,6 +244,61 @@ struct GeneralSettingsView: View {
             }
 
             CRSettingsCard(
+                title: "Screenshots",
+                footnote: model.settings.screenshotsEnabled
+                    ? "Saved beside the call. The switch beside Quit in the menu bar changes this "
+                        + "for the call that is running."
+                    : "Off. The menu bar switch turns this on for the next or current call."
+            ) {
+                CRSettingsRow(
+                    title: "Capture screenshots during calls",
+                    detail: !model.screenRecordingGranted
+                        ? "Needs Screen Recording permission. The card in the menu bar opens the pane."
+                        : model.settings.screenshotsEnabled
+                            ? "A picture of the screen is saved in the call's Screenshots folder."
+                            : "No pictures of the screen are taken.",
+                    info: "A screenshot covers the whole display except Call Recorder's own windows. "
+                        + "It is written immediately, so a crash costs at most the frame being "
+                        + "taken rather than the recording. The default is off because the "
+                        + "picture can include anything else that is open."
+                ) {
+                    Toggle("", isOn: $model.settings.screenshotsEnabled)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .controlSize(.small)
+                        .disabled(!model.screenRecordingGranted)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "How often",
+                    detail: "The first picture is taken as the call starts."
+                ) {
+                    Picker("", selection: $model.settings.screenshotInterval) {
+                        ForEach(ScreenshotInterval.allCases) { interval in
+                            Text(interval.title).tag(interval)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 200, alignment: .trailing)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Resolution",
+                    detail: "Full HD keeps the interface and small text readable without keeping "
+                        + "a full-resolution display image for every call. The display's own "
+                        + "aspect ratio is kept."
+                ) {
+                    Picker("", selection: $model.settings.screenshotResolution) {
+                        ForEach(ScreenshotResolution.allCases) { resolution in
+                            Text(resolution.title).tag(resolution)
+                        }
+                    }
+                    .labelsHidden()
+                    .frame(maxWidth: 200, alignment: .trailing)
+                }
+            }
+
+            CRSettingsCard(
                 title: "Updates",
                 footnote: "Installed when Call Recorder quits or restarts, so the next launch is "
                     + "the new version."

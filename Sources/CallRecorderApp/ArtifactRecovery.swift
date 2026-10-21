@@ -121,6 +121,14 @@ struct ArtifactRecovery: Sendable {
         guard let audioPath = call.audioPath else { return nil }
         let source = URL(filePath: audioPath).deletingLastPathComponent().standardizedFileURL
         guard FileManager.default.fileExists(atPath: source.path) else { return nil }
+        // The folder can outlive the audio: the screen photographs are set aside below, and a
+        // repeat of this stage then finds a folder that holds pictures and no media. That is a
+        // finished call, not a missing source to fail on.
+        let tracks = MediaFinalizer.existingTracks(in: source)
+        guard
+            FileManager.default.fileExists(atPath: audioPath) || tracks.system != nil
+                || tracks.microphone != nil
+        else { return nil }
 
         guard FileManager.default.fileExists(atPath: transcript.jsonPath) else {
             throw ArtifactRecoveryError.sourceUnavailable
@@ -136,7 +144,17 @@ struct ArtifactRecovery: Sendable {
         guard !isDescendant(markdown, of: source) else {
             throw ArtifactRecoveryError.transcriptNotPromoted
         }
-        return try moveToRecovery(callID, kind: .completedCall, source: source, at: date)
+        // The recording folder also holds the screen photographs. Those are a record of the call
+        // rather than working audio: they stay in place when the audio moves to Recently Deleted,
+        // and only the audio children are moved. A day later the audio is purged and the pictures
+        // are still beside the transcript.
+        return try moveToRecovery(
+            callID,
+            kind: .completedCall,
+            source: source,
+            excluding: [ScreenshotArchive.directoryName],
+            at: date
+        )
     }
 
     func discardCall(
@@ -157,6 +175,7 @@ struct ArtifactRecovery: Sendable {
         _ callID: CallID,
         kind: RecoverableArtifact.Kind,
         source: URL,
+        excluding excludedNames: Set<String> = [],
         at date: Date
     ) throws -> RecoverableArtifact {
         try validateSource(source)
@@ -164,14 +183,13 @@ struct ArtifactRecovery: Sendable {
         let manifest = wrapper.appending(path: "manifest.json")
         let item: RecoverableArtifact
         if FileManager.default.fileExists(atPath: manifest.path) {
-            item = try load(callID)
+            // Decoded rather than loaded: a pass interrupted after the manifest was written can
+            // leave the payload missing, and this is the pass that creates it.
+            item = try decode(manifest)
             guard
                 item.kind == kind,
                 item.originalDirectory == source
             else { throw ArtifactRecoveryError.invalidManifest }
-            if FileManager.default.fileExists(atPath: item.payloadDirectory.path) {
-                return item
-            }
         } else {
             guard FileManager.default.fileExists(atPath: source.path) else {
                 throw ArtifactRecoveryError.sourceUnavailable
@@ -191,13 +209,37 @@ struct ArtifactRecovery: Sendable {
             )
             try write(item, to: manifest)
         }
+        try FileManager.default.createDirectory(
+            at: item.payloadDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
         guard FileManager.default.fileExists(atPath: source.path) else {
+            // A resumed pass after a crash: the source may already have been emptied.
+            let moved = try FileManager.default.contentsOfDirectory(atPath: item.payloadDirectory.path)
+            guard !moved.isEmpty else { throw ArtifactRecoveryError.sourceUnavailable }
+            return item
+        }
+        let children = try FileManager.default.contentsOfDirectory(
+            at: source,
+            includingPropertiesForKeys: nil
+        )
+        let moving = children.filter { !excludedNames.contains($0.lastPathComponent) }
+        guard !moving.isEmpty else {
             throw ArtifactRecoveryError.sourceUnavailable
         }
-        try FileManager.default.moveItem(at: source, to: item.payloadDirectory)
-        guard FileManager.default.fileExists(atPath: item.payloadDirectory.path) else {
-            throw ArtifactRecoveryError.sourceUnavailable
+        for child in moving {
+            let destination = item.payloadDirectory.appending(path: child.lastPathComponent)
+            // A pass interrupted halfway leaves some children in the payload already. The copy in
+            // the payload is the one being kept, so a name that is already there is this same move
+            // resumed, not a conflict.
+            if FileManager.default.fileExists(atPath: destination.path) { continue }
+            try FileManager.default.moveItem(at: child, to: destination)
         }
+        // The call's folder is removed when the audio was its last content. When the screenshots
+        // stay, the folder stays with them.
+        let remaining = (try? FileManager.default.contentsOfDirectory(atPath: source.path)) ?? []
+        if remaining.isEmpty { try? FileManager.default.removeItem(at: source) }
         return item
     }
 
@@ -223,14 +265,46 @@ struct ArtifactRecovery: Sendable {
         guard FileManager.default.fileExists(atPath: item.payloadDirectory.path) else {
             throw ArtifactRecoveryError.recoveryItemNotFound
         }
-        guard !FileManager.default.fileExists(atPath: item.originalDirectory.path) else {
-            throw ArtifactRecoveryError.restoreTargetExists
+        let targetExists = FileManager.default.fileExists(atPath: item.originalDirectory.path)
+        if targetExists {
+            // A finished call can leave its Screenshots folder beside the original recording even
+            // after the audio has been given back. Those pictures belong to the same call, so a
+            // restore puts the audio back beside them instead of refusing to work at all.
+            let contents = try FileManager.default.contentsOfDirectory(
+                at: item.originalDirectory,
+                includingPropertiesForKeys: nil
+            )
+            guard contents.allSatisfy({ $0.lastPathComponent == ScreenshotArchive.directoryName })
+            else {
+                throw ArtifactRecoveryError.restoreTargetExists
+            }
+        } else {
+            try FileManager.default.createDirectory(
+                at: item.originalDirectory.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
         }
-        try FileManager.default.createDirectory(
-            at: item.originalDirectory.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
-        try FileManager.default.moveItem(at: item.payloadDirectory, to: item.originalDirectory)
+        if targetExists {
+            let children = try FileManager.default.contentsOfDirectory(
+                at: item.payloadDirectory,
+                includingPropertiesForKeys: nil
+            )
+            // Every destination is checked before anything moves, so a conflict cannot leave the
+            // call half restored.
+            for child in children {
+                let destination = item.originalDirectory.appending(path: child.lastPathComponent)
+                guard !FileManager.default.fileExists(atPath: destination.path) else {
+                    throw ArtifactRecoveryError.restoreTargetExists
+                }
+            }
+            for child in children {
+                let destination = item.originalDirectory.appending(path: child.lastPathComponent)
+                try FileManager.default.moveItem(at: child, to: destination)
+            }
+            try? FileManager.default.removeItem(at: item.payloadDirectory)
+        } else {
+            try FileManager.default.moveItem(at: item.payloadDirectory, to: item.originalDirectory)
+        }
         try? FileManager.default.removeItem(at: item.recoveryDirectory)
     }
 

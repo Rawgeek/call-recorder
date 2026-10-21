@@ -25,6 +25,8 @@ struct SpeakerReviewView: View {
     @State private var voiceCounts: [CallID: Int] = [:]
     /// The voice whose card the window has opened under the picture.
     @State private var selectedClusterID: SpeakerClusterID?
+    /// The call whose picture and cards are on screen. One call at a time, chosen from the list.
+    @State private var selectedCallID: CallID?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -57,13 +59,36 @@ struct SpeakerReviewView: View {
         .task {
             await model.refreshSpeakerReviews()
             seedSelections()
+            syncSelectedCall()
             if model.speakerRuntimeMessage == "Speaker setup has not been checked." {
                 await model.checkSpeakerRuntime()
             }
         }
         .onChange(of: model.speakerReviews) { _, _ in
             seedSelections()
-            Task { await model.refreshSpeakerReviewEvidence() }
+            syncSelectedCall()
+            Task {
+                await model.refreshSpeakerReviewEvidence()
+                if let selectedCallID {
+                    await model.loadSpeakerReviewCall(selectedCallID)
+                }
+            }
+        }
+        .onChange(of: model.speakerReviewCallIDs) { _, _ in
+            syncSelectedCall()
+        }
+        .task(id: selectedCallID) {
+            guard let selectedCallID else { return }
+            await model.loadSpeakerReviewCall(selectedCallID)
+        }
+        .onChange(of: selectedCallID) { _, _ in
+            stopPlayback()
+            selectedClusterID = nil
+        }
+        .onChange(of: model.speakerReviewFocusCallID) { _, callID in
+            guard let callID, reviewCallIDs.contains(callID) else { return }
+            selectedCallID = callID
+            model.speakerReviewFocusCallID = nil
         }
         .onChange(of: playback.positionMs) { _, position in
             skipPauses(at: position)
@@ -201,19 +226,54 @@ struct SpeakerReviewView: View {
                         message: "After the next call, its voices appear here. One clear confirmation teaches the app a voice; two let it name that person automatically."
                     )
                 }
-                ForEach(reviewCallIDs, id: \.self) { callID in
-                    callSection(callID)
+                if !reviewCallIDs.isEmpty {
+                    callChooser
+                }
+                if let selectedCallID, reviewCallIDs.contains(selectedCallID) {
+                    callSection(selectedCallID)
+                        .id(selectedCallID)
                 }
                 if !missingAudioIssues.isEmpty {
                     missingAudioSection
                 }
-                Text("Audio stays until you name each voice or choose Keep Anonymous. All voice matching runs locally.")
+                Text(
+                    "Audio stays until you name each voice or choose Keep Anonymous. "
+                        + "Screenshots stay with the call. All voice matching runs locally."
+                )
                     .font(CR.Font.caption)
                     .foregroundStyle(CR.Ink.readable)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(CR.Space.screen)
         }
+    }
+
+    /// The list of calls the window can show. One call is chosen, and only its timeline is drawn.
+    private var callChooser: some View {
+        HStack(spacing: CR.Space.inner) {
+            Text("Call")
+                .font(CR.Font.callout.weight(.semibold))
+            Picker("Call", selection: $selectedCallID) {
+                ForEach(reviewCallIDs, id: \.self) { callID in
+                    Text(callChoiceTitle(callID)).tag(Optional(callID))
+                }
+            }
+            .labelsHidden()
+            .frame(maxWidth: 440, alignment: .leading)
+            Spacer(minLength: 0)
+            Text("\(reviewCallIDs.count) call\(reviewCallIDs.count == 1 ? "" : "s") available")
+                .font(CR.Font.caption)
+                .foregroundStyle(CR.Ink.readable)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The date, and the people on the call when it has any. Two calls can start in the same
+    /// minute; the names are what tells them apart without opening each one.
+    private func callChoiceTitle(_ callID: CallID) -> String {
+        let people = (model.callParticipants[callID] ?? []).map(\.name)
+        guard !people.isEmpty else { return callDate(callID) }
+        return callDate(callID) + " · " + people.prefix(2).joined(separator: ", ")
     }
 
     @ViewBuilder
@@ -242,6 +302,12 @@ struct SpeakerReviewView: View {
                 reviewCard(review)
                     .id(review.clusterID)
             }
+            if reviews.isEmpty, voiceCount(callID).total > 0 {
+                Text("Every voice on this call is already named. Its timeline and screenshots stay here for reference.")
+                    .font(CR.Font.caption)
+                    .foregroundStyle(CR.Ink.readable)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
     }
 
@@ -252,16 +318,29 @@ struct SpeakerReviewView: View {
     /// was heard. A call the separation found no voice in has no rows and shows nothing here.
     @ViewBuilder
     private func speakerTimeline(_ callID: CallID) -> some View {
-        if let timeline = model.speakerTimelines[callID], !timeline.isEmpty {
+        let timeline = model.speakerTimelines[callID]
+            ?? SpeakerTimeline(lanes: [], durationMs: 0)
+        let screenshots = model.speakerCallScreenshots[callID] ?? []
+        if !timeline.isEmpty || !screenshots.isEmpty {
             SpeakerTimelineView(
                 timeline: timeline,
                 audioURL: model.speakerCallAudioURLs[callID],
                 playback: playback,
                 selectedClusterID: selectedClusterID,
+                screenshots: screenshots,
                 onSelect: { clusterID in
                     selectedClusterID = clusterID
                 }
             )
+        } else if voiceCount(callID).total > 0 {
+            // A call chosen from the list is read on its own. Until that read lands, saying so
+            // keeps the window from looking like the call has no timeline at all.
+            HStack(spacing: CR.Space.snug) {
+                ProgressView().controlSize(.small)
+                Text("Loading this call's timeline…")
+                    .font(CR.Font.caption)
+                    .foregroundStyle(CR.Ink.readable)
+            }
         }
     }
 
@@ -853,8 +932,21 @@ struct SpeakerReviewView: View {
     }
 
     private var reviewCallIDs: [CallID] {
+        if !model.speakerReviewCallIDs.isEmpty { return model.speakerReviewCallIDs }
         var seen = Set<CallID>()
         return model.speakerReviews.compactMap { seen.insert($0.callID).inserted ? $0.callID : nil }
+    }
+
+    /// Keeps one valid call chosen. Opening the window lands on the newest call, and a call whose
+    /// last voice was just named hands the window to the next one rather than leaving a blank page.
+    private func syncSelectedCall() {
+        if let focus = model.speakerReviewFocusCallID, reviewCallIDs.contains(focus) {
+            selectedCallID = focus
+            model.speakerReviewFocusCallID = nil
+            return
+        }
+        if let selectedCallID, reviewCallIDs.contains(selectedCallID) { return }
+        selectedCallID = reviewCallIDs.first
     }
 
     private func callProgress(_ callID: CallID) -> String {

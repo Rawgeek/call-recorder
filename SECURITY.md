@@ -18,7 +18,7 @@ include the tool name and arguments.
 These are properties the code is built to keep. A report that shows one of them failing is a
 security bug, even without data loss.
 
-- **Local only.** Recording, transcription, diarization, embedding, and search run on the
+- **Local only.** Recording, screenshots, transcription, diarization, embedding, and search run on the
   machine. The only network requests are model downloads from the configured model host.
 - **Voiceprints are encrypted.** The voice-profile key lives in the macOS Keychain
   (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`) and the profiles never appear in

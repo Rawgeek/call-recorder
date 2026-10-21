@@ -71,6 +71,16 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// app holds, so giving the space back is the default. Keeping it is a choice, and a person
     /// who wants the audio beside the transcript asks for it here.
     public var removeAudioAfterTranscription: Bool
+    /// Whether a call keeps a photograph of the screen as it is recorded.
+    ///
+    /// Off by default: the audio is the record, and a picture of the whole display can hold
+    /// anything the person had open. The menu bar carries the same switch, so it can be turned on
+    /// for one call without a trip through Settings.
+    public var screenshotsEnabled: Bool
+    /// How far apart two screen photographs are taken.
+    public var screenshotInterval: ScreenshotInterval
+    /// The size a screen photograph is saved at.
+    public var screenshotResolution: ScreenshotResolution
     /// The language a recording is transcribed in, or "auto" to let the model decide for itself.
     ///
     /// The reader is told "auto" unless the user says otherwise. Naming the language holds the
@@ -119,6 +129,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case automaticAppUpdatesEnabled
         case appUpdateCheckInterval
         case removeAudioAfterTranscription
+        case screenshotsEnabled
+        case screenshotInterval
+        case screenshotResolution
         case transcriptionLanguage
         case transcriptTimestamps
         case appliedGlossaryFingerprint
@@ -144,6 +157,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
             automaticAppUpdatesEnabled: true,
             appUpdateCheckInterval: .default,
             removeAudioAfterTranscription: true,
+            screenshotsEnabled: false,
+            screenshotInterval: .fiveSeconds,
+            screenshotResolution: .fullHD,
             transcriptionLanguage: "auto",
             transcriptTimestamps: false,
             appliedGlossaryFingerprint: nil,
@@ -230,6 +246,21 @@ extension AppSettings {
         removeAudioAfterTranscription =
             try container.decodeIfPresent(Bool.self, forKey: .removeAudioAfterTranscription)
             ?? fallback.removeAudioAfterTranscription
+        // Added with the screenshot track. Absent means no picture of the screen, which is the
+        // behavior every recording had before the option existed.
+        screenshotsEnabled =
+            try container.decodeIfPresent(Bool.self, forKey: .screenshotsEnabled)
+            ?? fallback.screenshotsEnabled
+        let storedScreenshotInterval =
+            (try? container.decodeIfPresent(String.self, forKey: .screenshotInterval)) ?? nil
+        screenshotInterval =
+            storedScreenshotInterval.flatMap(ScreenshotInterval.init(rawValue:))
+            ?? fallback.screenshotInterval
+        let storedScreenshotResolution =
+            (try? container.decodeIfPresent(String.self, forKey: .screenshotResolution)) ?? nil
+        screenshotResolution =
+            storedScreenshotResolution.flatMap(ScreenshotResolution.init(rawValue:))
+            ?? fallback.screenshotResolution
         // Both added after the first release. Absent means the language is detected and the times
         // are not printed, which is what the app did before the choices existed.
         transcriptionLanguage =
@@ -248,6 +279,38 @@ extension AppSettings {
         // never been cleaned, which makes the next launch do the work once.
         appliedArtifactRuleVersion =
             try container.decodeIfPresent(Int.self, forKey: .appliedArtifactRuleVersion)
+    }
+}
+
+/// The steps the screen photograph timer offers.
+public enum ScreenshotInterval: String, CaseIterable, Codable, Identifiable, Sendable {
+    case twoSeconds = "2"
+    case fiveSeconds = "5"
+    case tenSeconds = "10"
+    case fifteenSeconds = "15"
+    case thirtySeconds = "30"
+    case oneMinute = "60"
+
+    public var id: String { rawValue }
+    public var seconds: Double { Double(Int(rawValue) ?? 5) }
+    public var title: String {
+        self == .oneMinute ? "Every minute" : "Every \(rawValue) seconds"
+    }
+}
+
+/// The sizes a screen photograph is written at.
+public enum ScreenshotResolution: String, CaseIterable, Codable, Identifiable, Sendable {
+    case hd
+    case fullHD
+    case native
+
+    public var id: String { rawValue }
+    public var title: String {
+        switch self {
+        case .hd: "HD (1280 px)"
+        case .fullHD: "Full HD (1920 px)"
+        case .native: "Display resolution"
+        }
     }
 }
 

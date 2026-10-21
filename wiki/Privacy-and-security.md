@@ -3,7 +3,7 @@
 Call Recorder records private conversations, so its privacy and security properties are part of
 the product.
 
-- **Local only.** Recording, transcription, diarization, embedding, and search run on the Mac.
+- **Local only.** Recording, screenshots, transcription, diarization, embedding, and search run on the Mac.
   The only network requests are model downloads from the configured model host.
 - **Voiceprints are encrypted.** The key lives in the macOS Keychain; profiles never appear in
   transcripts, search results, diagnostics, or MCP output.

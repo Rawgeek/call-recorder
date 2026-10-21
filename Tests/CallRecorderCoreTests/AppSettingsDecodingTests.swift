@@ -43,6 +43,11 @@ struct AppSettingsDecodingTests {
         // which is what a blob written before the option existed meant and what this release does
         // by default: the separation counts the voices it hears unless the count is asked for.
         #expect(decoded.diarizationUsesParticipantCount == false)
+        // Pictures of the screen were not part of any earlier build, so a stored blob that has no
+        // value for them must mean the screen was never photographed.
+        #expect(decoded.screenshotsEnabled == false)
+        #expect(decoded.screenshotInterval == .fiveSeconds)
+        #expect(decoded.screenshotResolution == .fullHD)
     }
 
     @Test("leaving the voice count to the detector survives a save")
@@ -129,5 +134,39 @@ struct AppSettingsDecodingTests {
         #expect(throws: (any Error).self) {
             try JSONDecoder().decode(AppSettings.self, from: Data("not json".utf8))
         }
+    }
+
+    @Test("the screenshot timer and size survive a save")
+    func screenshotChoicesSurviveASave() throws {
+        var settings = AppSettings.default
+        settings.screenshotsEnabled = true
+        settings.screenshotInterval = .fifteenSeconds
+        settings.screenshotResolution = .native
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+
+        #expect(decoded.screenshotsEnabled)
+        #expect(decoded.screenshotInterval == .fifteenSeconds)
+        #expect(decoded.screenshotResolution == .native)
+        #expect(decoded == settings)
+    }
+
+    @Test("an unknown screenshot step costs only that choice")
+    func unknownScreenshotStepFallsBackAlone() throws {
+        let damaged = """
+        {
+          "selectedMicrophoneID": "Yeti",
+          "screenshotsEnabled": true,
+          "screenshotInterval": "7",
+          "screenshotResolution": "8k"
+        }
+        """
+
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: Data(damaged.utf8))
+
+        #expect(decoded.screenshotsEnabled)
+        #expect(decoded.screenshotInterval == .fiveSeconds)
+        #expect(decoded.screenshotResolution == .fullHD)
+        #expect(decoded.selectedMicrophoneID == "Yeti")
     }
 }

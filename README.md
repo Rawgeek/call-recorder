@@ -23,6 +23,11 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
   than speech for ten minutes, the recording stops.
 - Manual Start, Pause, Resume, Stop, and Discard from the menu-bar panel. The next call can
   start while an earlier one is still being processed.
+- Optional screenshots during a call, off by default. One picture of the screen is written to
+  the call's `Screenshots` folder on a timer set in Settings (five seconds by default), at Full
+  HD unless another size is chosen. Each frame is a file of its own, so a crash costs one photo
+  rather than the recording. The switch beside Quit in the menu-bar panel turns them on during a
+  call without opening Settings.
 - The microphone is chosen by name, or set to follow whichever input macOS is set to use. A call
   that finishes gives its audio back, unless Settings > General says to keep it.
 - One-sided-call detection warns when the other side of the conversation was never captured.
@@ -228,7 +233,7 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 
 | Path | Contents |
 | --- | --- |
-| `~/Desktop/Call Recordings` | Transcripts (`<date-time>.md`) and a small metadata file per call. The folder is configurable. |
+| `~/Desktop/Call Recordings` | Transcripts (`<date-time>.md`) and a small metadata file per call. A call recorded with screenshots keeps them in its own `Screenshots` folder, named by their place on the recording's clock. The folder is configurable. |
 | `~/Library/Application Support/CallRecorder/calls.db` | The local library: calls, participants, glossary, transcripts, search index. |
 | `~/Library/Application Support/CallRecorder/models` | The downloaded transcription model (Qwen3-ASR) and the embedding model search uses. |
 | `~/Library/Application Support/CallRecorder/python` | The Python environment the transcription model runs in, built from the Mac's own Python and the two pinned packages. |
@@ -240,7 +245,7 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 
 ## Privacy
 
-- Recording, transcription, diarization, embedding, and search all run locally.
+- Recording, screenshots, transcription, diarization, embedding, and search all run locally.
 - No account, no telemetry, and no network call other than model downloads from the model host
   you configure.
 - Voice profiles are encrypted with a key in the macOS Keychain, and are excluded from
