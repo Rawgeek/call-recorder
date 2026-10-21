@@ -2,6 +2,19 @@ import AVFoundation
 import CallRecorderCore
 import SwiftUI
 
+/// The recording the shared player must hold when the window moves to another call.
+///
+/// Two lifecycle callbacks react to a selection change, and neither is promised to run first: the
+/// window's own change handler and the timeline's task. Asking for the new call's recording here
+/// means a call without audio unloads the old one, and a call with audio plays its own recording
+/// even when the timeline's task has not run yet.
+enum SpeakerSelectionAudio {
+    static func url(for callID: CallID?, audioURLs: [CallID: URL]) -> URL? {
+        guard let callID else { return nil }
+        return audioURLs[callID]
+    }
+}
+
 /// The window where an unknown voice becomes a person.
 ///
 /// The job is a listening task, so each voice is one card that holds everything the user needs to
@@ -81,8 +94,10 @@ struct SpeakerReviewView: View {
             guard let selectedCallID else { return }
             await model.loadSpeakerReviewCall(selectedCallID)
         }
-        .onChange(of: selectedCallID) { _, _ in
+        .onChange(of: selectedCallID) { _, callID in
             stopPlayback()
+            playbackError = nil
+            playback.load(SpeakerSelectionAudio.url(for: callID, audioURLs: model.speakerCallAudioURLs))
             selectedClusterID = nil
         }
         .onChange(of: model.speakerReviewFocusCallID) { _, callID in

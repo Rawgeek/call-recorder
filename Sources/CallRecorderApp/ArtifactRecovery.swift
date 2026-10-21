@@ -1,4 +1,5 @@
 import CallRecorderCore
+import CryptoKit
 import Foundation
 
 enum ArtifactRecoveryError: Error, Equatable {
@@ -75,6 +76,21 @@ struct ArtifactRecovery: Sendable {
     let directory: URL
     let recordingsRoot: URL
     let retention: TimeInterval
+    private let restoreMoveItem: @Sendable (URL, URL) throws -> Void
+
+    init(
+        directory: URL,
+        recordingsRoot: URL,
+        retention: TimeInterval,
+        restoreMoveItem: @escaping @Sendable (URL, URL) throws -> Void = {
+            try FileManager.default.moveItem(at: $0, to: $1)
+        }
+    ) {
+        self.directory = directory
+        self.recordingsRoot = recordingsRoot
+        self.retention = retention
+        self.restoreMoveItem = restoreMoveItem
+    }
 
     func finalizeReadyCall(
         _ callID: CallID,
@@ -265,47 +281,215 @@ struct ArtifactRecovery: Sendable {
         guard FileManager.default.fileExists(atPath: item.payloadDirectory.path) else {
             throw ArtifactRecoveryError.recoveryItemNotFound
         }
-        let targetExists = FileManager.default.fileExists(atPath: item.originalDirectory.path)
-        if targetExists {
-            // A finished call can leave its Screenshots folder beside the original recording even
-            // after the audio has been given back. Those pictures belong to the same call, so a
-            // restore puts the audio back beside them instead of refusing to work at all.
-            let contents = try FileManager.default.contentsOfDirectory(
-                at: item.originalDirectory,
-                includingPropertiesForKeys: nil
-            )
-            guard contents.allSatisfy({ $0.lastPathComponent == ScreenshotArchive.directoryName })
-            else {
-                throw ArtifactRecoveryError.restoreTargetExists
-            }
+        if FileManager.default.fileExists(atPath: item.originalDirectory.path) {
+            try restoreBesideScreenshots(item)
         } else {
             try FileManager.default.createDirectory(
                 at: item.originalDirectory.deletingLastPathComponent(),
                 withIntermediateDirectories: true
             )
-        }
-        if targetExists {
-            let children = try FileManager.default.contentsOfDirectory(
-                at: item.payloadDirectory,
-                includingPropertiesForKeys: nil
-            )
-            // Every destination is checked before anything moves, so a conflict cannot leave the
-            // call half restored.
-            for child in children {
-                let destination = item.originalDirectory.appending(path: child.lastPathComponent)
-                guard !FileManager.default.fileExists(atPath: destination.path) else {
-                    throw ArtifactRecoveryError.restoreTargetExists
-                }
-            }
-            for child in children {
-                let destination = item.originalDirectory.appending(path: child.lastPathComponent)
-                try FileManager.default.moveItem(at: child, to: destination)
-            }
-            try? FileManager.default.removeItem(at: item.payloadDirectory)
-        } else {
             try FileManager.default.moveItem(at: item.payloadDirectory, to: item.originalDirectory)
         }
         try? FileManager.default.removeItem(at: item.recoveryDirectory)
+    }
+
+    private struct RestoreJournal: Codable {
+        struct Entry: Codable {
+            let name: String
+            let size: Int
+            let sha256: String
+        }
+
+        let entries: [Entry]
+    }
+
+    private struct RestoreFingerprint: Equatable {
+        let size: Int
+        let sha256: String
+    }
+
+    /// Merges into a target that still owns the call's screenshots.
+    ///
+    /// The journal records exactly which payload files may appear in the target. That makes a
+    /// half-completed move safe to retry without turning restore into a merge with any folder that
+    /// happens to be at the same path.
+    private func restoreBesideScreenshots(_ item: RecoverableArtifact) throws {
+        let journalURL = item.recoveryDirectory.appending(path: "restore-journal.json")
+        let existing = try FileManager.default.contentsOfDirectory(
+            at: item.originalDirectory,
+            includingPropertiesForKeys: nil
+        )
+        let journal: RestoreJournal
+        if FileManager.default.fileExists(atPath: journalURL.path) {
+            journal = try JSONDecoder().decode(
+                RestoreJournal.self,
+                from: Data(contentsOf: journalURL)
+            )
+            try validateExistingTarget(existing, against: journal)
+        } else {
+            try validateFirstMerge(existing, payload: item.payloadDirectory)
+            journal = RestoreJournal(entries: try restoreEntries(in: item.payloadDirectory))
+            try JSONEncoder().encode(journal).write(to: journalURL, options: .atomic)
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: journalURL.path
+            )
+        }
+        try mergePayload(into: item.originalDirectory, from: item, journal: journal)
+        try? FileManager.default.removeItem(at: journalURL)
+    }
+
+    private func restoreEntries(in payload: URL) throws -> [RestoreJournal.Entry] {
+        try FileManager.default.contentsOfDirectory(
+            at: payload,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        ).map { child in
+            let values = try child.resourceValues(forKeys: [.isRegularFileKey])
+            guard values.isRegularFile == true else {
+                throw ArtifactRecoveryError.restoreTargetExists
+            }
+            let fingerprint = try fingerprint(of: child)
+            return RestoreJournal.Entry(
+                name: child.lastPathComponent,
+                size: fingerprint.size,
+                sha256: fingerprint.sha256
+            )
+        }.sorted { $0.name < $1.name }
+    }
+
+    /// The first merge accepts Finder metadata and an exact copy left by an interrupted copy.
+    /// Everything else is an unrelated target, even when its filename would fit a recording.
+    private func validateFirstMerge(_ existing: [URL], payload: URL) throws {
+        let payloadChildren = try FileManager.default.contentsOfDirectory(
+            at: payload,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )
+        let payloadByName = Dictionary(
+            uniqueKeysWithValues: payloadChildren.map { ($0.lastPathComponent, $0) }
+        )
+        for child in existing {
+            let name = child.lastPathComponent
+            if name == ScreenshotArchive.directoryName {
+                guard try isDirectory(child) else {
+                    throw ArtifactRecoveryError.restoreTargetExists
+                }
+                continue
+            }
+            if name == ".DS_Store" { continue }
+            guard
+                let source = payloadByName[name],
+                try fingerprint(of: child) == fingerprint(of: source)
+            else { throw ArtifactRecoveryError.restoreTargetExists }
+        }
+    }
+
+    private func validateExistingTarget(_ existing: [URL], against journal: RestoreJournal) throws {
+        let recorded = Dictionary(
+            uniqueKeysWithValues: journal.entries.map { ($0.name, $0) }
+        )
+        for child in existing {
+            let name = child.lastPathComponent
+            if name == ScreenshotArchive.directoryName {
+                guard try isDirectory(child) else {
+                    throw ArtifactRecoveryError.restoreTargetExists
+                }
+                continue
+            }
+            if name == ".DS_Store" { continue }
+            guard
+                let entry = recorded[name],
+                try fingerprint(of: child)
+                    == RestoreFingerprint(size: entry.size, sha256: entry.sha256)
+            else { throw ArtifactRecoveryError.restoreTargetExists }
+        }
+    }
+
+    private func mergePayload(
+        into target: URL,
+        from item: RecoverableArtifact,
+        journal: RestoreJournal
+    ) throws {
+        let payloadChildren = try FileManager.default.contentsOfDirectory(
+            at: item.payloadDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey]
+        )
+        let payloadByName = Dictionary(
+            uniqueKeysWithValues: payloadChildren.map { ($0.lastPathComponent, $0) }
+        )
+        let recorded = Dictionary(
+            uniqueKeysWithValues: journal.entries.map { ($0.name, $0) }
+        )
+        guard payloadByName.keys.allSatisfy({ recorded[$0] != nil }) else {
+            throw ArtifactRecoveryError.restoreTargetExists
+        }
+
+        var duplicates: [URL] = []
+        var moves: [(source: URL, destination: URL)] = []
+        for entry in journal.entries {
+            let destination = target.appending(path: entry.name)
+            let recordedFingerprint = RestoreFingerprint(size: entry.size, sha256: entry.sha256)
+            if entry.name == ".DS_Store" {
+                if let source = payloadByName[entry.name] {
+                    if FileManager.default.fileExists(atPath: destination.path) {
+                        duplicates.append(source)
+                    } else {
+                        moves.append((source, destination))
+                    }
+                }
+                continue
+            }
+            if let source = payloadByName[entry.name] {
+                guard try fingerprint(of: source) == recordedFingerprint else {
+                    throw ArtifactRecoveryError.restoreTargetExists
+                }
+                if FileManager.default.fileExists(atPath: destination.path) {
+                    guard try fingerprint(of: destination) == recordedFingerprint else {
+                        throw ArtifactRecoveryError.restoreTargetExists
+                    }
+                    duplicates.append(source)
+                } else {
+                    moves.append((source, destination))
+                }
+            } else {
+                guard
+                    FileManager.default.fileExists(atPath: destination.path),
+                    try fingerprint(of: destination) == recordedFingerprint
+                else { throw ArtifactRecoveryError.restoreTargetExists }
+            }
+        }
+
+        for duplicate in duplicates {
+            try FileManager.default.removeItem(at: duplicate)
+        }
+        for move in moves {
+            try restoreMoveItem(move.source, move.destination)
+        }
+        let remaining = try FileManager.default.contentsOfDirectory(
+            atPath: item.payloadDirectory.path
+        )
+        guard remaining.isEmpty else { throw ArtifactRecoveryError.restoreTargetExists }
+        try FileManager.default.removeItem(at: item.payloadDirectory)
+    }
+
+    private func isDirectory(_ url: URL) throws -> Bool {
+        try url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory == true
+    }
+
+    private func fingerprint(of url: URL) throws -> RestoreFingerprint {
+        let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+        guard values.isRegularFile == true, let size = values.fileSize else {
+            throw ArtifactRecoveryError.restoreTargetExists
+        }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var hasher = SHA256()
+        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+            hasher.update(data: data)
+        }
+        return RestoreFingerprint(
+            size: size,
+            sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        )
     }
 
     func purge(_ callID: CallID) throws {

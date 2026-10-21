@@ -520,6 +520,10 @@ final class AppModel {
     private let captureSession: AudioCaptureSession
     private let screenshotCapture = ScreenshotCaptureSession()
     private var captureOperationInFlight = false
+    /// Set while a pause or a stop is closing the audio and its photographs. The phase can still
+    /// read `.recording` during that wait, so a settings change or a permission refresh arriving
+    /// then must not start the timer the transaction has just cancelled.
+    private var screenshotCaptureTransitioning = false
     private var activeSessionDirectory: URL?
     private var capturedSegments: [CaptureSegment] = []
     private var nextSegmentIndex = 1
@@ -1422,7 +1426,7 @@ final class AppModel {
         // is read; an hour of pictures is thousands of entries, and doing that for fifty calls on
         // every window open would make the chooser itself slow.
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
-        var dates: [CallID: Date] = [:]
+        var dates = Self.speakerReviewDates(for: reviewCalls)
         var voiceCounts: [CallID: SpeakerVoiceCount] = [:]
         var timelines: [CallID: SpeakerTimeline] = [:]
         var audioURLs: [CallID: URL] = [:]
@@ -1454,6 +1458,11 @@ final class AppModel {
         speakerTimelines = timelines
         speakerCallAudioURLs = audioURLs
         speakerReviewsByCluster = byCluster
+    }
+
+    /// Dates for the chooser must include named calls beyond the five menu-bar recents.
+    nonisolated static func speakerReviewDates(for calls: [RecentCallSummary]) -> [CallID: Date] {
+        Dictionary(calls.map { ($0.id, $0.startedAt) }, uniquingKeysWith: { first, _ in first })
     }
 
     /// Reads the timeline, samples, and screen photographs of one call.
@@ -3325,9 +3334,13 @@ final class AppModel {
     /// stretch of the call with no pictures.
     private func syncScreenshotCapture() {
         guard
-            settings.screenshotsEnabled,
-            recorderState.phase == .recording,
-            screenRecordingGranted,
+            ScreenshotCaptureEligibility.shouldStart(
+                enabled: settings.screenshotsEnabled,
+                recording: recorderState.phase == .recording,
+                permissionGranted: screenRecordingGranted,
+                hasDirectory: activeSessionDirectory != nil,
+                transitioning: screenshotCaptureTransitioning
+            ),
             let directory = activeSessionDirectory
         else {
             screenshotCapture.stop()
@@ -3374,16 +3387,22 @@ final class AppModel {
     private func pauseRecording() async {
         guard recorderState.phase == .recording, !captureOperationInFlight else { return }
         captureOperationInFlight = true
-        defer { captureOperationInFlight = false }
+        screenshotCaptureTransitioning = true
+        defer {
+            captureOperationInFlight = false
+            screenshotCaptureTransitioning = false
+        }
+        screenshotCapture.cancel()
         do {
-            await screenshotCapture.stopAndWait()
             capturedSegments.append(try await captureSession.finishSegment())
             // Banked before the phase changes, so the seconds between here and the resume belong to
             // the pause and not to the recording.
             bankRecordedSeconds()
             recordingPausedAt = Date()
             apply(.manualPause)
+            await screenshotCapture.waitForStop()
         } catch {
+            screenshotCapture.stop()
             errorMessage = error.localizedDescription
             apply(.fail(.captureUnavailable))
         }
@@ -3455,11 +3474,15 @@ final class AppModel {
         recordingLimitTask?.cancel()
         recordingLimitTask = nil
         captureOperationInFlight = true
-        defer { captureOperationInFlight = false }
+        screenshotCaptureTransitioning = true
+        defer {
+            captureOperationInFlight = false
+            screenshotCaptureTransitioning = false
+        }
         defer { finishRecordingActivity() }
-        // Taken before the wait: the flag is what keeps a second stop from starting while the
-        // last photograph is still being written.
-        await screenshotCapture.stopAndWait()
+        // Stop new photographs before the audio, so a stuck screen request cannot extend the call.
+        // An encode already underway gets the bounded wait after the audio segment is closed.
+        screenshotCapture.cancel()
         switch reason {
         case .person: apply(.manualStop)
         case .microphoneReleased: apply(.automaticStopGraceElapsed)
@@ -3479,6 +3502,7 @@ final class AppModel {
                 let activeCallID,
                 let activeSessionDirectory
             else { throw AudioCaptureError.notCapturing }
+            let endedAt = Date()
             // A recording this app started by itself, and that lasted less than the floor, is a
             // microphone that opened for a moment and not a call. It goes where a recording
             // discarded by hand goes, and nothing is ever transcribed from it.
@@ -3486,8 +3510,9 @@ final class AppModel {
                 banked: recordedSecondsBeforePause,
                 currentRunStartedAt: recordingStartedAt,
                 paused: false,
-                at: Date()
+                at: endedAt
             )
+            await screenshotCapture.waitForStop()
             let minimum = settings.minimumAutomaticRecordingSeconds
             // A recording the person gave up and a recording the app started by itself and found
             // too short go to the same place for the same reason: neither is kept, and both are
@@ -3541,7 +3566,7 @@ final class AppModel {
                     )
                 },
                 destination: activeSessionDirectory,
-                endedAt: Date(),
+                endedAt: endedAt,
                 keepsAudio: !settings.removeAudioAfterTranscription
             )
             self.activeCallID = nil
@@ -3555,6 +3580,7 @@ final class AppModel {
             await backgroundFinalization.enqueue(snapshot)
             apply(.audioFinalizedAndQueued)
         } catch {
+            screenshotCapture.stop()
             errorMessage = error.localizedDescription
             apply(.fail(.storageUnavailable))
         }

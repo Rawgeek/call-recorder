@@ -1,3 +1,4 @@
+import AVFoundation
 import CallRecorderCore
 import Foundation
 import Testing
@@ -289,6 +290,126 @@ struct SpeakerReviewPlaybackTests {
         // Then
         #expect(range.start == 5.0)
         #expect(range.stop == 6.0)
+    }
+
+    @Test("selecting a call without audio clears the previous recording and its state")
+    @MainActor
+    func callWithoutAudioUnloadsThePreviousOne() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "call-playback-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let callA = root.appending(path: "a.wav")
+        let callC = root.appending(path: "c.wav")
+        try writeTone(to: callA, seconds: 0.25)
+        try writeTone(to: callC, seconds: 0.5)
+        let playback = CallPlayback()
+
+        playback.load(callA)
+        let durationA = playback.durationMs
+        playback.seek(toMs: 120)
+        playback.load(nil)
+
+        #expect(durationA > 0)
+        #expect(playback.url == nil)
+        #expect(playback.durationMs == 0)
+        #expect(playback.positionMs == 0)
+        #expect(!playback.isPlaying)
+        #expect(playback.failure == nil)
+
+        playback.load(callA)
+        playback.seek(toMs: 200)
+        playback.load(callC)
+
+        #expect(playback.url == callC)
+        #expect(playback.durationMs >= 450)
+        #expect(playback.positionMs == 0)
+        #expect(playback.failure == nil)
+    }
+
+    @Test("selecting a call without audio clears a previous playback error")
+    @MainActor
+    func callWithoutAudioClearsFailure() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "call-playback-error-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let broken = root.appending(path: "broken.wav")
+        try Data("not audio".utf8).write(to: broken)
+        let playback = CallPlayback()
+
+        playback.load(broken)
+        #expect(playback.failure != nil)
+        playback.load(nil)
+
+        #expect(playback.url == nil)
+        #expect(playback.failure == nil)
+        #expect(playback.durationMs == 0)
+    }
+
+    @Test("moving to another call loads that call's recording, whatever the view order")
+    @MainActor
+    func callChangeLoadsTheSelectedCallsRecording() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "call-selection-ordering-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let withAudio = CallID(rawValue: UUID())
+        let withoutAudio = CallID(rawValue: UUID())
+        let otherAudio = CallID(rawValue: UUID())
+        let audioA = root.appending(path: "a.wav")
+        let audioC = root.appending(path: "c.wav")
+        try writeTone(to: audioA, seconds: 0.25)
+        try writeTone(to: audioC, seconds: 0.5)
+        let urls: [CallID: URL] = [withAudio: audioA, otherAudio: audioC]
+        let playback = CallPlayback()
+
+        playback.load(SpeakerSelectionAudio.url(for: withAudio, audioURLs: urls))
+        #expect(playback.url == audioA)
+        playback.seek(toMs: 120)
+
+        // A call without audio must take the old recording off the player.
+        playback.load(SpeakerSelectionAudio.url(for: withoutAudio, audioURLs: urls))
+        #expect(playback.url == nil)
+        #expect(playback.durationMs == 0)
+        #expect(playback.positionMs == 0)
+        #expect(playback.failure == nil)
+
+        // A call with audio must load its own recording, not the one left behind nor nothing.
+        playback.load(SpeakerSelectionAudio.url(for: otherAudio, audioURLs: urls))
+        #expect(playback.url == audioC)
+        #expect(playback.durationMs >= 450)
+        #expect(playback.positionMs == 0)
+        #expect(playback.failure == nil)
+    }
+
+    private func writeTone(to url: URL, seconds: Double) throws {
+        let sampleRate = 8_000.0
+        let settings: [String: Any] = [
+            AVFormatIDKey: kAudioFormatLinearPCM,
+            AVSampleRateKey: sampleRate,
+            AVNumberOfChannelsKey: 1,
+            AVLinearPCMBitDepthKey: 16,
+            AVLinearPCMIsFloatKey: false,
+            AVLinearPCMIsBigEndianKey: false,
+        ]
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: settings,
+            commonFormat: .pcmFormatInt16,
+            interleaved: false
+        )
+        let frames = AVAudioFrameCount(sampleRate * seconds)
+        let buffer = try #require(
+            AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames)
+        )
+        buffer.frameLength = frames
+        if let samples = buffer.int16ChannelData?[0] {
+            for index in 0..<Int(frames) {
+                samples[index] = Int16((sin(Double(index) * 0.08) * 1_000).rounded())
+            }
+        }
+        try file.write(from: buffer)
     }
 
     private var review: SpeakerReviewItem {

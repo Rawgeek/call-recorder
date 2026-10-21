@@ -715,7 +715,12 @@ struct MenuBarView: View {
                                 + "from the card above before a call."
                 )
                 .accessibilityLabel("Capture screenshots")
-                .disabled(!model.screenRecordingGranted)
+                .disabled(
+                    ScreenshotPreferenceControl.isDisabled(
+                        enabled: model.settings.screenshotsEnabled,
+                        permissionGranted: model.screenRecordingGranted
+                    )
+                )
             // The footer's first icon is drawn on the popover's gutter, so the last one is too.
             CRIconButton(
                 icon: "power",

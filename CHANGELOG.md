@@ -4,6 +4,21 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.42] - 2026-10-22
+
+### Added
+
+- Review Speakers shows one call and one timeline at a time, including calls whose voices are already named.
+- Optional screenshots are saved locally beside the call and can be opened from its timeline. Capture is off by default.
+- Screenshot settings choose the capture interval and resolution. The menu bar switch also applies to the current call.
+
+### Fixed
+
+- Switching calls clears the previous recording, including when the selected call has no audio.
+- Slow screenshot capture cannot delay stopping the audio or publish a stale frame after shutdown.
+- Screenshot capture can be turned off after Screen Recording permission is revoked.
+- Restoring audio preserves screenshots and safely resumes an interrupted restore without overwriting conflicting files.
+
 ## [0.1.41] - 2026-10-20
 
 ### Added

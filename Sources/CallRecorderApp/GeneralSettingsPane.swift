@@ -266,7 +266,12 @@ struct GeneralSettingsView: View {
                         .labelsHidden()
                         .toggleStyle(.switch)
                         .controlSize(.small)
-                        .disabled(!model.screenRecordingGranted)
+                        .disabled(
+                            ScreenshotPreferenceControl.isDisabled(
+                                enabled: model.settings.screenshotsEnabled,
+                                permissionGranted: model.screenRecordingGranted
+                            )
+                        )
                 }
                 CRSettingsDivider()
                 CRSettingsRow(

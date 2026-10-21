@@ -78,7 +78,6 @@ struct SpeakerTimelineView: View {
         .padding(CR.Space.item)
         .crSurface(.rounded(CR.Radius.large))
         .task(id: audioURL) {
-            guard let audioURL else { return }
             player.load(audioURL)
         }
         .onDisappear { player.pause() }

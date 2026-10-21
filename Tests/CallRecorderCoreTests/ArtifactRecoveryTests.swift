@@ -281,6 +281,158 @@ struct ArtifactRecoveryTests {
         #expect(try fixture.recovery().items().isEmpty)
     }
 
+    @Test("restore tolerates Finder metadata beside screenshots")
+    func restoreIgnoresFinderMetadata() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let finderMetadata = fixture.workingDirectory.appending(path: ".DS_Store")
+        try Data("old Finder metadata".utf8).write(to: finderMetadata)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let payloadMetadata = item.payloadDirectory.appending(path: ".DS_Store")
+        #expect(try Data(contentsOf: payloadMetadata) == Data("old Finder metadata".utf8))
+        try Data("finder".utf8).write(to: finderMetadata)
+
+        try fixture.recovery().restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(FileManager.default.fileExists(atPath: finderMetadata.path))
+        #expect(try Data(contentsOf: finderMetadata) == Data("finder".utf8))
+        #expect(!FileManager.default.fileExists(atPath: item.payloadDirectory.path))
+        #expect(try fixture.recovery().items().isEmpty)
+    }
+
+    @Test("restore refuses a conflicting audio file and preserves both copies")
+    func restoreRefusesConflictingAudio() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let conflicting = fixture.workingDirectory.appending(path: "call.m4a")
+        try Data("different audio".utf8).write(to: conflicting)
+        let payloadAudio = item.payloadDirectory.appending(path: "call.m4a")
+        let payloadBefore = try Data(contentsOf: payloadAudio)
+
+        #expect(throws: ArtifactRecoveryError.restoreTargetExists) {
+            try fixture.recovery().restore(fixture.callID)
+        }
+
+        #expect(try Data(contentsOf: conflicting) == Data("different audio".utf8))
+        #expect(try Data(contentsOf: payloadAudio) == payloadBefore)
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(try fixture.recovery().items() == [item])
+    }
+
+    @Test("restore does not merge an unrelated entry into the call folder")
+    func restoreRefusesUnrelatedTargetEntry() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let unrelated = fixture.workingDirectory.appending(path: "notes.txt")
+        try Data("keep me".utf8).write(to: unrelated)
+
+        #expect(throws: ArtifactRecoveryError.restoreTargetExists) {
+            try fixture.recovery().restore(fixture.callID)
+        }
+
+        #expect(try Data(contentsOf: unrelated) == Data("keep me".utf8))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(FileManager.default.fileExists(atPath: item.payloadDirectory.path))
+        #expect(try fixture.recovery().items() == [item])
+    }
+
+    @Test("a matching partial restore and Finder metadata can be retried")
+    func restoreRetriesMatchingPartialMerge() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let payloadAudio = item.payloadDirectory.appending(path: "call.m4a")
+        try FileManager.default.copyItem(at: payloadAudio, to: fixture.workingDirectory.appending(path: "call.m4a"))
+        try Data("finder".utf8).write(to: fixture.workingDirectory.appending(path: ".DS_Store"))
+
+        try fixture.recovery().restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(try fixture.recovery().items().isEmpty)
+    }
+
+    @Test("a restore interrupted after its first move resumes without overwriting")
+    func restoreResumesAfterMoveFailure() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let moveCounter = CountingFailure()
+        let interrupted = fixture.recovery { source, destination in
+            if moveCounter.next() == 2 { throw InterruptedRestore.failure }
+            try FileManager.default.moveItem(at: source, to: destination)
+        }
+
+        #expect(throws: InterruptedRestore.failure) {
+            try interrupted.restore(fixture.callID)
+        }
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: item.payloadDirectory.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+
+        try fixture.recovery().restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.json.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(try fixture.recovery().items().isEmpty)
+    }
+
     @Test("re-running cleanup after the saved copy expired succeeds")
     func repeatCleanupAfterPurgeSucceeds() async throws {
         // Given: a call that was cleaned once, and whose saved copy has since expired.
@@ -489,11 +641,37 @@ private struct RecoveryFixture {
         store = try CallStore(path: databasePath)
     }
 
-    func recovery() -> ArtifactRecovery {
-        ArtifactRecovery(
+    func recovery(
+        restoreMoveItem: (@Sendable (URL, URL) throws -> Void)? = nil
+    ) -> ArtifactRecovery {
+        if let restoreMoveItem {
+            return ArtifactRecovery(
+                directory: recoveryRoot,
+                recordingsRoot: recordingsRoot,
+                retention: 24 * 60 * 60,
+                restoreMoveItem: restoreMoveItem
+            )
+        }
+        return ArtifactRecovery(
             directory: recoveryRoot,
             recordingsRoot: recordingsRoot,
             retention: 24 * 60 * 60
         )
     }
+}
+
+private final class CountingFailure: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func next() -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        count += 1
+        return count
+    }
+}
+
+private enum InterruptedRestore: Error, Equatable {
+    case failure
 }

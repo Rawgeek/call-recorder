@@ -80,4 +80,12 @@ struct ScreenshotArchiveTests {
                 == (3024, 1964)
         )
     }
+
+    @Test("screenshot controls disable only the move that needs permission")
+    func screenshotControlAvailability() {
+        #expect(ScreenshotPreferenceControl.isDisabled(enabled: false, permissionGranted: false))
+        #expect(!ScreenshotPreferenceControl.isDisabled(enabled: true, permissionGranted: false))
+        #expect(!ScreenshotPreferenceControl.isDisabled(enabled: false, permissionGranted: true))
+        #expect(!ScreenshotPreferenceControl.isDisabled(enabled: true, permissionGranted: true))
+    }
 }

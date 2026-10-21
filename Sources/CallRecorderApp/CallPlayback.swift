@@ -25,9 +25,13 @@ final class CallPlayback {
     private var ticker: Timer?
 
     /// Opens the recording, and does nothing when it is the one already open.
-    func load(_ url: URL) {
+    func load(_ url: URL?) {
+        guard let url else {
+            unload()
+            return
+        }
         guard self.url != url else { return }
-        stop()
+        unload()
         do {
             let player = try AVAudioPlayer(contentsOf: url)
             player.prepareToPlay()
@@ -43,6 +47,21 @@ final class CallPlayback {
             durationMs = 0
             failure = error.localizedDescription
         }
+    }
+
+    /// Removes the recording as well as stopping it.
+    ///
+    /// `stop` leaves the file ready to play again for the call still on screen. Moving to another
+    /// call needs the stronger answer: its absent audio must not leave the previous call loaded.
+    func unload() {
+        stopTicking()
+        player?.stop()
+        player = nil
+        url = nil
+        durationMs = 0
+        positionMs = 0
+        isPlaying = false
+        failure = nil
     }
 
     func toggle() {
