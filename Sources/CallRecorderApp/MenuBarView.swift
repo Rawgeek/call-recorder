@@ -688,6 +688,39 @@ struct MenuBarView: View {
                 presentWindow("participants")
             }
             Spacer(minLength: 0)
+            if let failure = model.screenshotFailure {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(CR.Tone.failed.ink)
+                    .help(failure)
+                    .accessibilityLabel("Screenshots are not being saved: \(failure)")
+            }
+            // The switch a call needs in a hurry. It applies to the recording that is running and
+            // stays the default for the next one, so the popover can turn pictures on without a
+            // trip through Settings.
+            Toggle("Screenshots", isOn: $model.settings.screenshotsEnabled)
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .font(CR.Font.caption)
+                .fixedSize()
+                .lineLimit(1)
+                .help(
+                    model.settings.screenshotsEnabled
+                        ? "Screen screenshots are on: "
+                            + model.settings.screenshotInterval.title.lowercased() + ", "
+                            + model.settings.screenshotResolution.title + "."
+                        : model.screenRecordingGranted
+                            ? "Capture screenshots during calls. Settings chooses how often and at what size."
+                            : "Screenshots need Screen Recording permission. Open System Settings "
+                                + "from the card above before a call."
+                )
+                .accessibilityLabel("Capture screenshots")
+                .disabled(
+                    ScreenshotPreferenceControl.isDisabled(
+                        enabled: model.settings.screenshotsEnabled,
+                        permissionGranted: model.screenRecordingGranted
+                    )
+                )
             // The footer's first icon is drawn on the popover's gutter, so the last one is too.
             CRIconButton(
                 icon: "power",
@@ -915,8 +948,12 @@ struct RecentCallRow: View {
             }
         }
 
-        if call.unresolvedSpeakerCount > 0 {
-            Button("Review Speakers…", systemImage: "person.crop.circle.badge.questionmark") {
+        if call.hasTranscript {
+            Button(
+                call.unresolvedSpeakerCount > 0 ? "Review Speakers…" : "Open Timeline…",
+                systemImage: "person.crop.circle.badge.questionmark"
+            ) {
+                model.speakerReviewFocusCallID = call.id
                 openWindow("speaker-review")
             }
         }

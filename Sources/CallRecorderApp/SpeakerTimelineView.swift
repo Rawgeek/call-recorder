@@ -1,3 +1,4 @@
+import AppKit
 import CallRecorderCore
 import SwiftUI
 
@@ -41,6 +42,8 @@ struct SpeakerTimelineView: View {
     var playback: CallPlayback?
     /// The voice whose card the window has opened below the picture.
     var selectedClusterID: SpeakerClusterID?
+    /// The screen photographs this call kept, placed on the same clock as its voices.
+    var screenshots: [CallScreenshot] = []
     /// Called when a row or one of its bars is clicked, with the voice behind it.
     var onSelect: ((SpeakerClusterID) -> Void)?
 
@@ -51,12 +54,15 @@ struct SpeakerTimelineView: View {
     @State private var scroll = ScrollPosition()
     @State private var containerWidth: CGFloat = 0
     @State private var offsetX: CGFloat = 0
+    @State private var selectedScreenshotID: String?
+    @State private var presentedScreenshot: CallScreenshot?
 
     private let laneHeight: CGFloat = 22
     private let laneGap: CGFloat = 4
     private let rulerHeight: CGFloat = 18
     private let labelWidth: CGFloat = 112
     private let overviewHeight: CGFloat = 26
+    private let screenshotLaneHeight: CGFloat = 34
     /// How many rows are on screen at once. Every voice has a row: a call with more voices than
     /// this scrolls, where it used to draw the first eight and leave the rest off the picture
     /// entirely, which on 2026-09-24 hid two voices that were waiting to be named.
@@ -65,17 +71,42 @@ struct SpeakerTimelineView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: CR.Space.item) {
             playerRow
+            if selectedScreenshot != nil { screenshotPreview }
             timelineHeader
             lanes
         }
         .padding(CR.Space.item)
         .crSurface(.rounded(CR.Radius.large))
         .task(id: audioURL) {
-            guard let audioURL else { return }
             player.load(audioURL)
         }
         .onDisappear { player.pause() }
-        .onChange(of: player.positionMs) { _, _ in followPlayhead() }
+        .onChange(of: player.positionMs) { _, position in
+            followPlayhead()
+            // The small window follows the recording, so the picture on screen belongs to the
+            // moment being heard rather than to whatever was chosen before playback started.
+            guard !screenshots.isEmpty else { return }
+            let nearest = ScreenshotSelection.nearest(to: position, among: screenshots)?.id
+            if nearest != selectedScreenshotID { selectedScreenshotID = nearest }
+        }
+        .task(id: screenshots) {
+            guard !screenshots.isEmpty else {
+                selectedScreenshotID = nil
+                return
+            }
+            if let selectedScreenshotID,
+                screenshots.contains(where: { $0.id == selectedScreenshotID })
+            {
+                return
+            }
+            selectedScreenshotID = ScreenshotSelection.nearest(
+                to: player.positionMs,
+                among: screenshots
+            )?.id
+        }
+        .sheet(item: $presentedScreenshot) { screenshot in
+            ScreenshotViewer(screenshot: screenshot)
+        }
     }
 
     /// The recording this picture plays, whichever player the window handed over.
@@ -85,7 +116,12 @@ struct SpeakerTimelineView: View {
 
     /// The length the picture covers. The recording answers when it is longer than the words: a
     /// call that ends with four minutes of silence is drawn with that silence.
-    private var durationMs: Int { max(1, max(timeline.durationMs, player.durationMs)) }
+    private var durationMs: Int {
+        // A call whose audio was cleaned up still has its pictures, and the ruler has to reach the
+        // last of them or every mark would sit past the right edge of the track.
+        let lastScreenshot = screenshots.last?.offsetMs ?? 0
+        return max(1, max(timeline.durationMs, max(player.durationMs, lastScreenshot + 1_000)))
+    }
 
     private var rows: [SpeakerTimeline.Lane] { timeline.lanes }
 
@@ -95,10 +131,17 @@ struct SpeakerTimelineView: View {
         max(0, CGFloat(rows.count) * (laneHeight + laneGap) - laneGap)
     }
 
+    private var screenshotTrackHeight: CGFloat {
+        screenshots.isEmpty ? 0 : screenshotLaneHeight + laneGap
+    }
+
     /// How much of the rows is on screen before the rest is scrolled to.
     private var visibleLanesHeight: CGFloat {
-        guard rows.count > maximumVisibleRows else { return lanesHeight }
-        return CGFloat(maximumVisibleRows) * (laneHeight + laneGap) - laneGap
+        let visibleRows =
+            rows.count > maximumVisibleRows
+            ? CGFloat(maximumVisibleRows) * (laneHeight + laneGap) - laneGap
+            : lanesHeight
+        return visibleRows + screenshotTrackHeight
     }
 
     private var tickStepMs: Int { TimelineTicks.step(durationMs: durationMs, width: contentWidth) }
@@ -111,6 +154,15 @@ struct SpeakerTimelineView: View {
         guard contentWidth > 0 else { return 0 }
         let ratio = min(max(0, x / contentWidth), 1)
         return Int(ratio * CGFloat(durationMs))
+    }
+
+    private var selectedScreenshot: CallScreenshot? {
+        if let selectedScreenshotID,
+            let selected = screenshots.first(where: { $0.id == selectedScreenshotID })
+        {
+            return selected
+        }
+        return screenshots.first
     }
 
     // MARK: - Player
@@ -236,14 +288,42 @@ struct SpeakerTimelineView: View {
     }
 
     private var labelColumn: some View {
-        VStack(alignment: .leading, spacing: laneGap) {
+        VStack(alignment: .leading, spacing: 0) {
             // The ruler sits above the first row, and the labels line up with the rows it rules.
             Color.clear.frame(width: labelWidth, height: rulerHeight)
+            if !screenshots.isEmpty { screenshotLaneChip }
             ForEach(Array(rows.enumerated()), id: \.element.id) { index, lane in
+                if index > 0 || !screenshots.isEmpty {
+                    Color.clear.frame(width: labelWidth, height: laneGap)
+                }
                 laneChip(lane, color: SpeakerPalette.color(at: index))
             }
         }
         .frame(width: labelWidth, alignment: .leading)
+    }
+
+    private var screenshotLaneChip: some View {
+        HStack(spacing: CR.Space.snug) {
+            Image(systemName: "camera")
+                .font(.system(size: 10, weight: .semibold))
+            Text("Screens")
+                .font(.system(size: 11, weight: .semibold))
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text("\(screenshots.count)")
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(CR.Ink.readable)
+        }
+        .padding(.horizontal, CR.Space.snug)
+        .frame(width: labelWidth, height: screenshotLaneHeight)
+        .background(
+            Color.primary.opacity(0.06),
+            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        )
+        .help(
+            "\(screenshots.count) screen photograph\(screenshots.count == 1 ? "" : "s")"
+                + " · click the track to preview one"
+        )
     }
 
     /// One row's name, and the control that opens the row's card below the picture.
@@ -305,20 +385,23 @@ struct SpeakerTimelineView: View {
             TimelineLanes(
                 timeline: timeline,
                 rows: rows,
+                screenshots: screenshots,
+                selectedScreenshotID: selectedScreenshot?.id,
                 durationMs: durationMs,
                 positionMs: player.positionMs,
                 rulerHeight: rulerHeight,
                 laneHeight: laneHeight,
                 laneGap: laneGap,
+                screenshotLaneHeight: screenshotLaneHeight,
                 tickStepMs: tickStepMs
             )
-            .frame(width: contentWidth, height: rulerHeight + lanesHeight)
+            .frame(width: contentWidth, height: rulerHeight + lanesHeight + screenshotTrackHeight)
             .contentShape(Rectangle())
             .onTapGesture(coordinateSpace: .local) { location in
                 seek(to: location)
             }
         }
-        .frame(height: rulerHeight + lanesHeight)
+        .frame(height: rulerHeight + lanesHeight + screenshotTrackHeight)
         .scrollIndicators(.hidden)
         .scrollPosition($scroll)
         .onScrollGeometryChange(for: CGFloat.self) { geometry in
@@ -384,10 +467,49 @@ struct SpeakerTimelineView: View {
         .frame(height: overviewHeight)
     }
 
+    /// The small window onto the photograph currently chosen on the screenshot track.
+    private var screenshotPreview: some View {
+        HStack(spacing: CR.Space.inner) {
+            if let screenshot = selectedScreenshot {
+                Button {
+                    presentedScreenshot = screenshot
+                } label: {
+                    LocalScreenshotImage(url: screenshot.url)
+                        .frame(width: 128, height: 72)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder(Color.primary.opacity(0.15), lineWidth: 1)
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Open this screenshot larger")
+                .accessibilityLabel("Open screenshot at \(timelineClock(screenshot.offsetMs))")
+                VStack(alignment: .leading, spacing: CR.Space.tight) {
+                    Text("Screenshot · \(timelineClock(screenshot.offsetMs))")
+                        .font(CR.Font.callout.weight(.semibold))
+                    Text("Click the picture to open it larger.")
+                        .font(CR.Font.caption)
+                        .foregroundStyle(CR.Ink.readable)
+                }
+                Spacer(minLength: CR.Space.inner)
+                CRIconButton(icon: "chevron.left", label: "Previous screenshot", alwaysVisible: true) {
+                    moveScreenshot(by: -1)
+                }
+                CRIconButton(icon: "chevron.right", label: "Next screenshot", alwaysVisible: true) {
+                    moveScreenshot(by: 1)
+                }
+                CRButton(title: "Open", icon: "arrow.up.left.and.arrow.down.right") {
+                    presentedScreenshot = screenshot
+                }
+            }
+        }
+    }
+
     private var hint: some View {
         Text(
             "Click a name to open its samples · click a bar to jump there · scroll to pan "
-                + "· pinch or − and + to zoom"
+                + "· click the screenshot track to preview · pinch or − and + to zoom"
         )
             .font(CR.Font.caption)
             .foregroundStyle(CR.Ink.readable)
@@ -410,7 +532,17 @@ struct SpeakerTimelineView: View {
         let scale = contentWidth / CGFloat(durationMs)
         guard scale > 0 else { return }
         let milliseconds = Int(location.x / scale)
-        let row = Int((location.y - rulerHeight) / (laneHeight + laneGap))
+        if !screenshots.isEmpty,
+            location.y >= rulerHeight,
+            location.y < rulerHeight + screenshotLaneHeight
+        {
+            selectScreenshot(at: milliseconds)
+            player.seek(toMs: milliseconds)
+            return
+        }
+        let row = Int(
+            (location.y - rulerHeight - screenshotTrackHeight) / (laneHeight + laneGap)
+        )
         if row >= 0, row < rows.count,
             let run = rows[row].runs.last(where: { $0.startMs <= milliseconds }),
             run.holds(milliseconds)
@@ -420,6 +552,19 @@ struct SpeakerTimelineView: View {
             return
         }
         player.seek(toMs: milliseconds)
+    }
+
+    private func selectScreenshot(at milliseconds: Int) {
+        selectedScreenshotID = ScreenshotSelection.nearest(to: milliseconds, among: screenshots)?.id
+    }
+
+    private func moveScreenshot(by step: Int) {
+        guard let current = selectedScreenshot,
+            let index = screenshots.firstIndex(where: { $0.id == current.id })
+        else { return }
+        let next = min(max(0, index + step), screenshots.count - 1)
+        selectedScreenshotID = screenshots[next].id
+        player.seek(toMs: screenshots[next].offsetMs)
     }
 
     /// Tells the window which voice was clicked, when the row has one behind it.
@@ -446,12 +591,19 @@ struct SpeakerTimelineView: View {
 private struct TimelineLanes: View {
     let timeline: SpeakerTimeline
     let rows: [SpeakerTimeline.Lane]
+    let screenshots: [CallScreenshot]
+    let selectedScreenshotID: String?
     let durationMs: Int
     let positionMs: Int
     let rulerHeight: CGFloat
     let laneHeight: CGFloat
     let laneGap: CGFloat
+    let screenshotLaneHeight: CGFloat
     let tickStepMs: Int
+
+    private var screenshotTrackHeight: CGFloat {
+        screenshots.isEmpty ? 0 : screenshotLaneHeight + laneGap
+    }
 
     var body: some View {
         Canvas { context, size in
@@ -459,6 +611,7 @@ private struct TimelineLanes: View {
             drawGrid(in: &context, size: size, scale: scale)
             drawRuler(in: &context, size: size, scale: scale)
             drawRows(in: &context, size: size, scale: scale)
+            drawScreenshots(in: &context, size: size, scale: scale)
             drawPlayhead(in: &context, size: size, scale: scale)
         }
     }
@@ -492,7 +645,10 @@ private struct TimelineLanes: View {
 
     private func drawRows(in context: inout GraphicsContext, size: CGSize, scale: CGFloat) {
         for (index, lane) in rows.enumerated() {
-            let y = rulerHeight + CGFloat(index) * (laneHeight + laneGap)
+            let y =
+                rulerHeight
+                + screenshotTrackHeight
+                + CGFloat(index) * (laneHeight + laneGap)
             let strip = Path(
                 roundedRect: CGRect(x: 0, y: y, width: size.width, height: laneHeight),
                 cornerRadius: 4
@@ -512,6 +668,32 @@ private struct TimelineLanes: View {
                     context.stroke(path, with: .color(.white.opacity(0.95)), lineWidth: 2)
                 }
             }
+        }
+    }
+
+    private func drawScreenshots(in context: inout GraphicsContext, size: CGSize, scale: CGFloat) {
+        guard !screenshots.isEmpty else { return }
+        let y = rulerHeight
+        let strip = Path(
+            roundedRect: CGRect(x: 0, y: y, width: size.width, height: screenshotLaneHeight),
+            cornerRadius: 4
+        )
+        context.fill(strip, with: .color(CR.Tone.working.color.opacity(0.08)))
+        // Every photograph is a mark, even when an hour makes them one pixel apart. The selected
+        // mark is the one the small preview under the timeline names.
+        for screenshot in screenshots {
+            let x = CGFloat(screenshot.offsetMs) * scale
+            let selected = screenshot.id == selectedScreenshotID
+            let mark = CGRect(
+                x: x - (selected ? 1.5 : 0.5),
+                y: y + 4,
+                width: selected ? 3 : 1,
+                height: screenshotLaneHeight - 8
+            )
+            context.fill(
+                Path(roundedRect: mark, cornerRadius: 1),
+                with: .color(CR.Tone.working.color.opacity(selected ? 1 : 0.55))
+            )
         }
     }
 
@@ -614,4 +796,58 @@ func timelineSpoken(_ milliseconds: Int) -> String {
     let minutes = seconds / 60
     if minutes < 60 { return "\(minutes)m" }
     return "\(minutes / 60)h \(minutes % 60)m"
+}
+
+/// A photograph from the call's own folder, loaded once for the view that draws it.
+private struct LocalScreenshotImage: View {
+    let url: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.primary.opacity(0.06))
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fit)
+            } else {
+                Image(systemName: "camera")
+                    .foregroundStyle(CR.Ink.readable)
+            }
+        }
+        .task(id: url) {
+            image = NSImage(contentsOf: url)
+        }
+    }
+}
+
+/// The full-size view of one screen photograph.
+private struct ScreenshotViewer: View {
+    let screenshot: CallScreenshot
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: CR.Space.item) {
+            HStack(alignment: .firstTextBaseline, spacing: CR.Space.inner) {
+                VStack(alignment: .leading, spacing: CR.Space.tight) {
+                    Text("Screenshot · \(timelineClock(screenshot.offsetMs))")
+                        .font(CR.Font.headline)
+                    Text(screenshot.url.lastPathComponent)
+                        .font(CR.Font.caption)
+                        .foregroundStyle(CR.Ink.readable)
+                }
+                Spacer(minLength: CR.Space.item)
+                CRButton(title: "Open in Preview", icon: "arrow.up.forward.app") {
+                    NSWorkspace.shared.open(screenshot.url)
+                }
+                CRButton(title: "Close", kind: .primary) { dismiss() }
+            }
+            LocalScreenshotImage(url: screenshot.url)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding(CR.Space.screen)
+        .frame(minWidth: 900, minHeight: 620)
+    }
 }

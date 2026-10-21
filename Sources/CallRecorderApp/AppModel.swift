@@ -155,6 +155,19 @@ final class AppModel {
     private(set) var speakerReviewEvidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
     /// When each voice of a call spoke, for the timeline above the cards that name them.
     private(set) var speakerTimelines: [CallID: SpeakerTimeline] = [:]
+    /// The screen photographs kept beside each call, in clock order.
+    private(set) var speakerCallScreenshots: [CallID: [CallScreenshot]] = [:]
+    /// Every call the review window can open, newest first.
+    ///
+    /// The list starts as the calls with a voice to name and grows to the recent calls that have a
+    /// transcript. A finished call with every voice named still has a timeline and may have screen
+    /// photographs, and it has to be reachable from the same window.
+    private(set) var speakerReviewCallIDs: [CallID] = []
+    /// A call the next opening of the review window should land on.
+    ///
+    /// The menu bar can open the window from a particular row, and a window that always started on
+    /// the newest call would make the row pressed a suggestion rather than an instruction.
+    var speakerReviewFocusCallID: CallID?
     /// The recording a call is played from while its voices are being named.
     private(set) var speakerCallAudioURLs: [CallID: URL] = [:]
     private(set) var speakerReviewCallDates: [CallID: Date] = [:]
@@ -319,6 +332,15 @@ final class AppModel {
             // after the day it may have replaced.
             if settings.appUpdateCheckInterval != oldValue.appUpdateCheckInterval {
                 appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
+            }
+            // A switch pressed while the call is still being recorded applies to this call. The
+            // timer and the size are part of the same decision, so changing either restarts the
+            // capture at the current place on the recording's clock.
+            if settings.screenshotsEnabled != oldValue.screenshotsEnabled
+                || settings.screenshotInterval != oldValue.screenshotInterval
+                || settings.screenshotResolution != oldValue.screenshotResolution
+            {
+                syncScreenshotCapture()
             }
             saveSettings()
         }
@@ -496,7 +518,12 @@ final class AppModel {
     /// the window starts with it selected. Only the renderer sets this, and only in preview mode.
     var previewSelectedSpeakerClusterID: SpeakerClusterID?
     private let captureSession: AudioCaptureSession
+    private let screenshotCapture = ScreenshotCaptureSession()
     private var captureOperationInFlight = false
+    /// Set while a pause or a stop is closing the audio and its photographs. The phase can still
+    /// read `.recording` during that wait, so a settings change or a permission refresh arriving
+    /// then must not start the timer the transaction has just cancelled.
+    private var screenshotCaptureTransitioning = false
     private var activeSessionDirectory: URL?
     private var capturedSegments: [CaptureSegment] = []
     private var nextSegmentIndex = 1
@@ -910,6 +937,12 @@ final class AppModel {
         backgroundState.pendingCalls.count
     }
 
+    /// The reason the screen photographs are not being written, while they are switched on.
+    var screenshotFailure: String? {
+        guard settings.screenshotsEnabled else { return nil }
+        return screenshotCapture.lastFailure
+    }
+
     var backgroundFailures: [BackgroundFinalizationFailure] {
         backgroundState.failures
     }
@@ -1068,6 +1101,7 @@ final class AppModel {
         recordingStartedAt = nil
         recordedSecondsBeforePause = 0
         recordingPausedAt = nil
+        screenshotCapture.stop()
     }
 
     /// Gives up the recording the popover is showing, whichever state it is in.
@@ -1302,6 +1336,7 @@ final class AppModel {
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
         var timeline = SpeakerTimeline(lanes: [], durationMs: 0)
         var audioURL: URL?
+        var screenshots: [CallScreenshot] = []
     }
 
     /// Reads one call's voices for the window.
@@ -1319,7 +1354,8 @@ final class AppModel {
         callDirectory: URL,
         waiting: [SpeakerReviewItem],
         everyVoice: [SpeakerReviewItem]?,
-        overrides: [SpeakerLineOverride] = []
+        overrides: [SpeakerLineOverride] = [],
+        includeScreenshots: Bool = true
     ) -> SpeakerCallReading {
         let windowVoices = SpeakerReviewList.windowVoices(
             waiting: waiting,
@@ -1337,6 +1373,9 @@ final class AppModel {
             recoverableArtifacts: recoverableArtifacts,
             fileExists: { FileManager.default.fileExists(atPath: $0.path) }
         )
+        if includeScreenshots {
+            reading.screenshots = ScreenshotArchive.read(in: callDirectory)
+        }
         for voice in windowVoices {
             var item = SpeakerReviewPlayback.evidence(
                 for: voice,
@@ -1356,56 +1395,59 @@ final class AppModel {
             speakerReviewEvidence = [:]
             speakerVoiceCounts = [:]
             speakerTimelines = [:]
+            speakerCallScreenshots = [:]
+            speakerReviewCallIDs = []
             speakerCallAudioURLs = [:]
             speakerReviewsByCluster = [:]
             return
         }
+        let grouped = Dictionary(grouping: speakerReviews, by: \.callID)
+        // The popover holds five rows, and this window should not be limited to them: a call from
+        // earlier in the week can still have a timeline and screenshots worth opening. Fifty is the
+        // most the store offers and keeps the read bounded. The list itself is cheap: it is one
+        // query, and the timeline of the call the window actually shows is loaded on its own below.
+        let reviewCalls = (try? await store.recentCalls(limit: 50)) ?? recentCalls
+        let recent = reviewCalls.filter(\.hasTranscript).map(\.id)
+        let pending = grouped.keys.sorted {
+            (grouped[$0]?.first?.createdAt ?? .distantPast)
+                > (grouped[$1]?.first?.createdAt ?? .distantPast)
+        }
+        var candidateIDs: [CallID] = []
+        // A voice waiting for a name comes first: that is what the Review Speakers row opens.
+        // Recent calls follow it, so a finished call's timeline is still reachable in one window.
+        for callID in pending + recent
+        where !candidateIDs.contains(callID) {
+            candidateIDs.append(callID)
+        }
+        speakerReviewCallIDs = candidateIDs
+
+        // Only the calls with a voice waiting need their cards' samples in memory. A finished call
+        // is loaded when the person chooses it, which is also the only time its Screenshots folder
+        // is read; an hour of pictures is thousands of entries, and doing that for fifty calls on
+        // every window open would make the chooser itself slow.
         var evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence] = [:]
-        var dates: [CallID: Date] = [:]
+        var dates = Self.speakerReviewDates(for: reviewCalls)
         var voiceCounts: [CallID: SpeakerVoiceCount] = [:]
         var timelines: [CallID: SpeakerTimeline] = [:]
         var audioURLs: [CallID: URL] = [:]
         var byCluster: [SpeakerClusterID: SpeakerReviewItem] = [:]
-        for (callID, reviews) in Dictionary(grouping: speakerReviews, by: \.callID) {
+        for (callID, reviews) in grouped {
             do {
                 guard
-                    let call = try await store.call(id: callID),
-                    let transcript = try await store.transcript(for: callID)
-                else { continue }
-                dates[callID] = call.startedAt
-                let document = try JSONDecoder().decode(
-                    NormalizedTranscript.self,
-                    from: Data(contentsOf: URL(filePath: transcript.jsonPath))
-                )
-                // How many voices this call was separated into, read from the transcript itself.
-                // The list of reviews holds only the voices still waiting, so a call with fourteen
-                // voices and one left used to report one voice detected.
-                //
-                // The voices still waiting are counted as unnamed even when their lines carry a
-                // name: moving one line of a voice onto a person does not name the voice, and the
-                // header of the 2026-09-23 14:16 call read "11 of 11 named" beside a button that
-                // read "1 to name" because five of that voice's lines had been moved by hand.
-                voiceCounts[callID] = SpeakerVoiceCount.counting(
-                    document.segments,
-                    waiting: Set(reviews.map(\.speakerIndex))
-                )
-                let callDirectory = call.audioPath
-                    .map { URL(filePath: $0).deletingLastPathComponent() }
-                    ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
-                let everyVoice = try? await speakerStore?.reviews(for: callID)
-                let overrides = (try? await store.speakerLineOverrides(callID: callID)) ?? []
-                let reading = speakerCallReading(
-                    callID: callID,
-                    document: document,
-                    callDirectory: callDirectory,
-                    waiting: reviews,
-                    everyVoice: everyVoice,
-                    overrides: overrides
-                )
+                    let reading = try await readSpeakerCall(
+                        callID,
+                        waiting: reviews,
+                        includeScreenshots: false
+                    )
+                else {
+                    continue
+                }
                 byCluster.merge(reading.voices) { _, new in new }
                 evidence.merge(reading.evidence) { _, new in new }
                 timelines[callID] = reading.timeline
                 audioURLs[callID] = reading.audioURL
+                dates[callID] = reading.startedAt
+                voiceCounts[callID] = reading.count
             } catch {
                 report(error, context: "Speaker Review Evidence", category: .processing)
             }
@@ -1416,6 +1458,98 @@ final class AppModel {
         speakerTimelines = timelines
         speakerCallAudioURLs = audioURLs
         speakerReviewsByCluster = byCluster
+    }
+
+    /// Dates for the chooser must include named calls beyond the five menu-bar recents.
+    nonisolated static func speakerReviewDates(for calls: [RecentCallSummary]) -> [CallID: Date] {
+        Dictionary(calls.map { ($0.id, $0.startedAt) }, uniquingKeysWith: { first, _ in first })
+    }
+
+    /// Reads the timeline, samples, and screen photographs of one call.
+    ///
+    /// The window shows one call at a time, so this is the read that follows the chooser rather
+    /// than a walk over the library. It also refreshes a call after a name was changed, which is
+    /// why it can be asked for a call with no waiting voices.
+    func loadSpeakerReviewCall(_ callID: CallID) async {
+        guard let store else { return }
+        let waiting = speakerReviews.filter { $0.callID == callID }
+        do {
+            guard
+                let reading = try await readSpeakerCall(
+                    callID,
+                    waiting: waiting,
+                    includeScreenshots: true
+                )
+            else { return }
+            speakerReviewEvidence.merge(reading.evidence) { _, new in new }
+            speakerReviewsByCluster.merge(reading.voices) { _, new in new }
+            speakerReviewCallDates[callID] = reading.startedAt
+            speakerVoiceCounts[callID] = reading.count
+            speakerTimelines[callID] = reading.timeline
+            speakerCallAudioURLs[callID] = reading.audioURL
+            speakerCallScreenshots[callID] = reading.screenshots
+        } catch {
+            report(error, context: "Speaker Review Call", category: .processing)
+        }
+    }
+
+    private struct SpeakerCallSource {
+        let voices: [SpeakerClusterID: SpeakerReviewItem]
+        let evidence: [SpeakerClusterID: SpeakerReviewPlayback.Evidence]
+        let timeline: SpeakerTimeline
+        let audioURL: URL?
+        let screenshots: [CallScreenshot]
+        let count: SpeakerVoiceCount
+        let startedAt: Date
+    }
+
+    private func readSpeakerCall(
+        _ callID: CallID,
+        waiting: [SpeakerReviewItem],
+        includeScreenshots: Bool
+    ) async throws -> SpeakerCallSource? {
+        guard
+            let store,
+            let call = try await store.call(id: callID),
+            let transcript = try await store.transcript(for: callID)
+        else { return nil }
+        let document = try JSONDecoder().decode(
+            NormalizedTranscript.self,
+            from: Data(contentsOf: URL(filePath: transcript.jsonPath))
+        )
+        // How many voices this call was separated into, read from the transcript itself. The list
+        // of reviews holds only the voices still waiting, so a call with fourteen voices and one
+        // left used to report one voice detected.
+        //
+        // The voices still waiting are counted as unnamed even when their lines carry a name:
+        // moving one line of a voice onto a person does not name the voice.
+        let count = SpeakerVoiceCount.counting(
+            document.segments,
+            waiting: Set(waiting.map(\.speakerIndex))
+        )
+        let callDirectory = call.audioPath
+            .map { URL(filePath: $0).deletingLastPathComponent() }
+            ?? URL(filePath: transcript.jsonPath).deletingLastPathComponent()
+        let everyVoice = try? await speakerStore?.reviews(for: callID)
+        let overrides = (try? await store.speakerLineOverrides(callID: callID)) ?? []
+        let reading = speakerCallReading(
+            callID: callID,
+            document: document,
+            callDirectory: callDirectory,
+            waiting: waiting,
+            everyVoice: everyVoice,
+            overrides: overrides,
+            includeScreenshots: includeScreenshots
+        )
+        return SpeakerCallSource(
+            voices: reading.voices,
+            evidence: reading.evidence,
+            timeline: reading.timeline,
+            audioURL: reading.audioURL,
+            screenshots: reading.screenshots,
+            count: count,
+            startedAt: call.startedAt
+        )
     }
 
     func voiceProfileSummary(for participantID: ParticipantID) -> VoiceProfileSummary? {
@@ -1442,6 +1576,7 @@ final class AppModel {
     /// whether the system has accepted it, instead of being told to restart with no way to check.
     func refreshScreenRecordingPermission() {
         screenRecordingGranted = CGPreflightScreenCaptureAccess()
+        syncScreenshotCapture()
     }
 
     /// Opens the Screen Recording pane of System Settings.
@@ -1570,6 +1705,7 @@ final class AppModel {
         // The request is what puts this copy in the pane: macOS keeps a record for the app that
         // asked, and the one that was just removed is no longer it.
         screenRecordingGranted = CGRequestScreenCaptureAccess()
+        syncScreenshotCapture()
     }
 
     /// Quits the app and opens it again.
@@ -3137,6 +3273,9 @@ final class AppModel {
                 )
                 apply(.manualStart(sessionID: sessionID))
             }
+            // The phase is what the screenshot timer checks, so it starts after the reducer has
+            // put the recording on screen rather than while the call is still idle.
+            syncScreenshotCapture()
         } catch {
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
                 // The permission is a fact about the app rather than a capture that went wrong. The
@@ -3188,6 +3327,39 @@ final class AppModel {
         self.recordingActivity = nil
     }
 
+    /// Runs the screen-photograph timer while this call is being recorded and the switch is on.
+    ///
+    /// The photographs sit on the same clock as the transcript. Pausing ends the timer, and
+    /// resuming starts it at the banked number of seconds, so time spent paused is not drawn as a
+    /// stretch of the call with no pictures.
+    private func syncScreenshotCapture() {
+        guard
+            ScreenshotCaptureEligibility.shouldStart(
+                enabled: settings.screenshotsEnabled,
+                recording: recorderState.phase == .recording,
+                permissionGranted: screenRecordingGranted,
+                hasDirectory: activeSessionDirectory != nil,
+                transitioning: screenshotCaptureTransitioning
+            ),
+            let directory = activeSessionDirectory
+        else {
+            screenshotCapture.stop()
+            return
+        }
+        let offset = Self.recordedSeconds(
+            banked: recordedSecondsBeforePause,
+            currentRunStartedAt: recordingStartedAt,
+            paused: false,
+            at: Date()
+        )
+        screenshotCapture.start(
+            callDirectory: directory,
+            interval: settings.screenshotInterval,
+            resolution: settings.screenshotResolution,
+            offsetMs: max(0, Int(offset * 1_000))
+        )
+    }
+
     /// Adds the seconds recorded since the last start to the bank, and stops the live count.
     ///
     /// Called from the one place that ends a run of the recorder. It is written as a function of the
@@ -3215,7 +3387,12 @@ final class AppModel {
     private func pauseRecording() async {
         guard recorderState.phase == .recording, !captureOperationInFlight else { return }
         captureOperationInFlight = true
-        defer { captureOperationInFlight = false }
+        screenshotCaptureTransitioning = true
+        defer {
+            captureOperationInFlight = false
+            screenshotCaptureTransitioning = false
+        }
+        screenshotCapture.cancel()
         do {
             capturedSegments.append(try await captureSession.finishSegment())
             // Banked before the phase changes, so the seconds between here and the resume belong to
@@ -3223,7 +3400,9 @@ final class AppModel {
             bankRecordedSeconds()
             recordingPausedAt = Date()
             apply(.manualPause)
+            await screenshotCapture.waitForStop()
         } catch {
+            screenshotCapture.stop()
             errorMessage = error.localizedDescription
             apply(.fail(.captureUnavailable))
         }
@@ -3249,6 +3428,7 @@ final class AppModel {
             recordingStartedAt = Date()
             recordingPausedAt = nil
             apply(.manualResume)
+            syncScreenshotCapture()
         } catch {
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
                 // The recording stays paused and keeps the audio it holds. Ending it here would
@@ -3294,8 +3474,15 @@ final class AppModel {
         recordingLimitTask?.cancel()
         recordingLimitTask = nil
         captureOperationInFlight = true
-        defer { captureOperationInFlight = false }
+        screenshotCaptureTransitioning = true
+        defer {
+            captureOperationInFlight = false
+            screenshotCaptureTransitioning = false
+        }
         defer { finishRecordingActivity() }
+        // Stop new photographs before the audio, so a stuck screen request cannot extend the call.
+        // An encode already underway gets the bounded wait after the audio segment is closed.
+        screenshotCapture.cancel()
         switch reason {
         case .person: apply(.manualStop)
         case .microphoneReleased: apply(.automaticStopGraceElapsed)
@@ -3315,6 +3502,7 @@ final class AppModel {
                 let activeCallID,
                 let activeSessionDirectory
             else { throw AudioCaptureError.notCapturing }
+            let endedAt = Date()
             // A recording this app started by itself, and that lasted less than the floor, is a
             // microphone that opened for a moment and not a call. It goes where a recording
             // discarded by hand goes, and nothing is ever transcribed from it.
@@ -3322,8 +3510,9 @@ final class AppModel {
                 banked: recordedSecondsBeforePause,
                 currentRunStartedAt: recordingStartedAt,
                 paused: false,
-                at: Date()
+                at: endedAt
             )
+            await screenshotCapture.waitForStop()
             let minimum = settings.minimumAutomaticRecordingSeconds
             // A recording the person gave up and a recording the app started by itself and found
             // too short go to the same place for the same reason: neither is kept, and both are
@@ -3377,7 +3566,7 @@ final class AppModel {
                     )
                 },
                 destination: activeSessionDirectory,
-                endedAt: Date(),
+                endedAt: endedAt,
                 keepsAudio: !settings.removeAudioAfterTranscription
             )
             self.activeCallID = nil
@@ -3391,6 +3580,7 @@ final class AppModel {
             await backgroundFinalization.enqueue(snapshot)
             apply(.audioFinalizedAndQueued)
         } catch {
+            screenshotCapture.stop()
             errorMessage = error.localizedDescription
             apply(.fail(.storageUnavailable))
         }
@@ -4083,6 +4273,10 @@ final class AppModel {
         speakerReviews = []
         voiceProfileSummaries = []
         speakerAnalysisIssues = []
+        speakerReviewCallIDs = []
+        speakerCallScreenshots = [:]
+        speakerTimelines = [:]
+        speakerReviewEvidence = [:]
         glossaryUsage = [:]
     }
 
@@ -4171,6 +4365,8 @@ final class AppModel {
                 segments: document.segments,
                 reviews: speakerReviews
             )
+            speakerCallScreenshots[call.id] = ScreenshotArchive.read(in: callDirectory)
+            speakerReviewCallIDs = [call.id]
             if let audioURL { speakerCallAudioURLs[call.id] = audioURL }
             previewSeededReviewCard = true
             return
@@ -4260,6 +4456,8 @@ final class AppModel {
         speakerReviewsByCluster = reading.voices
         speakerReviewEvidence = reading.evidence
         speakerTimelines[callID] = reading.timeline
+        speakerCallScreenshots[callID] = reading.screenshots
+        speakerReviewCallIDs = [callID]
         previewSeededReviewCard = true
     }
 
