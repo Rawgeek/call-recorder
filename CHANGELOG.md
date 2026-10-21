@@ -18,6 +18,7 @@ versioning.
 - Slow screenshot capture cannot delay stopping the audio or publish a stale frame after shutdown.
 - Screenshot capture can be turned off after Screen Recording permission is revoked.
 - Restoring audio preserves screenshots and safely resumes an interrupted restore without overwriting conflicting files.
+- Interrupted audio cleanup resumes remaining files and rejects mismatched recovery manifests or malformed restore journals.
 
 ## [0.1.41] - 2026-10-20
 

@@ -47,23 +47,28 @@ struct ScreenshotCaptureSessionTests {
         )
     }
 
-    @Test("a hung capture cannot hold stop beyond the deadline")
+    @Test("a hung capture stops at its deadline, not when the system answers")
     @MainActor
     func hungCaptureIsBounded() async throws {
         let fixture = try ShotFixture()
         defer { fixture.remove() }
-        let started = Gate()
-        let release = Gate()
+        let captureStarted = Gate()
+        let captureRelease = Gate()
+        let captureFinished = Marker()
+        let stopFinished = Marker()
+        let deadline = ManualDeadline()
         let session = ScreenshotCaptureSession(
             prepareCapture: { _, _ in
                 {
-                    started.open()
-                    await release.wait()
+                    captureStarted.open()
+                    await captureRelease.wait()
+                    captureFinished.set()
                     throw ScreenshotTestError.hung
                 }
             },
             writeCapture: { _, _ in throw ScreenshotTestError.unexpectedWrite },
-            stopTimeout: .milliseconds(50)
+            stopTimeout: .milliseconds(50),
+            deadlineWait: { await deadline.sleep($0) }
         )
 
         session.start(
@@ -72,39 +77,50 @@ struct ScreenshotCaptureSessionTests {
             resolution: .hd,
             offsetMs: 0
         )
-        await started.wait()
-        let releaseTask = Task {
-            try? await Task.sleep(for: .milliseconds(600))
-            release.open()
+        await captureStarted.wait()
+        session.cancel()
+        let stopTask = Task {
+            await session.waitForStop()
+            stopFinished.set()
         }
 
-        let began = ContinuousClock.now
-        session.cancel()
-        await session.waitForStop()
-        let elapsed = began.duration(to: .now)
-        release.open()
-        releaseTask.cancel()
-        await releaseTask.value
+        // The wait arms the requested deadline and races it with the held capture.
+        #expect(await waitUntil { deadline.isArmed })
+        #expect(deadline.requested == [.milliseconds(50)])
+        // Neither branch has answered, so a correct stop is still waiting.
+        #expect(!stopFinished.isSet)
+        #expect(!captureFinished.isSet)
 
-        #expect(elapsed < .milliseconds(500))
+        deadline.fire.open()
+        #expect(await waitUntil { stopFinished.isSet })
+        // The deadline released the stop while the capture was still inside the system.
+        #expect(!captureFinished.isSet)
+
+        captureRelease.open()
+        await stopTask.value
         #expect(ScreenshotArchive.read(in: fixture.callDirectory).isEmpty)
     }
 
-    @Test("a hung write cannot hold stop or publish after the deadline")
+    @Test("a hung write cannot hold stop past its deadline or publish later")
     @MainActor
     func hungWriteIsBoundedAndDiscarded() async throws {
         let fixture = try ShotFixture()
         defer { fixture.remove() }
-        let started = Gate()
-        let release = Gate()
+        let writeStarted = Gate()
+        let writeRelease = Gate()
+        let writeFinished = Marker()
+        let stopFinished = Marker()
+        let deadline = ManualDeadline()
         let session = ScreenshotCaptureSession(
             prepareCapture: { _, _ in { try fixture.image() } },
             writeCapture: { _, destination in
-                started.open()
-                await release.wait()
+                writeStarted.open()
+                await writeRelease.wait()
+                defer { writeFinished.set() }
                 try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: destination)
             },
-            stopTimeout: .milliseconds(50)
+            stopTimeout: .milliseconds(50),
+            deadlineWait: { await deadline.sleep($0) }
         )
 
         session.start(
@@ -113,22 +129,27 @@ struct ScreenshotCaptureSessionTests {
             resolution: .hd,
             offsetMs: 0
         )
-        await started.wait()
-        let releaseTask = Task {
-            try? await Task.sleep(for: .milliseconds(600))
-            release.open()
+        await writeStarted.wait()
+        session.cancel()
+        let stopTask = Task {
+            await session.waitForStop()
+            stopFinished.set()
         }
 
-        let began = ContinuousClock.now
-        session.cancel()
-        await session.waitForStop()
-        let elapsed = began.duration(to: .now)
-        release.open()
-        releaseTask.cancel()
-        await releaseTask.value
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil { deadline.isArmed })
+        #expect(deadline.requested == [.milliseconds(50)])
+        #expect(!stopFinished.isSet)
 
-        #expect(elapsed < .milliseconds(500))
+        deadline.fire.open()
+        #expect(await waitUntil { stopFinished.isSet })
+        // The deadline released the stop while the write was still inside the system.
+        #expect(!writeFinished.isSet)
+
+        writeRelease.open()
+        await stopTask.value
+        #expect(await waitUntil { writeFinished.isSet })
+        // A write that returns after the deadline must not reach the archive.
+        try? await Task.sleep(for: .milliseconds(100))
         #expect(ScreenshotArchive.read(in: fixture.callDirectory).isEmpty)
     }
 
@@ -373,6 +394,20 @@ struct ScreenshotCaptureSessionTests {
         }
         return ScreenshotArchive.read(in: callDirectory)
     }
+
+    /// A failure watchdog for a gate that a regression left closed, never the correctness test.
+    @MainActor
+    private func waitUntil(
+        _ condition: @MainActor () -> Bool,
+        timeout: Duration = .seconds(5)
+    ) async -> Bool {
+        let deadline = ContinuousClock.now + timeout
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
 }
 
 private struct ShotFixture {
@@ -516,6 +551,38 @@ private final class Gate: @unchecked Sendable {
                 lock.unlock()
             }
         }
+    }
+}
+
+/// A stop deadline a test fires on purpose instead of waiting for the scheduler's clock.
+private final class ManualDeadline: @unchecked Sendable {
+    let armed = Gate()
+    let fire = Gate()
+    private let lock = NSLock()
+    private var durations: [Duration] = []
+    private var isArmedStorage = false
+
+    var requested: [Duration] { lock.withLock { durations } }
+    var isArmed: Bool { lock.withLock { isArmedStorage } }
+
+    func sleep(_ duration: Duration) async {
+        lock.withLock {
+            durations.append(duration)
+            isArmedStorage = true
+        }
+        armed.open()
+        await fire.wait()
+    }
+}
+
+private final class Marker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isSetStorage = false
+
+    var isSet: Bool { lock.withLock { isSetStorage } }
+
+    func set() {
+        lock.withLock { isSetStorage = true }
     }
 }
 

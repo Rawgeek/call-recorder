@@ -142,6 +142,190 @@ struct ArtifactRecoveryTests {
         #expect(try recovery.items() == [item])
     }
 
+    @Test("cleanup refuses a copied manifest that names another call")
+    func cleanupRefusesManifestForAnotherCall() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let wrapper = fixture.recoveryRoot.appending(
+            path: fixture.callID.rawValue.uuidString,
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: wrapper, withIntermediateDirectories: true)
+        try writeManifest(
+            RecoverableArtifact(
+                callID: CallID(rawValue: UUID()),
+                kind: .completedCall,
+                originalDirectory: fixture.workingDirectory,
+                recoveryDirectory: wrapper,
+                deletedAt: fixture.finishedAt,
+                purgeAfter: fixture.finishedAt.addingTimeInterval(60)
+            ),
+            to: wrapper
+        )
+
+        await #expect(throws: ArtifactRecoveryError.invalidManifest) {
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(!FileManager.default.fileExists(atPath: wrapper.appending(path: "payload").path))
+    }
+
+    @Test("cleanup refuses a manifest that points at another wrapper")
+    func cleanupRefusesManifestForAnotherWrapper() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let wrapper = fixture.recoveryRoot.appending(
+            path: fixture.callID.rawValue.uuidString,
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: wrapper, withIntermediateDirectories: true)
+        let elsewhere = fixture.recoveryRoot.appending(
+            path: UUID().uuidString,
+            directoryHint: .isDirectory
+        )
+        try writeManifest(
+            RecoverableArtifact(
+                callID: fixture.callID,
+                kind: .discardedRecording,
+                originalDirectory: fixture.workingDirectory,
+                recoveryDirectory: elsewhere,
+                deletedAt: fixture.finishedAt,
+                purgeAfter: fixture.finishedAt.addingTimeInterval(60)
+            ),
+            to: wrapper
+        )
+
+        #expect(throws: ArtifactRecoveryError.invalidManifest) {
+            try fixture.recovery().discardCall(
+                fixture.callID,
+                sourceDirectory: fixture.workingDirectory,
+                at: fixture.finishedAt
+            )
+        }
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(!FileManager.default.fileExists(atPath: elsewhere.path))
+        #expect(!FileManager.default.fileExists(atPath: wrapper.appending(path: "payload").path))
+    }
+
+    @Test("a cleanup stopped after moving nothing or part of the files resumes on retry")
+    func cleanupResumesAfterPartialMove() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let failing = FailingMoves(failing: [1, 3])
+        let interrupted = fixture.recovery(cleanupMoveItem: { source, destination in
+            if failing.shouldFail() { throw InterruptedRestore.failure }
+            try FileManager.default.moveItem(at: source, to: destination)
+        })
+        let wrapper = fixture.recoveryRoot.appending(
+            path: fixture.callID.rawValue.uuidString,
+            directoryHint: .isDirectory
+        )
+        let payload = wrapper.appending(path: "payload", directoryHint: .isDirectory)
+
+        // The first failure leaves the payload directory created but empty.
+        await #expect(throws: InterruptedRestore.failure) {
+            try await interrupted.finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        }
+        #expect(FileManager.default.fileExists(atPath: payload.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: payload.path).isEmpty)
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+
+        // The second failure comes after one child has moved, leaving a partial payload.
+        await #expect(throws: InterruptedRestore.failure) {
+            try await interrupted.finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        }
+        let moved = try FileManager.default.contentsOfDirectory(atPath: payload.path)
+        let left = try FileManager.default.contentsOfDirectory(atPath: fixture.workingDirectory.path)
+        #expect(moved.count == 1, "moved \(moved) left \(left)")
+        #expect(left.filter { $0 != ScreenshotArchive.directoryName }.count == 2, "moved \(moved) left \(left)")
+        let remaining = Set(left.filter { $0 != ScreenshotArchive.directoryName })
+        // Directory enumeration does not promise which child moves first. Every original child
+        // must still exist on exactly one side of the interrupted move.
+        #expect(Set(moved).isDisjoint(with: remaining))
+        #expect(Set(moved).union(remaining) == ["call.m4a", "segment-001.mp4", "transcript.json"])
+
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+
+        #expect(item.kind == .completedCall)
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(!FileManager.default.fileExists(atPath: fixture.json.path))
+        #expect(
+            !FileManager.default.fileExists(
+                atPath: fixture.workingDirectory.appending(path: "segment-001.mp4").path
+            )
+        )
+        #expect(FileManager.default.fileExists(atPath: payload.appending(path: "call.m4a").path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.markdown.path))
+        #expect(try fixture.recovery().items() == [item])
+    }
+
+    @Test("cleanup refuses a source file that conflicts with what the payload holds")
+    func cleanupRefusesConflictingSourceChild() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let failing = FailingMoves(failing: [2])
+        let interrupted = fixture.recovery(cleanupMoveItem: { source, destination in
+            if failing.shouldFail() { throw InterruptedRestore.failure }
+            try FileManager.default.moveItem(at: source, to: destination)
+        })
+        let wrapper = fixture.recoveryRoot.appending(
+            path: fixture.callID.rawValue.uuidString,
+            directoryHint: .isDirectory
+        )
+        let payload = wrapper.appending(path: "payload", directoryHint: .isDirectory)
+
+        await #expect(throws: InterruptedRestore.failure) {
+            try await interrupted.finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        }
+        let movedName = try #require(
+            try FileManager.default.contentsOfDirectory(atPath: payload.path).first
+        )
+        let payloadFile = payload.appending(path: movedName)
+        let keptBytes = try Data(contentsOf: payloadFile)
+        let conflicting = fixture.workingDirectory.appending(path: movedName)
+        try Data("a different copy".utf8).write(to: conflicting)
+
+        await #expect(throws: ArtifactRecoveryError.invalidManifest) {
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        }
+
+        #expect(try Data(contentsOf: payloadFile) == keptBytes)
+        #expect(FileManager.default.fileExists(atPath: conflicting.path))
+    }
+
     @Test("restore returns a cleaned call to its original folder")
     func restoresCleanedCall() async throws {
         // Given
@@ -396,6 +580,113 @@ struct ArtifactRecoveryTests {
         #expect(try fixture.recovery().items().isEmpty)
     }
 
+    private func cleanedCallWithScreenshots(
+        _ fixture: RecoveryFixture
+    ) async throws -> (item: RecoverableArtifact, wrapper: URL) {
+        let shots = fixture.workingDirectory.appending(path: "Screenshots", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: shots, withIntermediateDirectories: true)
+        let shot = shots.appending(path: "shot-000000005-0000000000000001-000.jpg")
+        try Data([0xFF, 0xD8, 0xFF, 0xD9]).write(to: shot)
+        let item = try #require(
+            try await fixture.recovery().finalizeReadyCall(
+                fixture.callID,
+                store: fixture.store,
+                at: fixture.finishedAt
+            )
+        )
+        let wrapper = fixture.recoveryRoot.appending(
+            path: fixture.callID.rawValue.uuidString,
+            directoryHint: .isDirectory
+        )
+        return (item, wrapper)
+    }
+
+    @Test("a restore journal with a duplicate name is refused before any move")
+    func restoreRefusesDuplicateJournalNames() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let (item, wrapper) = try await cleanedCallWithScreenshots(fixture)
+        let journal = TestRestoreJournal(entries: [
+            .init(name: "call.m4a", size: 5, sha256: String(repeating: "a", count: 64)),
+            .init(name: "call.m4a", size: 5, sha256: String(repeating: "b", count: 64)),
+        ])
+        let journalURL = wrapper.appending(path: "restore-journal.json")
+        try JSONEncoder().encode(journal).write(to: journalURL)
+
+        #expect(throws: ArtifactRecoveryError.invalidManifest) {
+            try fixture.recovery().restore(fixture.callID)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: item.payloadDirectory.appending(path: "call.m4a").path
+            )
+        )
+        #expect(FileManager.default.fileExists(atPath: journalURL.path))
+    }
+
+    @Test("a restore journal with a path entry is refused before any move")
+    func restoreRefusesJournalPathEntry() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let (item, wrapper) = try await cleanedCallWithScreenshots(fixture)
+        let journal = TestRestoreJournal(entries: [
+            .init(name: "../escaped", size: 4, sha256: String(repeating: "a", count: 64))
+        ])
+        let journalURL = wrapper.appending(path: "restore-journal.json")
+        try JSONEncoder().encode(journal).write(to: journalURL)
+        let escaped = fixture.recordingsRoot.appending(path: "escaped")
+
+        #expect(throws: ArtifactRecoveryError.invalidManifest) {
+            try fixture.recovery().restore(fixture.callID)
+        }
+
+        #expect(!FileManager.default.fileExists(atPath: escaped.path))
+        #expect(
+            FileManager.default.fileExists(
+                atPath: item.payloadDirectory.appending(path: "call.m4a").path
+            )
+        )
+        #expect(FileManager.default.fileExists(atPath: journalURL.path))
+    }
+
+    @Test("a restore whose wrapper removal fails finishes on the next try")
+    func restoreFinishesAfterWrapperRemovalFailure() async throws {
+        let fixture = try await RecoveryFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let (item, wrapper) = try await cleanedCallWithScreenshots(fixture)
+        let shot = fixture.workingDirectory.appending(
+            path: "Screenshots",
+            directoryHint: .isDirectory
+        ).appending(path: "shot-000000005-0000000000000001-000.jpg")
+        let failingRemoval = fixture.recovery(removeWrapper: { _ in
+            throw InterruptedRestore.failure
+        })
+
+        try failingRemoval.restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.json.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(FileManager.default.fileExists(atPath: item.payloadDirectory.path))
+        #expect(try FileManager.default.contentsOfDirectory(atPath: item.payloadDirectory.path).isEmpty)
+        #expect(
+            FileManager.default.fileExists(
+                atPath: wrapper.appending(path: "restore-journal.json").path
+            )
+        )
+        #expect(try fixture.recovery().items() == [item])
+
+        try fixture.recovery().restore(fixture.callID)
+
+        #expect(FileManager.default.fileExists(atPath: fixture.audio.path))
+        #expect(FileManager.default.fileExists(atPath: fixture.json.path))
+        #expect(FileManager.default.fileExists(atPath: shot.path))
+        #expect(try fixture.recovery().items().isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: wrapper.path))
+    }
+
     @Test("a restore interrupted after its first move resumes without overwriting")
     func restoreResumesAfterMoveFailure() async throws {
         let fixture = try await RecoveryFixture()
@@ -642,20 +933,17 @@ private struct RecoveryFixture {
     }
 
     func recovery(
-        restoreMoveItem: (@Sendable (URL, URL) throws -> Void)? = nil
+        restoreMoveItem: (@Sendable (URL, URL) throws -> Void)? = nil,
+        cleanupMoveItem: (@Sendable (URL, URL) throws -> Void)? = nil,
+        removeWrapper: (@Sendable (URL) throws -> Void)? = nil
     ) -> ArtifactRecovery {
-        if let restoreMoveItem {
-            return ArtifactRecovery(
-                directory: recoveryRoot,
-                recordingsRoot: recordingsRoot,
-                retention: 24 * 60 * 60,
-                restoreMoveItem: restoreMoveItem
-            )
-        }
         return ArtifactRecovery(
             directory: recoveryRoot,
             recordingsRoot: recordingsRoot,
-            retention: 24 * 60 * 60
+            retention: 24 * 60 * 60,
+            restoreMoveItem: restoreMoveItem ?? { try FileManager.default.moveItem(at: $0, to: $1) },
+            cleanupMoveItem: cleanupMoveItem ?? { try FileManager.default.moveItem(at: $0, to: $1) },
+            removeRecoveryWrapper: removeWrapper ?? { try FileManager.default.removeItem(at: $0) }
         )
     }
 }
@@ -670,6 +958,39 @@ private final class CountingFailure: @unchecked Sendable {
         count += 1
         return count
     }
+}
+
+private final class FailingMoves: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    private let failing: Set<Int>
+
+    init(failing: Set<Int>) {
+        self.failing = failing
+    }
+
+    func shouldFail() -> Bool {
+        lock.withLock {
+            count += 1
+            return failing.contains(count)
+        }
+    }
+}
+
+private struct TestRestoreJournal: Encodable {
+    struct Entry: Encodable {
+        let name: String
+        let size: Int
+        let sha256: String
+    }
+
+    let entries: [Entry]
+}
+
+private func writeManifest(_ item: RecoverableArtifact, to wrapper: URL) throws {
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(item).write(to: wrapper.appending(path: "manifest.json"))
 }
 
 private enum InterruptedRestore: Error, Equatable {

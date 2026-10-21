@@ -77,6 +77,8 @@ struct ArtifactRecovery: Sendable {
     let recordingsRoot: URL
     let retention: TimeInterval
     private let restoreMoveItem: @Sendable (URL, URL) throws -> Void
+    private let cleanupMoveItem: @Sendable (URL, URL) throws -> Void
+    private let removeRecoveryWrapper: @Sendable (URL) throws -> Void
 
     init(
         directory: URL,
@@ -84,12 +86,20 @@ struct ArtifactRecovery: Sendable {
         retention: TimeInterval,
         restoreMoveItem: @escaping @Sendable (URL, URL) throws -> Void = {
             try FileManager.default.moveItem(at: $0, to: $1)
+        },
+        cleanupMoveItem: @escaping @Sendable (URL, URL) throws -> Void = {
+            try FileManager.default.moveItem(at: $0, to: $1)
+        },
+        removeRecoveryWrapper: @escaping @Sendable (URL) throws -> Void = {
+            try FileManager.default.removeItem(at: $0)
         }
     ) {
         self.directory = directory
         self.recordingsRoot = recordingsRoot
         self.retention = retention
         self.restoreMoveItem = restoreMoveItem
+        self.cleanupMoveItem = cleanupMoveItem
+        self.removeRecoveryWrapper = removeRecoveryWrapper
     }
 
     func finalizeReadyCall(
@@ -130,12 +140,32 @@ struct ArtifactRecovery: Sendable {
         // produce, so the call is reported as finished instead of as broken. Failing here used
         // to mark a complete, searchable transcript as "Needs attention" for ever, and every
         // retry failed the same way because there was nothing left to retry with.
-        if let saved = try? load(callID),
-           FileManager.default.fileExists(atPath: saved.payloadDirectory.path) {
-            return saved
+        //
+        // A saved copy is finished only when nothing eligible is left beside it. A pass that
+        // failed after creating the payload, or after moving part of it, leaves children in the
+        // source; this pass has to move those before it can report the copy complete.
+        let saved = try? load(callID)
+        let savedPayload = saved.flatMap {
+            FileManager.default.fileExists(atPath: $0.payloadDirectory.path) ? $0 : nil
         }
-        guard let audioPath = call.audioPath else { return nil }
+        guard let audioPath = call.audioPath else { return savedPayload }
         let source = URL(filePath: audioPath).deletingLastPathComponent().standardizedFileURL
+        if let savedPayload {
+            guard FileManager.default.fileExists(atPath: source.path) else {
+                let moved = try FileManager.default.contentsOfDirectory(
+                    atPath: savedPayload.payloadDirectory.path
+                )
+                guard !moved.isEmpty else { throw ArtifactRecoveryError.sourceUnavailable }
+                return savedPayload
+            }
+            return try moveToRecovery(
+                callID,
+                kind: .completedCall,
+                source: source,
+                excluding: [ScreenshotArchive.directoryName],
+                at: date
+            )
+        }
         guard FileManager.default.fileExists(atPath: source.path) else { return nil }
         // The folder can outlive the audio: the screen photographs are set aside below, and a
         // repeat of this stage then finds a folder that holds pictures and no media. That is a
@@ -202,9 +232,14 @@ struct ArtifactRecovery: Sendable {
             // Decoded rather than loaded: a pass interrupted after the manifest was written can
             // leave the payload missing, and this is the pass that creates it.
             item = try decode(manifest)
+            // The manifest decides which call owns this wrapper and where the payload goes. A
+            // copied or corrupt manifest must not direct this call's files into another wrapper
+            // or an unrelated directory, so its identity is checked before anything is created.
             guard
+                item.callID == callID,
+                item.recoveryDirectory.standardizedFileURL == wrapper.standardizedFileURL,
                 item.kind == kind,
-                item.originalDirectory == source
+                item.originalDirectory.standardizedFileURL == source.standardizedFileURL
             else { throw ArtifactRecoveryError.invalidManifest }
         } else {
             guard FileManager.default.fileExists(atPath: source.path) else {
@@ -242,15 +277,26 @@ struct ArtifactRecovery: Sendable {
         )
         let moving = children.filter { !excludedNames.contains($0.lastPathComponent) }
         guard !moving.isEmpty else {
-            throw ArtifactRecoveryError.sourceUnavailable
+            // A repeat after every eligible child has moved, with the screenshots still beside
+            // them. The source is finished when the payload already holds what was moved.
+            let moved = try FileManager.default.contentsOfDirectory(atPath: item.payloadDirectory.path)
+            guard !moved.isEmpty else { throw ArtifactRecoveryError.sourceUnavailable }
+            return item
         }
         for child in moving {
             let destination = item.payloadDirectory.appending(path: child.lastPathComponent)
-            // A pass interrupted halfway leaves some children in the payload already. The copy in
-            // the payload is the one being kept, so a name that is already there is this same move
-            // resumed, not a conflict.
-            if FileManager.default.fileExists(atPath: destination.path) { continue }
-            try FileManager.default.moveItem(at: child, to: destination)
+            if FileManager.default.fileExists(atPath: destination.path) {
+                // A matching name is not proof a child was moved. The bytes have to match too, and
+                // a different file under the same name fails closed rather than being overwritten.
+                guard try fingerprint(of: child) == fingerprint(of: destination) else {
+                    throw ArtifactRecoveryError.invalidManifest
+                }
+                // The payload already keeps these bytes, so this copy adds nothing. Removing it
+                // lets a finished pass remove the source folder.
+                try FileManager.default.removeItem(at: child)
+                continue
+            }
+            try cleanupMoveItem(child, destination)
         }
         // The call's folder is removed when the audio was its last content. When the screenshots
         // stay, the folder stays with them.
@@ -290,7 +336,7 @@ struct ArtifactRecovery: Sendable {
             )
             try FileManager.default.moveItem(at: item.payloadDirectory, to: item.originalDirectory)
         }
-        try? FileManager.default.removeItem(at: item.recoveryDirectory)
+        try? removeRecoveryWrapper(item.recoveryDirectory)
     }
 
     private struct RestoreJournal: Codable {
@@ -325,6 +371,7 @@ struct ArtifactRecovery: Sendable {
                 RestoreJournal.self,
                 from: Data(contentsOf: journalURL)
             )
+            try validate(journal)
             try validateExistingTarget(existing, against: journal)
         } else {
             try validateFirstMerge(existing, payload: item.payloadDirectory)
@@ -336,7 +383,40 @@ struct ArtifactRecovery: Sendable {
             )
         }
         try mergePayload(into: item.originalDirectory, from: item, journal: journal)
-        try? FileManager.default.removeItem(at: journalURL)
+        // The empty payload and this journal stay until the wrapper is removed by restore(). If
+        // that removal fails, the next restore can fingerprint what is already in the call folder
+        // against the journal and finish instead of finding a wrapper without a payload.
+    }
+
+    /// Checks a journal read back from disk before it is turned into a name lookup.
+    ///
+    /// The journal is app-owned, but it is still decoded data: a duplicate name traps a
+    /// dictionary built with `uniqueKeysWithValues`, and a name with path syntax could point a
+    /// merge outside the call folder. Every entry has to describe exactly one file in that folder.
+    private func validate(_ journal: RestoreJournal) throws {
+        var names = Set<String>()
+        for entry in journal.entries {
+            let name = entry.name
+            guard
+                !name.isEmpty,
+                name != ".",
+                name != "..",
+                !name.contains("/"),
+                !name.contains("\\"),
+                name != ScreenshotArchive.directoryName,
+                entry.size >= 0,
+                isSHA256(entry.sha256),
+                names.insert(name).inserted
+            else { throw ArtifactRecoveryError.invalidManifest }
+        }
+    }
+
+    private func isSHA256(_ value: String) -> Bool {
+        let bytes = value.utf8
+        guard bytes.count == 64 else { return false }
+        return bytes.allSatisfy { byte in
+            (48...57).contains(byte) || (97...102).contains(byte)
+        }
     }
 
     private func restoreEntries(in payload: URL) throws -> [RestoreJournal.Entry] {
@@ -468,7 +548,6 @@ struct ArtifactRecovery: Sendable {
             atPath: item.payloadDirectory.path
         )
         guard remaining.isEmpty else { throw ArtifactRecoveryError.restoreTargetExists }
-        try FileManager.default.removeItem(at: item.payloadDirectory)
     }
 
     private func isDirectory(_ url: URL) throws -> Bool {

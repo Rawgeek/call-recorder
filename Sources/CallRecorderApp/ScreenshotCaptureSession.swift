@@ -117,6 +117,8 @@ final class ScreenshotCaptureSession {
     typealias Capture = @Sendable () async throws -> CGImage
     typealias PrepareCapture = @Sendable (URL, ScreenshotResolution) async throws -> Capture
     typealias WriteCapture = @Sendable (CGImage, URL) async throws -> Void
+    /// How the stop deadline is measured. Production sleeps for the timeout; a test can fire it.
+    typealias DeadlineWait = @Sendable (Duration) async -> Void
 
     private struct CaptureContext: @unchecked Sendable {
         let capture: Capture
@@ -132,6 +134,7 @@ final class ScreenshotCaptureSession {
     private let prepareCapture: PrepareCapture
     private let writeCapture: WriteCapture
     private let stopTimeout: Duration
+    private let deadlineWait: DeadlineWait
     private struct StartRequest {
         let callDirectory: URL
         let interval: ScreenshotInterval
@@ -161,11 +164,18 @@ final class ScreenshotCaptureSession {
     init(
         prepareCapture: PrepareCapture? = nil,
         writeCapture: WriteCapture? = nil,
-        stopTimeout: Duration = .seconds(3)
+        stopTimeout: Duration = .seconds(3),
+        deadlineWait: DeadlineWait? = nil
     ) {
         self.prepareCapture = prepareCapture ?? Self.livePrepareCapture
         self.writeCapture = writeCapture ?? Self.liveWriteCapture
         self.stopTimeout = stopTimeout
+        self.deadlineWait = deadlineWait ?? Self.liveDeadlineWait
+    }
+
+    /// Production measures a stop deadline by sleeping for it.
+    private static func liveDeadlineWait(_ timeout: Duration) async {
+        try? await Task.sleep(for: timeout)
     }
 
     func start(
@@ -354,7 +364,11 @@ final class ScreenshotCaptureSession {
         deferredFailureTask?.cancel()
         deferredFailureTask = nil
         guard let running = run else { return }
-        let finished = await Self.wait(for: running.task, timeout: stopTimeout)
+        let finished = await Self.wait(
+            for: running.task,
+            timeout: stopTimeout,
+            deadlineWait: deadlineWait
+        )
         guard run?.generation == running.generation else { return }
         generation &+= 1
         run = nil
@@ -379,7 +393,11 @@ final class ScreenshotCaptureSession {
     /// A task group waits for every child when its scope ends, including the child awaiting a task
     /// that ignores cancellation. This race lets the caller return at the deadline while the old
     /// generation is already unable to publish.
-    private static func wait(for task: Task<Void, Never>, timeout: Duration) async -> Bool {
+    private static func wait(
+        for task: Task<Void, Never>,
+        timeout: Duration,
+        deadlineWait: @escaping DeadlineWait
+    ) async -> Bool {
         await withCheckedContinuation { continuation in
             let waiter = CompletionWait(continuation)
             Task {
@@ -387,7 +405,7 @@ final class ScreenshotCaptureSession {
                 waiter.finish(true)
             }
             Task {
-                try? await Task.sleep(for: timeout)
+                await deadlineWait(timeout)
                 waiter.finish(false)
             }
         }
