@@ -696,31 +696,29 @@ struct MenuBarView: View {
                     .accessibilityLabel("Screenshots are not being saved: \(failure)")
             }
             // The switch a call needs in a hurry. It applies to the recording that is running and
-            // stays the default for the next one, so the popover can turn pictures on without a
-            // trip through Settings.
-            Toggle("Screenshots", isOn: $model.settings.screenshotsEnabled)
+            // is off when every call starts, so a call cannot begin photographing the screen
+            // because the switch was left on yesterday.
+            Toggle("Screenshots", isOn: $model.screenshotsCaptureEnabled)
                 .toggleStyle(.switch)
                 .controlSize(.mini)
                 .font(CR.Font.caption)
                 .fixedSize()
                 .lineLimit(1)
                 .help(
-                    model.settings.screenshotsEnabled
+                    model.screenshotsCaptureEnabled
                         ? "Screen screenshots are on: "
                             + model.settings.screenshotInterval.title.lowercased() + ", "
                             + model.settings.screenshotResolution.title + "."
-                        : model.screenRecordingGranted
-                            ? "Capture screenshots during calls. Settings chooses how often and at what size."
-                            : "Screenshots need Screen Recording permission. Open System Settings "
-                                + "from the card above before a call."
+                        : model.canToggleScreenshotsForCall
+                            ? "Turn screenshots on for this call. Settings chooses how often and at "
+                                + "what size."
+                            : model.screenRecordingGranted
+                                ? "Screenshots can be turned on while a call is being recorded."
+                                : "Screenshots need Screen Recording permission. Open System Settings "
+                                    + "from the card above before a call."
                 )
                 .accessibilityLabel("Capture screenshots")
-                .disabled(
-                    ScreenshotPreferenceControl.isDisabled(
-                        enabled: model.settings.screenshotsEnabled,
-                        permissionGranted: model.screenRecordingGranted
-                    )
-                )
+                .disabled(!model.canToggleScreenshotsForCall)
             // The footer's first icon is drawn on the popover's gutter, so the last one is too.
             CRIconButton(
                 icon: "power",

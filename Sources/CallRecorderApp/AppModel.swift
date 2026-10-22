@@ -318,6 +318,13 @@ final class AppModel {
     /// When the pause began, so the popover's clock has a time to anchor its tick to while the
     /// recorder is stopped. The number it draws does not change; a still clock still needs a pulse.
     private(set) var recordingPausedAt: Date?
+    /// Whether screenshots are on for the call that is running now.
+    ///
+    /// This is deliberately separate from the saved preference. A new recording always starts
+    /// with screenshots off, so a switch left on for yesterday's call cannot begin photographing
+    /// the screen by itself today. The menu bar switch turns this on for the current call; the
+    /// Settings choice only decides the starting state.
+    private(set) var screenshotsActiveForCurrentCall = false
     var settings: AppSettings {
         didSet {
             // A dismissed reminder belongs to the state it was dismissed in. Switching automatic
@@ -333,13 +340,17 @@ final class AppModel {
             if settings.appUpdateCheckInterval != oldValue.appUpdateCheckInterval {
                 appUpdater.setCheckInterval(settings.appUpdateCheckInterval.seconds)
             }
-            // A switch pressed while the call is still being recorded applies to this call. The
-            // timer and the size are part of the same decision, so changing either restarts the
-            // capture at the current place on the recording's clock.
+            // A choice made in Settings while a call runs applies to that call. The interval and
+            // the size take effect at the current place on the clock; the switch decides whether
+            // this call should be taking pictures at all.
+            if settings.screenshotsEnabled != oldValue.screenshotsEnabled,
+                recorderState.phase == .recording || recorderState.phase == .paused
+            {
+                screenshotsActiveForCurrentCall = settings.screenshotsEnabled
+            }
             if settings.screenshotsEnabled != oldValue.screenshotsEnabled
                 || settings.screenshotInterval != oldValue.screenshotInterval
-                || settings.screenshotResolution != oldValue.screenshotResolution
-            {
+                || settings.screenshotResolution != oldValue.screenshotResolution {
                 syncScreenshotCapture()
             }
             saveSettings()
@@ -939,8 +950,33 @@ final class AppModel {
 
     /// The reason the screen photographs are not being written, while they are switched on.
     var screenshotFailure: String? {
-        guard settings.screenshotsEnabled else { return nil }
+        guard screenshotsActiveForCurrentCall else { return nil }
         return screenshotCapture.lastFailure
+    }
+
+    /// The menu-bar switch: screenshots for this call, not for every call from now on.
+    var screenshotsCaptureEnabled: Bool {
+        get {
+            switch recorderState.phase {
+            case .recording, .paused: screenshotsActiveForCurrentCall
+            default: settings.screenshotsEnabled
+            }
+        }
+        set {
+            switch recorderState.phase {
+            case .recording, .paused:
+                screenshotsActiveForCurrentCall = newValue
+                syncScreenshotCapture()
+            default:
+                settings.screenshotsEnabled = newValue
+            }
+        }
+    }
+
+    /// A call has to be running before the quick switch can turn screenshots on.
+    var canToggleScreenshotsForCall: Bool {
+        let inCall = recorderState.phase == .recording || recorderState.phase == .paused
+        return inCall && (screenshotsActiveForCurrentCall || screenRecordingGranted)
     }
 
     var backgroundFailures: [BackgroundFinalizationFailure] {
@@ -1101,6 +1137,7 @@ final class AppModel {
         recordingStartedAt = nil
         recordedSecondsBeforePause = 0
         recordingPausedAt = nil
+        screenshotsActiveForCurrentCall = false
         screenshotCapture.stop()
     }
 
@@ -3273,8 +3310,10 @@ final class AppModel {
                 )
                 apply(.manualStart(sessionID: sessionID))
             }
-            // The phase is what the screenshot timer checks, so it starts after the reducer has
-            // put the recording on screen rather than while the call is still idle.
+            // Every call starts with screenshots off unless the person has explicitly asked for
+            // them to start by themselves. The quick switch in the popover turns them on for the
+            // call that is running.
+            screenshotsActiveForCurrentCall = settings.screenshotsEnabled
             syncScreenshotCapture()
         } catch {
             if AudioCaptureSession.isScreenRecordingPermissionDeniedError(error) {
@@ -3335,7 +3374,7 @@ final class AppModel {
     private func syncScreenshotCapture() {
         guard
             ScreenshotCaptureEligibility.shouldStart(
-                enabled: settings.screenshotsEnabled,
+                enabled: screenshotsActiveForCurrentCall,
                 recording: recorderState.phase == .recording,
                 permissionGranted: screenRecordingGranted,
                 hasDirectory: activeSessionDirectory != nil,
@@ -3473,6 +3512,7 @@ final class AppModel {
         cancelAutomaticStopGrace()
         recordingLimitTask?.cancel()
         recordingLimitTask = nil
+        screenshotsActiveForCurrentCall = false
         captureOperationInFlight = true
         screenshotCaptureTransitioning = true
         defer {

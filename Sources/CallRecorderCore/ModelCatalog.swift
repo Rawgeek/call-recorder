@@ -74,8 +74,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// Whether a call keeps a photograph of the screen as it is recorded.
     ///
     /// Off by default: the audio is the record, and a picture of the whole display can hold
-    /// anything the person had open. The menu bar carries the same switch, so it can be turned on
-    /// for one call without a trip through Settings.
+    /// anything the person had open. This decides only whether a call starts with pictures;
+    /// the menu bar switch turns them on for the call that is already running.
     public var screenshotsEnabled: Bool
     /// How far apart two screen photographs are taken.
     public var screenshotInterval: ScreenshotInterval

@@ -27,7 +27,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
   the call's `Screenshots` folder on a timer set in Settings (five seconds by default), at Full
   HD unless another size is chosen. Each frame is a file of its own, so a crash costs one photo
   rather than the recording. The switch beside Quit in the menu-bar panel turns them on during a
-  call without opening Settings.
+  call without opening Settings, and is off again when the next recording starts.
 - The microphone is chosen by name, or set to follow whichever input macOS is set to use. A call
   that finishes gives its audio back, unless Settings > General says to keep it.
 - One-sided-call detection warns when the other side of the conversation was never captured.

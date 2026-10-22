@@ -246,21 +246,24 @@ struct GeneralSettingsView: View {
             CRSettingsCard(
                 title: "Screenshots",
                 footnote: model.settings.screenshotsEnabled
-                    ? "Saved beside the call. The switch beside Quit in the menu bar changes this "
+                    ? "Each call starts with screenshots on. The switch beside Quit turns them off "
+                        + "or on for the call that is running."
+                    : "Off at the start of every call. The switch beside Quit turns screenshots on "
                         + "for the call that is running."
-                    : "Off. The menu bar switch turns this on for the next or current call."
             ) {
                 CRSettingsRow(
-                    title: "Capture screenshots during calls",
+                    title: "Start screenshots with every recording",
                     detail: !model.screenRecordingGranted
                         ? "Needs Screen Recording permission. The card in the menu bar opens the pane."
                         : model.settings.screenshotsEnabled
-                            ? "A picture of the screen is saved in the call's Screenshots folder."
-                            : "No pictures of the screen are taken.",
+                            ? "Recording begins taking pictures right away."
+                            : "Recording begins with no pictures. Turn them on during the call from "
+                                + "the menu bar.",
                     info: "A screenshot covers the whole display except Call Recorder's own windows. "
                         + "It is written immediately, so a crash costs at most the frame being "
-                        + "taken rather than the recording. The default is off because the "
-                        + "picture can include anything else that is open."
+                        + "taken rather than the recording. Off by default because the picture can "
+                        + "include anything else that is open. The menu bar switch starts them for "
+                        + "the call already running."
                 ) {
                     Toggle("", isOn: $model.settings.screenshotsEnabled)
                         .labelsHidden()

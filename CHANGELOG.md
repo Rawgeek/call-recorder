@@ -9,7 +9,9 @@ versioning.
 ### Added
 
 - Review Speakers shows one call and one timeline at a time, including calls whose voices are already named.
-- Optional screenshots are saved locally beside the call and can be opened from its timeline. Capture is off by default.
+- Optional screenshots are saved locally beside the call and can be opened from its timeline. Every
+  recording starts with capture off unless Settings opts in; the menu bar switch changes only the
+  call that is running.
 - Screenshot settings choose the capture interval and resolution. The menu bar switch also applies to the current call.
 
 ### Fixed
