@@ -4,6 +4,16 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.44] - 2026-10-26
+
+### Changed
+
+- Update the MCP SDK to 1.32.0 and Zod to 4.6.6 while preserving existing dependency overrides.
+
+### Fixed
+
+- CI rejects inconsistent package locks before testing, including dropped overrides and unrelated dependency downgrades.
+
 ## [0.1.43] - 2026-10-26
 
 ### Fixed
