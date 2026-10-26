@@ -145,20 +145,71 @@ def emit(payload) -> None:
     os.write(PAYLOAD_DESCRIPTOR, data + b"\n")
 
 
-def check_audio_decoder() -> None:
-    """Exercise TorchCodec and FFmpeg with a real, tiny WAV file."""
+def check_audio_decoder() -> dict:
+    """Exercise the decoder and the crop a call uses with a real, short WAV file.
+
+    The run hands pyannote audio this file has already decoded, so the reader that has to work is
+    the one below. TorchCodec is not part of that path any more: asking it to crop a file by name
+    stopped the 2026-10-23 call with `torchcodec is not available`, after the file had been
+    decoded and the voices found. The file is shorter than one embedding chunk, so the real crop
+    has to pad it; the receipt this returns is what the regression test reads.
+    """
     import tempfile
     import wave
-    from torchcodec.decoders import AudioDecoder
 
+    import numpy as np
+    from pyannote.audio.core.io import Audio
+    from pyannote.core import Segment
+
+    generated = int(round(1.5 * SAMPLING_RATE))
+    values = ((np.arange(generated) % 19997) - 10000).astype("<i2")
     with tempfile.TemporaryDirectory() as directory:
         audio = Path(directory) / "runtime-check.wav"
         with wave.open(str(audio), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)
             output.setframerate(SAMPLING_RATE)
-            output.writeframes(b"\x00\x00" * 160)
-        AudioDecoder(str(audio))
+            output.writeframes(values.tobytes())
+
+        reader = call_reader(audio)
+        if reader is None:
+            raise RuntimeError("the audio reader did not open the mono 16 kHz WAV it wrote")
+        try:
+            stretch = read_stretch(reader, 0, int(round(CHUNK_SECONDS * SAMPLING_RATE)))
+        finally:
+            reader.close()
+        frames = int(stretch.shape[1])
+        crop, sample_rate = Audio(sample_rate=SAMPLING_RATE, mono="downmix").crop(
+            waveform_dictionary(stretch, uri="runtime-check"),
+            Segment(0.0, CHUNK_SECONDS),
+            mode="pad",
+        )
+
+        expected = int(round(CHUNK_SECONDS * SAMPLING_RATE))
+        if sample_rate != SAMPLING_RATE:
+            raise RuntimeError(f"the audio crop came back at {sample_rate} Hz")
+        if tuple(crop.shape) != (1, expected):
+            raise RuntimeError(f"the audio crop is {tuple(crop.shape)}, not one mono chunk")
+        if frames >= expected:
+            raise RuntimeError("the generated WAV was not shorter than one embedding chunk")
+        if abs(float(crop[0, 0]) - float(values[0]) / 32768.0) > 1e-6:
+            raise RuntimeError("the audio crop did not return the generated audio")
+        if abs(float(crop[0, frames - 1]) - float(values[-1]) / 32768.0) > 1e-6:
+            raise RuntimeError("the audio crop lost the end of the generated audio")
+        if not bool(crop[0, frames:].eq(0).all()):
+            raise RuntimeError("the audio crop did not pad the end with silence")
+
+        # The turn model reads through librosa in production, so a runtime without it is not ready.
+        samples = read_audio(audio)
+        if len(samples) != generated:
+            raise RuntimeError("the audio decoder did not answer with the whole generated WAV")
+        return {
+            "samples": int(len(samples)),
+            "stretch": frames,
+            "cropShape": list(crop.shape),
+            "sampleRate": int(sample_rate),
+            "paddedSamples": expected - frames,
+        }
 
 
 class EmbeddingValues:
@@ -328,12 +379,72 @@ def load_embedder():
     return Pipeline.from_pretrained(EMBEDDING_PIPELINE, revision=EMBEDDING_REVISION)
 
 
-def read_audio(audio: Path):
+def read_audio(audio: Path, offset: float = 0.0, duration: float | None = None):
     """Read a file as the mono 16 kHz the turn model was trained on."""
     import librosa
 
-    samples, _ = librosa.load(str(audio), sr=SAMPLING_RATE, mono=True)
+    samples, _ = librosa.load(
+        str(audio), sr=SAMPLING_RATE, mono=True, offset=offset, duration=duration
+    )
     return samples
+
+
+def waveform_dictionary(samples, uri: str = "call") -> dict:
+    """One stretch of audio in the shape pyannote crops without a decoder.
+
+    pyannote asks TorchCodec to crop a file given by name. A runtime without it stops there, which
+    is what the 2026-10-23 job did after the turn model had already answered. A waveform dictionary
+    is cropped from memory instead: the channel axis stays explicit, so a mono stretch is one row,
+    and the values stay the float32 the decoder produced. The sample rate is the one this file
+    decodes every call to before anything else reads the audio.
+    """
+    import numpy as np
+    import torch
+
+    values = np.asarray(samples, dtype=np.float32)
+    if values.ndim == 1:
+        values = values[np.newaxis, :]
+    if values.ndim != 2:
+        raise ValueError("audio is a channel by time array")
+    return {
+        "waveform": torch.from_numpy(np.ascontiguousarray(values)),
+        "sample_rate": SAMPLING_RATE,
+        "uri": uri,
+    }
+
+
+def call_reader(audio: Path):
+    """A reader of ten-second stretches, when the file is the mono 16 kHz the app writes.
+
+    The app runs FFmpeg over every call before this script sees it, so a WAV arrives as one channel
+    at the rate below. Reading from it directly keeps a run's memory at one chunk instead of one
+    call; a file in another shape is left to the decoder above, which resamples it as before.
+    """
+    import soundfile
+
+    try:
+        reader = soundfile.SoundFile(str(audio))
+    except Exception:  # noqa: BLE001 - a file this reader cannot open is read below
+        return None
+    if reader.samplerate == SAMPLING_RATE and reader.channels == 1:
+        return reader
+    reader.close()
+    return None
+
+
+def read_stretch(reader, first: int, last: int):
+    """One stretch of an open call, as channel by time samples."""
+    import numpy as np
+
+    if first >= len(reader):
+        return np.zeros((reader.channels, 1), dtype=np.float32)
+    reader.seek(first)
+    values = reader.read(max(0, last - first), dtype="float32", always_2d=True)
+    stretch = values.T
+    if stretch.shape[1] == 0:
+        # pyannote's reader needs one row and at least one column before it pads a chunk.
+        stretch = np.zeros((stretch.shape[0], 1), dtype=np.float32)
+    return stretch
 
 
 def speech_activity(processor, model, samples):
@@ -429,11 +540,13 @@ def voice_prints(
 ) -> list[SpeakerPayload]:
     """Measure one centroid per voice, over the frames where that voice speaks alone.
 
-    The audio is read in chunks rather than in one piece: an hour of it holds 58 million samples,
-    and the embedder reads a waveform per chunk, so the memory it needs is the size of a chunk and
-    not the size of the call. A voice's value is the mean of its chunk values where it talks alone
-    for at least a fifth of the chunk, which is the rule the pyannote pipeline applies to its own
-    values before it clusters them. The start is where this stretch begins in the call.
+    The audio is read in ten-second chunks rather than in one piece: an hour of it holds 58 million
+    samples, and the embedder crops a waveform per chunk, so the memory it needs is the size of a
+    chunk and not the size of the call. Each chunk is a waveform dictionary, which is the form
+    pyannote crops without TorchCodec, and its window starts at zero because the samples in it
+    already begin where the chunk does. A voice's value is the mean of its chunk values where it
+    talks alone for at least a fifth of the chunk, which is the rule the pyannote pipeline applies
+    to its own values before it clusters them. The start is where this stretch begins in the call.
     """
     import numpy as np
     from pyannote.core import SlidingWindow, SlidingWindowFeature
@@ -444,10 +557,37 @@ def voice_prints(
     padded = np.zeros((chunk_count * chunk_frames, voice_count), dtype=np.float32)
     padded[:frame_count] = activity
     chunks = padded.reshape(chunk_count, chunk_frames, voice_count)
-    window = SlidingWindow(start=start, duration=CHUNK_SECONDS, step=CHUNK_SECONDS)
-    embeddings = embedder.get_embeddings(
-        str(audio), SlidingWindowFeature(chunks, window), exclude_overlap=True
+    window = SlidingWindow(start=0.0, duration=CHUNK_SECONDS, step=CHUNK_SECONDS)
+    reader = call_reader(audio)
+    window_first = int(round(start * SAMPLING_RATE))
+    values = (
+        None
+        if reader is not None
+        else np.asarray(
+            read_audio(audio, offset=start, duration=chunk_count * CHUNK_SECONDS),
+            dtype=np.float32,
+        )
     )
+    chunk_embeddings = []
+    try:
+        for index in range(chunk_count):
+            first = int(round((start + index * CHUNK_SECONDS) * SAMPLING_RATE))
+            last = int(round((start + (index + 1) * CHUNK_SECONDS) * SAMPLING_RATE))
+            if reader is not None:
+                samples = read_stretch(reader, first, last)
+            else:
+                samples = values[first - window_first : last - window_first]
+            chunk_embeddings.append(
+                embedder.get_embeddings(
+                    waveform_dictionary(samples, uri=f"chunk-{index}"),
+                    SlidingWindowFeature(chunks[index : index + 1], window),
+                    exclude_overlap=True,
+                )
+            )
+    finally:
+        if reader is not None:
+            reader.close()
+    embeddings = np.concatenate(chunk_embeddings, axis=0)
 
     alone = chunks * (chunks.sum(axis=2, keepdims=True) == 1)
     alone_frames = alone.sum(axis=1)
@@ -645,9 +785,14 @@ def separate_into_count(audio: Path, count: int) -> OutputPayload:
     """
     import torch
 
+    # The pipeline reads the call more than once, so it takes the decoded waveform in one piece:
+    # this is the one decode the count route does, of the same audio the detector route reads.
+    # pyannote crops the array where it would otherwise ask TorchCodec for a file.
+    samples = read_audio(audio)
     embedder = load_embedder()
     on_accelerator(embedder, torch)
-    output = embedder(str(audio), num_speakers=count)
+    output = embedder(waveform_dictionary(samples, uri=audio.stem), num_speakers=count)
+    del samples
     diarization = output.exclusive_speaker_diarization
 
     segments: list[SegmentPayload] = []
