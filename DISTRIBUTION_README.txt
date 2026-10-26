@@ -1,4 +1,4 @@
-Call Recorder 0.1.43
+Call Recorder 0.1.44
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
