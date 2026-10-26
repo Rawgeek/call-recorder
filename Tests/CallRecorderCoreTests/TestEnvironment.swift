@@ -128,6 +128,49 @@ enum TestEnvironment {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }()
 
+    /// The speaker packages the app installed, wherever the runtime that reads them lives.
+    ///
+    /// The reader is loaded from this source by path, so a suite can check the crop boundary on a
+    /// machine whose managed interpreter is missing, as long as a local one holds numpy and torch.
+    static let speakerSitePackages: URL? = {
+        let lib = applicationDirectory.appending(path: "python/lib", directoryHint: .isDirectory)
+        let versions =
+            (try? FileManager.default.contentsOfDirectory(at: lib, includingPropertiesForKeys: nil))
+            ?? []
+        for version in versions {
+            let packages = version.appending(path: "site-packages", directoryHint: .isDirectory)
+            let reader = packages.appending(path: "pyannote/audio/core/io.py")
+            if FileManager.default.fileExists(atPath: reader.path) {
+                return packages
+            }
+        }
+        return nil
+    }()
+
+    /// An interpreter that can run the script's arithmetic and torch, with the reader available.
+    static let diarizationCropPython: URL? = {
+        guard speakerSitePackages != nil else { return nil }
+        let candidates = [
+            speakerRuntimePython,
+            URL(filePath: "/usr/local/bin/python3"),
+            URL(filePath: "/opt/homebrew/bin/python3"),
+        ].compactMap { $0 }
+        for candidate in candidates {
+            guard FileManager.default.isExecutableFile(atPath: candidate.path) else { continue }
+            guard
+                let outcome = try? ProcessRunner.run(
+                    executable: candidate,
+                    arguments: ["-c", "import numpy, torch"]
+                ),
+                outcome.exitCode == 0
+            else { continue }
+            return candidate
+        }
+        return nil
+    }()
+
+    static let canRunDiarizationCrop = diarizationCropPython != nil
+
     /// A recording a run was told to take a whole call from, when one was named.
     ///
     /// The engine suite reads a recording and measures it. This one drives the same recording

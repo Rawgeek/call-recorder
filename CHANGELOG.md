@@ -4,6 +4,13 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.43] - 2026-10-26
+
+### Fixed
+
+- Speaker detection and its runtime check decode audio without depending on TorchCodec. Embedding batches stay bounded for long calls.
+- The Hono and proxy-addr dependency updates retain the existing package overrides and avoid unrelated downgrades.
+
 ## [0.1.42] - 2026-10-22
 
 ### Added
