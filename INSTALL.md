@@ -40,7 +40,7 @@ materials on macOS 15. No third-party design dependency is used.
 
 ## 2. Install the compiled app
 
-1. Unzip CallRecorder-0.1.42.zip.
+1. Unzip CallRecorder-0.1.43.zip.
 2. Move Call Recorder.app to /Applications.
 3. First launch only: right-click the app and choose Open. This build is signed locally,
    not notarized by Apple, so a double-click shows a warning. After the first open, a

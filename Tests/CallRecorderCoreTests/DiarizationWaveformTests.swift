@@ -47,7 +47,16 @@ struct DiarizationWaveformTests {
             let sitePackages = TestEnvironment.speakerSitePackages,
             let script = TestEnvironment.diarizationScript
         else {
-            Issue.record("the speaker runtime was gated on but its pieces are missing")
+            Issue.record("the speaker crop runtime is missing; check its configuration")
+            return
+        }
+        guard FileManager.default.isExecutableFile(atPath: python.path) else {
+            Issue.record("the speaker crop interpreter is not executable: \(python.path)")
+            return
+        }
+        let reader = sitePackages.appending(path: "pyannote/audio/core/io.py")
+        guard FileManager.default.fileExists(atPath: reader.path) else {
+            Issue.record("the speaker crop packages are missing: \(sitePackages.path)")
             return
         }
 
@@ -402,9 +411,37 @@ struct DiarizationWaveformTests {
         elif mode == "check":
             embedder = Embedder()
             install()
-            diarize.check_audio_decoder()
+            receipt = diarize.check_audio_decoder()
             if len(read_calls) != 1:
                 raise AssertionError("the check decoded %d files" % len(read_calls))
+            if receipt["samples"] != 24000 or receipt["stretch"] != 24000:
+                raise AssertionError("the check read the wrong generated audio: %r" % (receipt,))
+            if receipt["cropShape"] != [1, chunk_samples] or receipt["sampleRate"] != sample_rate:
+                raise AssertionError("the check did not exercise the real crop: %r" % (receipt,))
+            if receipt["paddedSamples"] != chunk_samples - 24000:
+                raise AssertionError("the check did not prove the crop pads: %r" % (receipt,))
+
+            # A crop that breaks has to fail the check, rather than pass on the decode alone.
+            real_reader = pyannote_io.Audio
+
+            class Broken:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                def crop(self, *args, **kwargs):
+                    raise RuntimeError("broken crop")
+
+            pyannote_io.Audio = Broken
+            try:
+                try:
+                    diarize.check_audio_decoder()
+                except RuntimeError as error:
+                    if "broken crop" not in str(error):
+                        raise
+                else:
+                    raise AssertionError("the check passed with a broken crop")
+            finally:
+                pyannote_io.Audio = real_reader
             print("ok check")
 
         else:

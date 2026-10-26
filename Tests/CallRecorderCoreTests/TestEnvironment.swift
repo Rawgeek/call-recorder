@@ -128,11 +128,26 @@ enum TestEnvironment {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }()
 
+    /// Test-only interpreter and packages, named by CI so the crop regressions run on a fresh Mac.
+    ///
+    /// A supplied value is used even when it is wrong: a broken configuration has to fail the
+    /// tests it names, not quietly gate them off.
+    static let diarizationCropConfiguration = (
+        python: ProcessInfo.processInfo.environment["CALL_RECORDER_TEST_DIARIZATION_PYTHON"]
+            .map { URL(filePath: $0) },
+        sitePackages: ProcessInfo.processInfo.environment[
+            "CALL_RECORDER_TEST_DIARIZATION_SITE_PACKAGES"
+        ].map { URL(filePath: $0) }
+    )
+
     /// The speaker packages the app installed, wherever the runtime that reads them lives.
     ///
     /// The reader is loaded from this source by path, so a suite can check the crop boundary on a
     /// machine whose managed interpreter is missing, as long as a local one holds numpy and torch.
     static let speakerSitePackages: URL? = {
+        if let supplied = diarizationCropConfiguration.sitePackages {
+            return supplied
+        }
         let lib = applicationDirectory.appending(path: "python/lib", directoryHint: .isDirectory)
         let versions =
             (try? FileManager.default.contentsOfDirectory(at: lib, includingPropertiesForKeys: nil))
@@ -149,6 +164,9 @@ enum TestEnvironment {
 
     /// An interpreter that can run the script's arithmetic and torch, with the reader available.
     static let diarizationCropPython: URL? = {
+        if let supplied = diarizationCropConfiguration.python {
+            return supplied
+        }
         guard speakerSitePackages != nil else { return nil }
         let candidates = [
             speakerRuntimePython,
@@ -169,7 +187,13 @@ enum TestEnvironment {
         return nil
     }()
 
-    static let canRunDiarizationCrop = diarizationCropPython != nil
+    static let isDiarizationCropConfigured =
+        diarizationCropConfiguration.python != nil
+        || diarizationCropConfiguration.sitePackages != nil
+
+    static let canRunDiarizationCrop =
+        isDiarizationCropConfigured
+        || (diarizationCropPython != nil && speakerSitePackages != nil)
 
     /// A recording a run was told to take a whole call from, when one was named.
     ///

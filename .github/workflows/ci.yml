@@ -21,6 +21,24 @@ jobs:
         run: swift --version
       - name: Install audio tools
         run: brew install ffmpeg
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.14"
+      - name: Prepare speaker crop test runtime
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/speaker-crop-venv"
+          python3 -m venv "$venv"
+          "$venv/bin/python3" -m pip install --disable-pip-version-check \
+            torch==2.13.0 pyannote.core==6.0.1 soundfile==0.14.0
+          "$venv/bin/python3" -m pip install --disable-pip-version-check --no-deps \
+            pyannote.audio==4.0.7
+          "$venv/bin/python3" -c "import torch, numpy, soundfile, pyannote.core"
+          site_packages="$(
+            "$venv/bin/python3" -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])'
+          )"
+          echo "CALL_RECORDER_TEST_DIARIZATION_PYTHON=$venv/bin/python3" >> "$GITHUB_ENV"
+          echo "CALL_RECORDER_TEST_DIARIZATION_SITE_PACKAGES=$site_packages" >> "$GITHUB_ENV"
       - name: Build
         run: swift build
       - name: Test

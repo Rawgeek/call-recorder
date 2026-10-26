@@ -145,28 +145,71 @@ def emit(payload) -> None:
     os.write(PAYLOAD_DESCRIPTOR, data + b"\n")
 
 
-def check_audio_decoder() -> None:
-    """Exercise the decoder every run uses with a real, tiny WAV file.
+def check_audio_decoder() -> dict:
+    """Exercise the decoder and the crop a call uses with a real, short WAV file.
 
     The run hands pyannote audio this file has already decoded, so the reader that has to work is
     the one below. TorchCodec is not part of that path any more: asking it to crop a file by name
     stopped the 2026-10-23 call with `torchcodec is not available`, after the file had been
-    decoded and the voices found.
+    decoded and the voices found. The file is shorter than one embedding chunk, so the real crop
+    has to pad it; the receipt this returns is what the regression test reads.
     """
     import tempfile
     import wave
 
+    import numpy as np
+    from pyannote.audio.core.io import Audio
+    from pyannote.core import Segment
+
+    generated = int(round(1.5 * SAMPLING_RATE))
+    values = ((np.arange(generated) % 19997) - 10000).astype("<i2")
     with tempfile.TemporaryDirectory() as directory:
         audio = Path(directory) / "runtime-check.wav"
         with wave.open(str(audio), "wb") as output:
             output.setnchannels(1)
             output.setsampwidth(2)
             output.setframerate(SAMPLING_RATE)
-            output.writeframes(b"\x00\x00" * 160)
+            output.writeframes(values.tobytes())
+
+        reader = call_reader(audio)
+        if reader is None:
+            raise RuntimeError("the audio reader did not open the mono 16 kHz WAV it wrote")
+        try:
+            stretch = read_stretch(reader, 0, int(round(CHUNK_SECONDS * SAMPLING_RATE)))
+        finally:
+            reader.close()
+        frames = int(stretch.shape[1])
+        crop, sample_rate = Audio(sample_rate=SAMPLING_RATE, mono="downmix").crop(
+            waveform_dictionary(stretch, uri="runtime-check"),
+            Segment(0.0, CHUNK_SECONDS),
+            mode="pad",
+        )
+
+        expected = int(round(CHUNK_SECONDS * SAMPLING_RATE))
+        if sample_rate != SAMPLING_RATE:
+            raise RuntimeError(f"the audio crop came back at {sample_rate} Hz")
+        if tuple(crop.shape) != (1, expected):
+            raise RuntimeError(f"the audio crop is {tuple(crop.shape)}, not one mono chunk")
+        if frames >= expected:
+            raise RuntimeError("the generated WAV was not shorter than one embedding chunk")
+        if abs(float(crop[0, 0]) - float(values[0]) / 32768.0) > 1e-6:
+            raise RuntimeError("the audio crop did not return the generated audio")
+        if abs(float(crop[0, frames - 1]) - float(values[-1]) / 32768.0) > 1e-6:
+            raise RuntimeError("the audio crop lost the end of the generated audio")
+        if not bool(crop[0, frames:].eq(0).all()):
+            raise RuntimeError("the audio crop did not pad the end with silence")
+
+        # The turn model reads through librosa in production, so a runtime without it is not ready.
         samples = read_audio(audio)
-        waveform = waveform_dictionary(samples)
-        if waveform["waveform"].shape != (1, 160):
-            raise RuntimeError("the audio decoder did not answer with one mono stretch")
+        if len(samples) != generated:
+            raise RuntimeError("the audio decoder did not answer with the whole generated WAV")
+        return {
+            "samples": int(len(samples)),
+            "stretch": frames,
+            "cropShape": list(crop.shape),
+            "sampleRate": int(sample_rate),
+            "paddedSamples": expected - frames,
+        }
 
 
 class EmbeddingValues:

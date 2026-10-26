@@ -35,6 +35,9 @@ check() {
     if ! grep -q "$archive" README.md; then
         problems+=("README.md does not name $archive")
     fi
+    if ! grep -Fq "$archive" INSTALL.md; then
+        problems+=("INSTALL.md does not name $archive")
+    fi
     if [[ "$(head -1 DISTRIBUTION_README.txt)" != "Call Recorder $version" ]]; then
         problems+=("DISTRIBUTION_README.txt starts with \"$(head -1 DISTRIBUTION_README.txt)\"")
     fi
@@ -63,7 +66,7 @@ check() {
 }
 
 sync() {
-    perl -pi -e "s/CallRecorder-[0-9][0-9.]*[.]zip/$archive/g" README.md
+    perl -pi -e "s/CallRecorder-[0-9][0-9.]*[.]zip/$archive/g" README.md INSTALL.md
     sed -i '' "1s/^Call Recorder .*/Call Recorder $version/" DISTRIBUTION_README.txt
     sed -i '' "1s/^# Call Recorder [0-9][0-9.]* —/# Call Recorder $version —/" INSTALL.md
 
