@@ -90,9 +90,12 @@ build, and signature.
   user can do next. Avoid jargon and unverifiable claims.
 - Keep the diff scoped. A change that also reformats or renames unrelated code makes the
   review harder and is usually asked to be split.
-- Privacy is part of correctness here. Nothing may send audio, transcripts, voiceprints, or
-  search text off the machine, and none of those may appear in diagnostics, logs, or MCP
-  responses beyond the documented tool outputs.
+- Privacy is part of correctness here. Local is the default, and nothing may send audio,
+  transcripts, voiceprints, or search text off the machine without an explicit choice the person
+  can see and undo. The remote speech reader is that one choice: selecting Remote endpoint uploads
+  each track to the endpoint the user named, the pane says so before the choice, and its token
+  belongs in the Keychain. Those things may not appear in diagnostics, logs, or MCP responses
+  beyond the documented tool outputs.
 
 ## Pull requests
 

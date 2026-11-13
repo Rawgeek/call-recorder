@@ -90,6 +90,9 @@
 - `ParticipantEditor`: native form for name, role, company, and email; Cancel and Save states; name is required.
 - Participant window: search, selected people, inline Edit, add-new field, Save Without Participants, Continue.
 - Settings panes: General, Models, Participants, Vocabulary, Recovery. Restore last pane.
+- Speech reader card: Local model or Remote endpoint, with the endpoint, model name, Keychain
+  token, timeout, and a connection check that reports the endpoint's answer. Choosing the remote
+  reader draws a visible sentence that audio leaves the Mac; choosing local draws the opposite.
 - `SettingsPane`, `CRSettingsCard`, `CRSettingsRow`, `CRSettingsNote`, `CRSettingsField`,
   `CRSettingsList`, `CRSettingsDivider`: one frame, one card, and one row shape shared by every
   pane and by the two editors. A pane that needs a new shape adds a component here rather than

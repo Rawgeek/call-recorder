@@ -211,4 +211,27 @@ enum TestEnvironment {
         && speakerRuntimePython != nil
         && diarizationScript != nil
         && ToolLocator.standard.locate("ffprobe") != nil
+
+    /// A recording a run was told to read through a remote endpoint, when one was named.
+    ///
+    /// The live check is asked for by name, because it sends audio to a server:
+    ///
+    ///   CALL_RECORDER_REMOTE_AUDIO=/path/to/call.m4a \
+    ///   CALL_RECORDER_REMOTE_URL=http://host:8099 \
+    ///   swift test --filter LiveRemoteSpeechTests
+    ///
+    /// A token, when the endpoint needs one, is read from CALL_RECORDER_REMOTE_TOKEN and never
+    /// printed.
+    static let remoteSpeechRecording: URL? = ProcessInfo.processInfo
+        .environment["CALL_RECORDER_REMOTE_AUDIO"]
+        .map { URL(filePath: $0) }
+
+    static let remoteSpeechURL = ProcessInfo.processInfo.environment["CALL_RECORDER_REMOTE_URL"]
+    static let remoteSpeechToken = ProcessInfo.processInfo.environment["CALL_RECORDER_REMOTE_TOKEN"]
+    static let remoteSpeechModel = ProcessInfo.processInfo.environment["CALL_RECORDER_REMOTE_MODEL"] ?? ""
+
+    /// Whether this run was told to read a recording through a real endpoint.
+    static let canRunRemoteSpeech = hasFFmpeg
+        && remoteSpeechRecording != nil
+        && remoteSpeechURL?.isEmpty == false
 }

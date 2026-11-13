@@ -1,14 +1,19 @@
-# Call Recorder 0.1.44 — install, features, and Codex MCP
+# Call Recorder 0.1.45 — install, features, and Codex MCP
 
 Call Recorder is a local macOS menu-bar app for meetings and calls. It records both sides
-of a call, transcribes them on this Mac with Qwen3-ASR, labels who spoke, and indexes every
-transcript so Codex can search it later. Audio, transcripts, and voice profiles stay on
-the machine. Nothing is uploaded to a cloud service.
+of a call, transcribes them with Qwen3-ASR on this Mac or with a speech endpoint you choose,
+labels who spoke, and indexes every transcript so Codex can search it later. Audio, transcripts,
+and voice profiles stay on the machine unless Remote endpoint is chosen in Settings, Models,
+Speech reader.
 
 ---
 
 ## What is new in this build
 
+- Settings, Models, Speech reader can send each track to an OpenAI-compatible
+  /v1/audio/transcriptions endpoint. The token is kept in the Keychain, Test connection reports
+  the endpoint's real answer, a failed endpoint falls back to the local model, and the pane says
+  plainly that remote reading uploads the audio.
 - Calls are read by Qwen3-ASR 1.7B, at eight bits, on MLX. It reads Russian and English in one
   pass, including a call that mixes them, and it keeps every participant name: on a seventy-minute
   Russian call with English product names it answered 8,547 words and covered the whole recording.
@@ -40,7 +45,7 @@ materials on macOS 15. No third-party design dependency is used.
 
 ## 2. Install the compiled app
 
-1. Unzip CallRecorder-0.1.44.zip.
+1. Unzip CallRecorder-0.1.45.zip.
 2. Move Call Recorder.app to /Applications.
 3. First launch only: right-click the app and choose Open. This build is signed locally,
    not notarized by Apple, so a double-click shows a warning. After the first open, a
@@ -52,7 +57,8 @@ materials on macOS 15. No third-party design dependency is used.
      (Qwen3-ASR 1.7B, 2.3 GB). Setting the runtime up uses the Python on this Mac, makes an
      environment beside the models, and fetches the two packages the model runs on, about a
      gigabyte. Everything runs locally. A call waits for whichever half is missing, and the row
-     says which one it is.
+     says which one it is. Speech reader below it can send each track to an OpenAI-compatible
+     endpoint instead; the pane says that this uploads the audio.
    - General: choose the recording microphone (for example MacBook Pro Microphone), the
      recordings folder (default ~/Desktop/Call Recordings), and whether recording starts
      automatically when another app opens the microphone.
@@ -215,7 +221,9 @@ The full guide, with configuration and example prompts, is in docs/mcp.md.
 
 Safety properties worth knowing:
 
-- Search and inference run locally. The embedding model is downloaded once and used offline.
+- Search and inference run locally unless Remote endpoint is chosen in Settings, Models, Speech
+  reader. The embedding model is downloaded once and used offline; the remote reader uploads each
+  recording's audio to the endpoint you name.
 - Recording controls are not exposed over MCP, and no recording or transcript can be deleted
   through it. What can be removed is vocabulary and saved people: a glossary term, or a duplicate
   person folded into the one you keep. Neither carries audio, and neither touches a transcript's
