@@ -3,8 +3,12 @@
 Call Recorder records private conversations, so its privacy and security properties are part of
 the product.
 
-- **Local only.** Recording, screenshots, transcription, diarization, embedding, and search run on the Mac.
-  The only network requests are model downloads from the configured model host.
+- **Local by default.** Recording, screenshots, transcription, diarization, embedding, and search
+  run on the Mac. The only network requests are model downloads from the configured model host.
+- **Remote reading is an explicit choice.** Settings, Models, Speech reader can send each 16 kHz
+  mono track to an OpenAI-compatible speech endpoint. The pane says that audio leaves the Mac
+  before the choice is made, the token is kept in the Keychain, and a failed endpoint falls back to
+  the local model. Nothing else is uploaded.
 - **Voiceprints are encrypted.** The key lives in the macOS Keychain; profiles never appear in
   transcripts, search results, diagnostics, or MCP output.
 - **The MCP server cannot destroy work.** It exposes read tools for calls and transcripts and

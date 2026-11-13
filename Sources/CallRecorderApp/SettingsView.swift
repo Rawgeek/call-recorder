@@ -808,6 +808,8 @@ struct ModelSettingsView: View {
                 speechRuntimeRow
             }
 
+            speechReaderCard
+
             CRSettingsCard(
                 title: "Search",
                 info: "The embedding model finds passages by meaning, and the runtime builds the "
@@ -861,6 +863,7 @@ struct ModelSettingsView: View {
             // import the two modules the transcription script needs.
             await model.supportingManager.bootstrapManifest()
             model.speechRuntime.refresh()
+            model.loadSpeechEndpointTokenIfNeeded()
         }
         .confirmationDialog(
             "Delete this model?",
@@ -882,6 +885,152 @@ struct ModelSettingsView: View {
                     + component.displayName + " works offline until then."
             )
         }
+    }
+
+    // MARK: - The speech reader
+
+    /// Where calls are read: this Mac, or an endpoint a person named.
+    ///
+    /// The privacy sentence is a row rather than a tooltip. Uploading a recording is the one
+    /// choice in this pane whose consequence cannot be undone, and a sentence behind an
+    /// information glyph is read after the choice rather than before it.
+    private var speechReaderCard: some View {
+        CRSettingsCard(
+            title: "Speech reader",
+            info: "Local runs Qwen3-ASR on this Mac. Remote posts each track to an "
+                + "OpenAI-compatible /v1/audio/transcriptions endpoint and places its timed "
+                + "segments on the call. A remote failure falls back to the local model."
+        ) {
+            CRSettingsRow(
+                title: "Read calls with",
+                info: "The choice applies to every call read from now on. A call already read is "
+                    + "not read again."
+            ) {
+                Picker("", selection: $model.settings.speechReader) {
+                    ForEach(SpeechReaderChoice.allCases) { reader in
+                        Text(reader.title).tag(reader)
+                    }
+                }
+                .labelsHidden()
+                .frame(maxWidth: 220, alignment: .trailing)
+            }
+            if model.settings.speechReader == .remote {
+                CRSettingsDivider()
+                // The consequence of the choice is above the fields, because a sentence under a
+                // long card is read after the address has been entered rather than before.
+                CRSettingsNote(
+                    icon: "exclamationmark.shield",
+                    text: "Audio leaves this Mac. Every call read remotely is converted to a "
+                        + "16 kHz mono WAV and uploaded to this endpoint. Choose Local model for "
+                        + "calls that must stay on this Mac. If the endpoint fails, the local "
+                        + "model reads the track and the call's metadata names the reader that "
+                        + "answered. An http endpoint sends the audio and token unencrypted, so "
+                        + "it is accepted only on a private network; a public server needs https.",
+                    tone: .waiting
+                )
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Endpoint",
+                    detail: "The server address. /v1/audio/transcriptions is appended; a full "
+                        + "route is accepted as written. Empty keeps calls on this Mac.",
+                    info: "An http or https address. A server on the local network and one behind "
+                        + "a private tunnel both work."
+                ) {
+                    CRTextField(
+                        placeholder: "http://host:8099",
+                        text: $model.settings.remoteSpeechURL
+                    )
+                    .frame(width: 240)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Model name",
+                    detail: "Empty uses the endpoint's own default.",
+                    info: "The name sent in the model field, such as large-v3 or whisper-1. It has "
+                        + "to be one the endpoint serves."
+                ) {
+                    CRTextField(
+                        placeholder: "Server default",
+                        text: $model.settings.remoteSpeechModel
+                    )
+                    .frame(width: 180)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Bearer token",
+                    detail: bearerTokenDetail,
+                    info: "Optional. Sent as an Authorization header and kept in the login "
+                        + "Keychain, never in settings or a plist.",
+                    warning: model.speechEndpointTokenError != nil
+                ) {
+                    HStack(spacing: CR.Space.snug) {
+                        CRSecureField(placeholder: "Optional", text: $model.speechEndpointToken)
+                            .frame(width: 150)
+                        CRButton(title: "Save") { model.saveSpeechEndpointToken() }
+                        if !model.speechEndpointToken.isEmpty {
+                            CRButton(title: "Forget") { model.clearSpeechEndpointToken() }
+                        }
+                    }
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Timeout",
+                    detail: timeoutDetail,
+                    info: "How long one request may take. A long call is one request per track, "
+                        + "and an endpoint that loads its model on demand is slower on the first."
+                ) {
+                    CRTextField(placeholder: "600", text: timeoutSeconds)
+                        .frame(width: 90)
+                }
+                CRSettingsDivider()
+                CRSettingsRow(
+                    title: "Test connection",
+                    detail: model.speechEndpointTest.message,
+                    info: "Sends one second of silence, then reports the HTTP status, the model, "
+                        + "the language, and the timed segments the endpoint actually answered "
+                        + "with. No call audio is sent.",
+                    warning: model.speechEndpointTest.failed
+                ) {
+                    if model.speechEndpointTest.isTesting {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        CRButton(title: "Test") { model.testSpeechEndpoint() }
+                    }
+                }
+            } else {
+                CRSettingsDivider()
+                CRSettingsNote(
+                    icon: "lock.shield",
+                    text: "Audio stays on this Mac. Qwen3-ASR reads every track locally; nothing "
+                        + "is uploaded.",
+                    tone: .ready
+                )
+            }
+        }
+    }
+
+    private var bearerTokenDetail: String? {
+        if let problem = model.speechEndpointTokenError { return problem }
+        if !model.speechEndpointTokenLoaded { return "Reading the Keychain…" }
+        return model.speechEndpointToken.isEmpty
+            ? "No token is stored."
+            : "A token is stored in the login Keychain."
+    }
+
+    private var timeoutDetail: String? {
+        "Seconds. 600 waits ten minutes."
+    }
+
+    private var timeoutSeconds: Binding<String> {
+        Binding(
+            get: { String(Int(model.settings.remoteSpeechTimeoutSeconds.rounded())) },
+            set: { text in
+                guard let value = Int(text.trimmingCharacters(in: .whitespaces)), value > 0 else {
+                    return
+                }
+                model.settings.remoteSpeechTimeoutSeconds = Double(value)
+            }
+        )
     }
 
     // MARK: - The speech runtime

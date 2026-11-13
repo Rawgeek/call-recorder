@@ -545,6 +545,27 @@ struct CRTextField: View {
     }
 }
 
+/// A field whose text is a secret.
+///
+/// It is the same box as CRTextField so a row that holds a token is the same height as the row
+/// beside it, and so the characters are hidden by the system rather than by a second text layer
+/// this app would have to keep in step.
+struct CRSecureField: View {
+    let placeholder: String
+    @Binding var text: String
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        CRFieldBox(focused: focused) {
+            SecureField(placeholder, text: $text)
+                .textFieldStyle(.plain)
+                .font(CR.Font.body)
+                .focused($focused)
+        }
+    }
+}
+
 /// How much of its strength a control keeps while it cannot be used.
 ///
 /// SwiftUI dims its own button styles when a control is disabled and leaves a custom style at full

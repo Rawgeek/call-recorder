@@ -13,6 +13,7 @@ private struct FakeReader: SpeechReading {
     /// What each track answers with, by file name. A name that is not here reads as empty.
     var answers: [String: [TranscriptSegment]]
     var language: String = "ru"
+    var reader: String? = nil
     var failure: (any Error)?
 
     func transcribe(
@@ -24,7 +25,8 @@ private struct FakeReader: SpeechReading {
         if let failure { throw failure }
         return SpeechTranscript(
             language: language == "auto" ? self.language : language,
-            segments: answers[audio.lastPathComponent] ?? []
+            segments: answers[audio.lastPathComponent] ?? [],
+            reader: reader
         )
     }
 }
@@ -74,6 +76,39 @@ struct TranscriberTests {
         #expect(document.model == "Qwen3-ASR 1.7B")
         #expect(document.segments.contains { $0.source == .microphone })
         #expect(FileManager.default.fileExists(atPath: directory.appending(path: "transcript.md").path))
+    }
+
+    @Test("the reader that answered is written into the call's metadata")
+    func namesTheReader() async throws {
+        let directory = try makeCallDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let reader = FakeReader(
+            answers: [
+                "system.m4a": [
+                    TranscriptSegment(startMs: 0, endMs: 4_000, text: "Remote words.")
+                ],
+                "microphone.m4a": [
+                    TranscriptSegment(startMs: 1_000, endMs: 3_000, text: "Local words.")
+                ],
+            ],
+            reader: "Remote endpoint (large-v3)"
+        )
+
+        let transcript = try await Transcriber(engine: reader).transcribe(
+            callID: CallID(rawValue: UUID()),
+            audio: directory.appending(path: "call.m4a"),
+            modelID: "Qwen3-ASR 1.7B",
+            participants: [],
+            glossary: [],
+            directory: directory
+        )
+
+        let document = try JSONDecoder().decode(
+            NormalizedTranscript.self,
+            from: Data(contentsOf: directory.appending(path: "transcript.json"))
+        )
+        #expect(document.model == "Remote endpoint (large-v3)")
+        #expect(transcript.model == "Remote endpoint (large-v3)")
     }
 
     @Test("the glossary is applied before anything is written")

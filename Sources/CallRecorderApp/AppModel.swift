@@ -68,6 +68,30 @@ struct RecoveryNotice: Equatable {
     }
 }
 
+/// What the last connection check saw, kept so the pane can report an answer rather than a pulse.
+enum SpeechEndpointTestState: Equatable {
+    case idle
+    case testing
+    case success(String)
+    case failure(String)
+
+    var message: String? {
+        switch self {
+        case .idle: nil
+        case .testing: "Talking to the endpoint…"
+        case .success(let summary): summary
+        case .failure(let message): message
+        }
+    }
+
+    var failed: Bool {
+        if case .failure = self { return true }
+        return false
+    }
+
+    var isTesting: Bool { self == .testing }
+}
+
 /// What came of asking for a transcript file that the database says a call has.
 ///
 /// Open used to do nothing at all for a call whose file was gone, because the button assumed the
@@ -357,6 +381,16 @@ final class AppModel {
     let speechRuntime: SpeechRuntime
     /// The reader that runs the model on a recording.
     let qwenEngine: QwenEngine
+    /// The bearer token for the remote reader, held only while the app runs.
+    ///
+    /// The Keychain is the store; this is the copy the settings field edits. It is read when the
+    /// pane opens or when a remote reading needs it, so a launch that never uses the remote reader
+    /// never asks the Keychain for an item.
+    var speechEndpointToken = ""
+    private(set) var speechEndpointTokenLoaded = false
+    private(set) var speechEndpointTokenError: String?
+    /// The last connection check, shown in the Speech reader card.
+    var speechEndpointTest = SpeechEndpointTestState.idle
     private let applicationDirectory: URL
     private let store: CallStore?
     private var speakerStore: SpeakerStore?
@@ -433,7 +467,7 @@ final class AppModel {
     }
 
     /// What a transcript says it was read with.
-    static let transcriptionModelName = "Qwen3-ASR 1.7B"
+    static let transcriptionModelName = QwenEngine.readerName
 
     private let pipeline: CallPipeline?
     private let indexer: IndexerClient?
@@ -3724,6 +3758,131 @@ final class AppModel {
         try? supportingManager.delete(model)
     }
 
+    // MARK: - The speech reader
+
+    /// Reads the remote token once, when the pane opens or a remote reading needs it.
+    ///
+    /// Reading it at launch would ask the Keychain for an item on every start, including the starts
+    /// that read every call on this Mac. The read is also what gives a rebuilt copy of the app a
+    /// chance to report why macOS would not hand the item over rather than silently reading no
+    /// token.
+    func loadSpeechEndpointTokenIfNeeded() {
+        guard !speechEndpointTokenLoaded else { return }
+        speechEndpointTokenLoaded = true
+        do {
+            speechEndpointToken = try SpeechEndpointTokenStore().readToken() ?? ""
+            speechEndpointTokenError = nil
+        } catch {
+            speechEndpointToken = ""
+            speechEndpointTokenError = error.localizedDescription
+        }
+    }
+
+    /// Keeps the typed token in the Keychain.
+    func saveSpeechEndpointToken() {
+        do {
+            try SpeechEndpointTokenStore().writeToken(speechEndpointToken)
+            speechEndpointToken = speechEndpointToken.trimmingCharacters(
+                in: .whitespacesAndNewlines
+            )
+            speechEndpointTokenError = nil
+            speechEndpointTest = .success(
+                speechEndpointToken.isEmpty
+                    ? "The stored token was removed. This endpoint is asked without one."
+                    : "The token is stored in the login Keychain."
+            )
+        } catch {
+            speechEndpointTokenError = error.localizedDescription
+            speechEndpointTest = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Removes the token from the Keychain and from the field.
+    func clearSpeechEndpointToken() {
+        do {
+            try SpeechEndpointTokenStore().deleteToken()
+            speechEndpointToken = ""
+            speechEndpointTokenError = nil
+            speechEndpointTest = .success(
+                "The token was removed from the login Keychain."
+            )
+        } catch {
+            speechEndpointTokenError = error.localizedDescription
+            speechEndpointTest = .failure(error.localizedDescription)
+        }
+    }
+
+    /// Posts one second of silence and reports what the endpoint answered.
+    ///
+    /// The check uses the address, model, token, and timeout in the fields rather than the saved
+    /// settings, so a person can prove a change before choosing the remote reader.
+    func testSpeechEndpoint() {
+        guard !speechEndpointTest.isTesting else { return }
+        let address = settings.remoteSpeechURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else {
+            speechEndpointTest = .failure("Enter an endpoint first.")
+            return
+        }
+        loadSpeechEndpointTokenIfNeeded()
+        let configuration = RemoteSpeechConfiguration(
+            baseURL: address,
+            model: settings.remoteSpeechModel,
+            token: speechEndpointToken,
+            timeoutSeconds: settings.remoteSpeechTimeoutSeconds
+        )
+        let reader = RemoteSpeechReader(
+            configuration: configuration,
+            ffmpeg: ToolLocator.standard.locate("ffmpeg")
+        )
+        speechEndpointTest = .testing
+        Task {
+            do {
+                let report = try await reader.connectionReport()
+                speechEndpointTest = .success("Connected. The endpoint answered " + report.summary)
+            } catch {
+                speechEndpointTest = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    /// The remote reader's settings, when there is an address to send to.
+    ///
+    /// Nil means the choice is local, or the remote address is blank. Both cases read with the
+    /// local model: an endpoint that was never named is not a failure to fall back from.
+    private var remoteSpeechConfiguration: RemoteSpeechConfiguration? {
+        guard settings.speechReader == .remote else { return nil }
+        let address = settings.remoteSpeechURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return nil }
+        loadSpeechEndpointTokenIfNeeded()
+        return RemoteSpeechConfiguration(
+            baseURL: address,
+            model: settings.remoteSpeechModel,
+            token: speechEndpointToken,
+            timeoutSeconds: settings.remoteSpeechTimeoutSeconds
+        )
+    }
+
+    /// Whether a call can be read with the reader that was chosen.
+    ///
+    /// A configured endpoint is enough to start: the local model is checked by the fallback
+    /// itself, and a Mac that has never installed the model can still read calls remotely.
+    private var speechReaderIsAvailable: Bool {
+        if remoteSpeechConfiguration != nil { return true }
+        return speechRuntime.state.isReady && qwenModelIsInstalled
+    }
+
+    /// The reader for this call: local alone, or the endpoint with the local model behind it.
+    private func makeSpeechReader() -> any SpeechReading {
+        guard let configuration = remoteSpeechConfiguration else { return qwenEngine }
+        return FallbackSpeechReader(
+            remote: RemoteSpeechReader(
+                configuration: configuration,
+                ffmpeg: ToolLocator.standard.locate("ffmpeg")
+            ),
+            local: qwenEngine
+        )
+    }
+
     private func performProcessingStage(
         _ job: ProcessingJob,
         cancellation: ProcessCancellation
@@ -3742,7 +3901,7 @@ final class AppModel {
             else { throw BackgroundProcessingError.audioUnavailable }
             // The runtime and the model are checked before the call is claimed, so a Mac that is
             // missing either is told what to fetch instead of holding a call that cannot finish.
-            guard speechRuntime.state.isReady, qwenModelIsInstalled else {
+            guard speechReaderIsAvailable else {
                 throw BackgroundProcessingError.modelUnavailable
             }
             let participants = try await store.participants(for: job.callID)
@@ -3761,7 +3920,7 @@ final class AppModel {
                     language: settings.transcriptionLanguage,
                     includeTimestamps: settings.transcriptTimestamps,
                     cancellation: cancellation,
-                    engine: qwenEngine
+                    engine: makeSpeechReader()
                 )
             )
             return .diarizing
@@ -5969,7 +6128,9 @@ enum BackgroundProcessingError: LocalizedError {
         case .appUnavailable: "The app stopped before processing could continue."
         case .pipelineUnavailable: "The local processing pipeline is unavailable."
         case .audioUnavailable: "The source audio is missing."
-        case .modelUnavailable: "Install the transcription model and its runtime in Settings, Models."
+        case .modelUnavailable:
+            "No speech reader is ready. Install the local model and its runtime, or set a remote "
+                + "endpoint, in Settings, Models, Speech reader."
         case .indexerUnavailable: "The local transcript indexer is unavailable."
         case .transcriptUnavailable: "The completed transcript file is missing."
         case let .unexpectedStage(stage): "The processor cannot execute stage \(stage.rawValue)."

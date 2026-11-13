@@ -124,6 +124,7 @@ struct Transcriber: Sendable {
         let microphoneURL = directory.appending(path: "microphone.m4a")
         let hasSystem = FileManager.default.fileExists(atPath: systemURL.path)
         let hasMicrophone = FileManager.default.fileExists(atPath: microphoneURL.path)
+        var readers: [String] = []
         if hasSystem || hasMicrophone {
             let system = try hasSystem
                 ? await readTrack(audio: systemURL, hotwords: hotwords, cancellation: cancellation)
@@ -131,6 +132,7 @@ struct Transcriber: Sendable {
             let microphone = try hasMicrophone
                 ? await readTrack(audio: microphoneURL, hotwords: hotwords, cancellation: cancellation)
                 : nil
+            readers = Self.readers(system: system, microphone: microphone)
             transcript = SourceTranscriptMerger.merge(
                 microphone: microphone,
                 system: system,
@@ -142,7 +144,12 @@ struct Transcriber: Sendable {
                 hotwords: hotwords,
                 cancellation: cancellation
             )
+            readers = transcript.reader.map { [$0] } ?? []
         }
+        // Which reader answered is part of the call's metadata, so a call read by the remote
+        // endpoint is not later mistaken for one read on this Mac. A reading that fell back names
+        // the local reader and says the endpoint failed.
+        let readerLabel = readers.isEmpty ? modelID : readers.joined(separator: " + ")
 
         // Rewrite the misspellings the glossary knows about before anything is written. The
         // saved file, the search index built from it, and every later reading of the call then
@@ -224,7 +231,7 @@ struct Transcriber: Sendable {
         let document = NormalizedTranscript(
             callId: callID.rawValue.uuidString,
             language: transcript.language,
-            model: modelID,
+            model: readerLabel,
             participants: allParticipants.map {
                 .init(id: $0.id.rawValue.uuidString, name: $0.name)
             },
@@ -254,11 +261,24 @@ struct Transcriber: Sendable {
         return TranscriptRecord(
             callID: callID,
             language: transcript.language,
-            model: modelID,
+            model: readerLabel,
             text: transcript.text,
             markdownPath: markdownURL.path,
             jsonPath: jsonURL.path
         )
+    }
+
+    /// The readers that answered the two sides, in the order they were read.
+    private static func readers(
+        system: SpeechTranscript?,
+        microphone: SpeechTranscript?
+    ) -> [String] {
+        var names: [String] = []
+        for name in [system?.reader, microphone?.reader].compactMap({ $0 }) {
+            let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty, !names.contains(trimmed) { names.append(trimmed) }
+        }
+        return names
     }
 
     /// Reads one track with the speech model.

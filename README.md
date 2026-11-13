@@ -1,11 +1,13 @@
 # Call Recorder
 
 A private, local-first call recorder for macOS. Call Recorder records both sides of a call,
-transcribes it on your Mac with Qwen3-ASR, labels who spoke, and keeps every transcript
+transcribes it on your Mac with Qwen3-ASR or with a speech endpoint you choose, labels who spoke,
+and keeps every transcript
 searchable by keyword and by meaning. Codex can search, read, and curate the library through a
 built-in MCP server.
 
-Audio, transcripts, voice profiles, and the search index never leave the machine.
+Audio, transcripts, voice profiles, and the search index stay on the machine. Audio leaves it only
+when Remote endpoint is chosen in Settings, Models, Speech reader.
 
 ![The menu-bar panel while recording](docs/images/menu-bar-recording.png)
 
@@ -50,6 +52,10 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 - Qwen3-ASR 1.7B runs locally on MLX, in a Python environment the app keeps beside its models.
   It reads Russian and English in one pass, including a call that mixes them, and names the
   language it found; the language can also be named per call, or left automatic.
+- A second reader can send each 16 kHz mono track to an OpenAI-compatible
+  /v1/audio/transcriptions endpoint. It is off unless you choose Remote endpoint in Settings,
+  Models, Speech reader; the token is kept in the Keychain, a failed endpoint falls back to the
+  local model, and the call's metadata says which reader answered.
 - A long call is read in pieces, so a meeting is never cut short by a token budget. A piece that
   loops instead of speaking is read again through a narrower window and dropped if it loops again.
 - Output is cleaned for reading: no timestamps, no `[music]`-style annotations, one line per
@@ -115,7 +121,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
 
 ### From a release
 
-1. Download `CallRecorder-0.1.44.zip` from the
+1. Download `CallRecorder-0.1.45.zip` from the
    [latest release](https://github.com/Rawgeek/call-recorder/releases/latest) and unzip it.
 2. Move `Call Recorder.app` to `/Applications`.
 3. First launch only: right-click the app and choose **Open**. The build is signed locally, not
@@ -127,7 +133,7 @@ Audio, transcripts, voice profiles, and the search index never leave the machine
    - **Models**: set the speech runtime up, then download the transcription model (`Qwen3-ASR
      1.7B`, 2.3 GB). The runtime is a Python environment the app keeps beside its models, about a
      gigabyte, and both halves run locally. A call waits for whichever half is missing, and the
-     row says which one it is.
+     row says which one it is. Speech reader beside it can use a remote endpoint instead.
    - **General**: choose the microphone or follow the system's own choice, the recordings folder
      (default `~/Desktop/Call Recordings`), whether recording starts when another app opens the
      microphone, whether a Mac with no audio input records the other side alone, whether the people
@@ -245,9 +251,12 @@ model, and example prompts are in [docs/mcp.md](docs/mcp.md).
 
 ## Privacy
 
-- Recording, screenshots, transcription, diarization, embedding, and search all run locally.
+- Recording, screenshots, diarization, embedding, and search all run locally.
+- Transcription stays on this Mac unless you choose Remote endpoint in Settings, Models, Speech
+  reader. That choice uploads each recording's audio to the endpoint you name; nothing else is
+  sent. The pane says so before the choice is made.
 - No account, no telemetry, and no network call other than model downloads from the model host
-  you configure.
+  you configure and the speech endpoint you choose.
 - Voice profiles are encrypted with a key in the macOS Keychain, and are excluded from
   transcripts, diagnostics, and MCP responses.
 - The MCP server exposes read tools for everything, and write tools only for vocabulary,
