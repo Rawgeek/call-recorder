@@ -88,6 +88,24 @@ public struct AppSettings: Codable, Equatable, Sendable {
     /// keeps a call that mixes Russian with English product names from being written in the wrong
     /// script throughout.
     public var transcriptionLanguage: String
+    /// Which reader turns a recording into words.
+    ///
+    /// Local keeps the audio on this Mac and runs Qwen3-ASR through the Python environment. Remote
+    /// sends each track to an OpenAI-compatible endpoint, which is a deliberate exception to the
+    /// app's local-only rule and the reason the choice says so in the pane. A Mac that has never
+    /// been offered the choice keeps the reader it shipped with.
+    public var speechReader: SpeechReaderChoice
+    /// Where the remote reader posts a recording, without the request path.
+    ///
+    /// A person enters a server such as "http://host:8099"; the app appends
+    /// "/v1/audio/transcriptions". A full path is also accepted, so a proxy that publishes the
+    /// route elsewhere does not need to be rewritten.
+    public var remoteSpeechURL: String
+    /// The model name the endpoint expects, or empty to use the endpoint's own default.
+    public var remoteSpeechModel: String
+    /// How long one request may take. A long call is sent as one request per track, and an
+    /// endpoint that loads its model on demand answers the first one more slowly.
+    public var remoteSpeechTimeoutSeconds: Double
     /// Whether a saved transcript prints the time each turn started.
     ///
     /// Off by default: a file is read for what was said, and a printed time in the middle of a
@@ -133,6 +151,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case screenshotInterval
         case screenshotResolution
         case transcriptionLanguage
+        case speechReader
+        case remoteSpeechURL
+        case remoteSpeechModel
+        case remoteSpeechTimeoutSeconds
         case transcriptTimestamps
         case appliedGlossaryFingerprint
         case appliedArtifactRuleVersion
@@ -161,6 +183,10 @@ public struct AppSettings: Codable, Equatable, Sendable {
             screenshotInterval: .fiveSeconds,
             screenshotResolution: .fullHD,
             transcriptionLanguage: "auto",
+            speechReader: .local,
+            remoteSpeechURL: "",
+            remoteSpeechModel: "",
+            remoteSpeechTimeoutSeconds: 600,
             transcriptTimestamps: false,
             appliedGlossaryFingerprint: nil,
             appliedArtifactRuleVersion: nil
@@ -266,6 +292,26 @@ extension AppSettings {
         transcriptionLanguage =
             try container.decodeIfPresent(String.self, forKey: .transcriptionLanguage)
             ?? fallback.transcriptionLanguage
+        // Added with the remote reader. Absent means the recording is read on this Mac, which is
+        // what every earlier build did and what keeps an existing user's audio where it was.
+        let storedReader =
+            (try? container.decodeIfPresent(String.self, forKey: .speechReader)) ?? nil
+        speechReader =
+            storedReader.flatMap(SpeechReaderChoice.init(rawValue:))
+            ?? fallback.speechReader
+        remoteSpeechURL =
+            try container.decodeIfPresent(String.self, forKey: .remoteSpeechURL)
+            ?? fallback.remoteSpeechURL
+        remoteSpeechModel =
+            try container.decodeIfPresent(String.self, forKey: .remoteSpeechModel)
+            ?? fallback.remoteSpeechModel
+        // A timeout of zero or less would fail every request before it was sent, so a damaged
+        // value falls back rather than becoming a reader that cannot answer at all.
+        let storedTimeout =
+            try container.decodeIfPresent(Double.self, forKey: .remoteSpeechTimeoutSeconds)
+        remoteSpeechTimeoutSeconds =
+            storedTimeout.map { $0 > 0 ? $0 : fallback.remoteSpeechTimeoutSeconds }
+            ?? fallback.remoteSpeechTimeoutSeconds
         transcriptTimestamps =
             try container.decodeIfPresent(Bool.self, forKey: .transcriptTimestamps)
             ?? fallback.transcriptTimestamps

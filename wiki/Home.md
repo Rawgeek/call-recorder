@@ -12,7 +12,7 @@ keyword and by meaning. Codex can search and curate the library through a built-
 - [[Installation]] — requirements, the prebuilt app, speaker setup.
 - [[Codex MCP setup]] — register the MCP server and see the tools.
 - [[Troubleshooting]] — the failures worth knowing about.
-- [[Privacy and security]] — what leaves the machine (nothing) and how data is protected.
+- [[Privacy and security]] — what leaves the machine (nothing by default) and how data is protected.
 
 ## Quick start
 

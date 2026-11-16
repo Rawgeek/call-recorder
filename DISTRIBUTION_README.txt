@@ -1,4 +1,4 @@
-Call Recorder 0.1.44
+Call Recorder 0.1.45
 
 Requirements
 - Apple silicon Mac running macOS 15 or newer.
@@ -36,9 +36,10 @@ all four.
 The same sentence reaches the model twice when chunks overlap or the microphone hears the
 speakers; the repeat is removed as the call is transcribed, so a transcript holds it once.
 Microphone and system audio are captured separately. Each available source is read locally by
-Qwen3-ASR, which handles a call that mixes Russian with English; a missing source does not discard
-the other one. A long call is read in pieces of fifteen seconds, so it is never cut short by a
-token budget.
+Qwen3-ASR, which handles a call that mixes Russian with English, or by an OpenAI-compatible
+endpoint chosen under Settings > Models > Speech reader. A missing source does not discard the
+other one. A long call is read in pieces of fifteen seconds, so it is never cut short by a token
+budget.
 The menu shows the five latest calls; select a completed call to copy its transcript.
 The app fetches its own JavaScript runtime once and unpacks it into Application Support. That
 takes a minute on a slow line, happens once, and the archive is kept so it never happens twice.
@@ -61,9 +62,11 @@ separation and transcription share one Python environment: the app uses the one 
 setup, or its own at
   ~/Library/Application Support/CallRecorder/python/bin/python3
 which it builds when the transcription model is set up.
-No call audio is uploaded. The environment needs pyannote.audio, libraries for the mel filter bank
-(librosa), and transformers 5.18, which is not on PyPI yet. Both models are downloaded once, after
-accepting the pyannote/speaker-diarization-community-1 license and signing in to Hugging Face.
+No call audio leaves the Mac unless Remote endpoint is chosen in Settings > Models > Speech
+reader. That choice uploads each track to the endpoint you name. The environment needs
+pyannote.audio, libraries for the mel filter bank (librosa), and transformers 5.18, which is not on
+PyPI yet. Both models are downloaded once, after accepting the
+pyannote/speaker-diarization-community-1 license and signing in to Hugging Face.
 
 If an operation fails, copy its error details or use Settings > Recovery to retry,
 check or back up the database, and export a redacted diagnostics bundle. A failure while

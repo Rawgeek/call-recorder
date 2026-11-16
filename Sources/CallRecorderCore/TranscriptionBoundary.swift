@@ -93,18 +93,47 @@ public enum SourceTranscriptMerger {
         }
         return SpeechTranscript(
             language: system?.language ?? microphone?.language ?? "unknown",
-            segments: segments
+            segments: segments,
+            reader: Self.reader(system: system, microphone: microphone)
         )
+    }
+
+    /// Which readers produced the two sides, when they can be told apart.
+    ///
+    /// A call read by the remote endpoint and then by the local reader on the second track is one
+    /// transcript, and its metadata has to say both rather than naming whichever side merged last.
+    private static func reader(
+        system: SpeechTranscript?,
+        microphone: SpeechTranscript?
+    ) -> String? {
+        let names = [system?.reader, microphone?.reader]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var seen: [String] = []
+        for name in names where !seen.contains(name) { seen.append(name) }
+        return seen.isEmpty ? nil : seen.joined(separator: " + ")
     }
 }
 
 public struct SpeechTranscript: Codable, Equatable, Sendable {
     public let language: String
     public let segments: [TranscriptSegment]
+    /// The reader that produced these words, when it is known.
+    ///
+    /// Optional so a transcript written by an earlier build, and a reading made by a test double,
+    /// keep decoding. The transcriber writes it into the call's metadata; a call that fell back
+    /// from the remote endpoint to the local reader says so here rather than naming only one.
+    public let reader: String?
 
-    public init(language: String, segments: [TranscriptSegment]) {
+    public init(language: String, segments: [TranscriptSegment], reader: String? = nil) {
         self.language = language
         self.segments = segments
+        self.reader = reader
+    }
+
+    /// The same reading, with the reader named.
+    public func readBy(_ reader: String) -> SpeechTranscript {
+        SpeechTranscript(language: language, segments: segments, reader: reader)
     }
 
     public var text: String {

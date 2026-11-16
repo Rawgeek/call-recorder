@@ -4,6 +4,28 @@ All notable changes to Call Recorder are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions use semantic
 versioning.
 
+## [0.1.45] - 2026-11-13
+
+### Added
+
+- Settings, Models, Speech reader chooses between the local Qwen3-ASR model and an
+  OpenAI-compatible speech endpoint. The remote reader posts each 16 kHz mono WAV to
+  /v1/audio/transcriptions, places its verbose JSON segments on the call's clock, and names the
+  reader that answered in the transcript metadata.
+- The pane has an endpoint, an optional model name, a request timeout, and Test connection, which
+  sends one second of silence and reports the HTTP status, model, language, and timed segments the
+  endpoint actually answered with.
+- The bearer token is kept in the login Keychain. It is never written to the settings blob or a
+  plist.
+- Plain http is accepted only for a server on a private network; a public endpoint must use https,
+  because the audio and its token would otherwise cross the internet in the clear.
+- A remote endpoint that is unset or fails falls back to the local reader. A stop cancels the HTTP
+  request rather than only waiting for it to end.
+
+### Changed
+
+- The Speech reader card says plainly that audio leaves this Mac when Remote endpoint is chosen.
+
 ## [0.1.44] - 2026-10-26
 
 ### Changed

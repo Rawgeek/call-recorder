@@ -69,6 +69,9 @@ struct QwenTranscriptDocument: Decodable, Sendable {
 /// The piece length the audio is read in is the script's own default, which is where it is measured
 /// and documented. It is left there rather than passed from here so that one number decides it.
 actor QwenEngine: SpeechReading {
+    /// What a transcript says this reader is. Written into the call's metadata.
+    static let readerName = "Qwen3-ASR 1.7B"
+
     private var python: URL?
     private let script: URL?
     private let ffmpeg: URL?
@@ -115,20 +118,14 @@ actor QwenEngine: SpeechReading {
             throw QwenEngineError.modelMissing
         }
 
-        let work = FileManager.default.temporaryDirectory
-            .appending(path: "qwen-\(UUID().uuidString)", directoryHint: .isDirectory)
-        try FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: work) }
-
-        let wave = work.appending(path: "audio.wav")
-        _ = try ProcessRunner.runChecked(
-            executable: ffmpeg,
-            arguments: [
-                "-v", "error", "-y", "-i", audio.path,
-                "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wave.path,
-            ],
+        let converted = try SpeechWaveConverter.convert(
+            audio: audio,
+            ffmpeg: ffmpeg,
             cancellation: cancellation
         )
+        let work = converted.work
+        let wave = converted.wave
+        defer { try? FileManager.default.removeItem(at: work) }
 
         let output = work.appending(path: "transcript.json")
         let started = Date()
@@ -167,7 +164,8 @@ actor QwenEngine: SpeechReading {
             }
             return SpeechTranscript(
                 language: TranscriptLanguage.naming(requested: language, text: ""),
-                segments: []
+                segments: [],
+                reader: Self.readerName
             )
         }
         let text = segments.map(\.text).joined(separator: " ")
@@ -185,7 +183,8 @@ actor QwenEngine: SpeechReading {
         }
         return SpeechTranscript(
             language: named ?? TranscriptLanguage.naming(requested: language, text: text),
-            segments: segments
+            segments: segments,
+            reader: Self.readerName
         )
     }
 }
